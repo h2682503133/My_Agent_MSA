@@ -268,6 +268,11 @@ def parse_syntax(agent, task):
         if match_timer:
             task_type = match_timer.group(1).strip()
             content = match_timer.group(2).strip()
+            agent_id = ""
+            content_match = re.match(r"^\[(\w+)\](.*)", content)
+            if content_match:
+                agent_id = content_match.group(1).strip()
+                content = content_match.group(2).strip()
             time_str = match_timer.group(3).strip() if match_timer.group(3) else "2026-01-31 00:00:00"
             try:
                 trigger_ts = to_timestamp(time_str)
@@ -276,6 +281,7 @@ def parse_syntax(agent, task):
                     "time_str": time_str,
                     "trigger_timestamp": trigger_ts,
                     "content": content,
+                    "agent_id": agent_id,
                 }
             except Exception:
                 pass

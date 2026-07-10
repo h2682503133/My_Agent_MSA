@@ -45,6 +45,7 @@ def add_timer_task(
     task_type: str = "submit_task",
     session_id: str | None = None,
     client_message_id: str = "",
+    agent_id: str = "",
 ) -> str:
     global NEED_FAST_SCAN, LAST_TASK_ADD_TIME
 
@@ -58,6 +59,7 @@ def add_timer_task(
             "channel_id": channel_id,
             "session_id": session_id,
             "client_message_id": client_message_id,
+            "agent_id": agent_id,
             "trigger_time": trigger_timestamp,
             "content": content,
             "task_type": task_type,
@@ -218,11 +220,27 @@ def execute_timer_task(task_data: dict):
             channel=channel_id,
             content=content,
             client_message_id=client_message_id,
+            agent_id=task_data.get("agent_id", ""),
         )
         if result["ok"]:
             timer_log(f"定时任务提交成功：{user_id} {content} -> task_id={result['task_id']}")
         else:
             timer_log(f"定时任务提交失败：{user_id} {content} -> {result['error']}")
+    elif task_type == "send_message":
+        client = _get_scheduler_client()
+        result = client.create_task(
+            user_id=user_id,
+            session_id=session_id,
+            channel=channel_id,
+            content=content,
+            client_message_id=client_message_id,
+            agent_id=task_data.get("agent_id", ""),
+            metadata={"source": "timer_task", "timer_type": "send_message"},
+        )
+        if result["ok"]:
+            timer_log(f"定时消息发送成功：{user_id} {content} -> task_id={result['task_id']}")
+        else:
+            timer_log(f"定时消息发送失败：{user_id} {content} -> {result['error']}")
     else:
         timer_log(f"未知定时任务类型：{task_type}，跳过执行")
 

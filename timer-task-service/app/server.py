@@ -42,6 +42,7 @@ class TimerTaskService(timer_task_pb2_grpc.TimerTaskServicer):
                 task_type=request.task_type or "submit_task",
                 session_id=request.session_id or None,
                 client_message_id=request.client_message_id or "",
+                agent_id=request.agent_id or "",
             )
 
             ok = not message.startswith("定时任务创建失败")
@@ -67,6 +68,7 @@ class TimerTaskService(timer_task_pb2_grpc.TimerTaskServicer):
                     content=t.get("content", ""),
                     task_type=t.get("task_type", ""),
                     client_message_id=t.get("client_message_id", ""),
+                    agent_id=t.get("agent_id", ""),
                     created_at=t.get("created_at", ""),
                 )
                 for t in tasks

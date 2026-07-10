@@ -168,6 +168,28 @@ def slot_scheduler():
 # ======================
 def run_task(task: ScheduledTask):
     user_id = task.user_id
+
+    # send_message 定时任务：直接推送消息，不走 orchestrator
+    if task.metadata.get("timer_type") == "send_message":
+        gateway_log(f"{task.slot_index}号槽正处理{user_id}的定时消息，直接推送")
+        event_bus.publish(task_event(task, "task_started", waiting=waiting_count()))
+        event_bus.publish(task_event(
+            task, "assistant_message",
+            text=task.content,
+            waiting=waiting_count(),
+            metadata={"visible_to_user": "true", "final": "true"},
+        ))
+        event_bus.publish(task_event(task, "task_completed", waiting=waiting_count()))
+        with SLOTS_LOCK:
+            if 0 <= task.slot_index < len(BATCH_SLOTS):
+                BATCH_SLOTS[task.slot_index] = None
+        with BUSY_LOCK:
+            BUSY_USERS.discard(user_id)
+        global processed
+        processed -= 1
+        _wake_scheduler()
+        return
+
     success = True
     saw_terminal_event = False
     client = _ORCHESTRATOR_CLIENT or OrchestratorClient()

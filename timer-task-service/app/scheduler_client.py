@@ -47,6 +47,8 @@ class SchedulerClient:
         channel: str,
         content: str,
         client_message_id: str = "",
+        agent_id: str = "",
+        metadata: dict | None = None,
     ) -> dict:
         try:
             request = task_scheduler_pb2.CreateTaskRequest(
@@ -55,13 +57,14 @@ class SchedulerClient:
                 channel=channel,
                 content=content,
                 client_message_id=client_message_id,
+                agent_id=agent_id,
                 delivery_target=task_scheduler_pb2.DeliveryTarget(
                     channel=channel,
                     user_id=user_id,
                     conversation_id=session_id,
                     reply_to=client_message_id,
                 ),
-                metadata={"source": "timer_task"},
+                metadata=metadata or {"source": "timer_task"},
             )
             response = self.stub.CreateTask(
                 request, timeout=config.SCHEDULER_GRPC_DEADLINE

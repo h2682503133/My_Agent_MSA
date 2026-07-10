@@ -12,6 +12,7 @@ from app.model_proxy_client import ModelProxyClient
 from app.response_parser import parse_model_response
 from app.syntax_parser import parse_syntax
 from app.tool_runtime_client import ToolRuntimeClient
+from app.timer_task_client import TimerTaskClient
 
 
 class AgentRuntime:
@@ -447,9 +448,22 @@ class AgentRuntime:
                 self._emit_user_message(task, emit, question, final=True)
                 return
 
-            elif result["timer_task"]:
-                # 定时任务后续可拆到 timer-task-service。
-                reply = f"已解析定时任务，但 timer-task-service 尚未接入：{result['timer_task']}"
+elif result["timer_task"]:
+                timer = result["timer_task"]
+                client = TimerTaskClient()
+                resp = client.create_timer_task(
+                    user_id=task.user.id,
+                    session_id=task.user.session_id,
+                    channel_id=task.channel,
+                    trigger_timestamp=timer.get("trigger_timestamp", 0),
+                    content=timer.get("content", ""),
+                    task_type=timer.get("task_type", "submit_task"),
+                    agent_id=timer.get("agent_id", "") or getattr(self, "id", ""),
+                )
+                if resp["ok"]:
+                    reply = f"定时任务已创建：{resp['message']}"
+                else:
+                    reply = f"定时任务创建失败：{resp['message']}"
                 task.set_temp_dialog_output(reply)
                 emit(self.build_event(
                     task,
