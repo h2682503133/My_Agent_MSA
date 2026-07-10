@@ -7,7 +7,7 @@ OUT_DIR="$BASE_DIR/app/generated"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-python3 -m grpc_tools.protoc \
+python -m grpc_tools.protoc \
   -I "$BASE_DIR/proto" \
   --python_out="$OUT_DIR" \
   --grpc_python_out="$OUT_DIR" \

@@ -167,6 +167,7 @@ def slot_scheduler():
 # 槽执行器 · 只执行一次（无重试）
 # ======================
 def run_task(task: ScheduledTask):
+    global processed
     user_id = task.user_id
 
     # send_message 定时任务：直接推送消息，不走 orchestrator
@@ -185,7 +186,6 @@ def run_task(task: ScheduledTask):
                 BATCH_SLOTS[task.slot_index] = None
         with BUSY_LOCK:
             BUSY_USERS.discard(user_id)
-        global processed
         processed -= 1
         _wake_scheduler()
         return
@@ -217,7 +217,6 @@ def run_task(task: ScheduledTask):
                 BATCH_SLOTS[task.slot_index] = None
         with BUSY_LOCK:
             BUSY_USERS.discard(user_id)
-        global processed
         processed -= 1
 
     task.status = "completed" if success else "failed"

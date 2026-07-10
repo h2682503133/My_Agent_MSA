@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
       - name: task-scheduler-service
-        image: agent/task-scheduler-service:v3
-        imagePullPolicy: IfNotPresent
+        image: agent/task-scheduler-service:v5
+        imagePullPolicy: Always
         ports:
         - containerPort: 5100
         env:

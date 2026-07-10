@@ -448,7 +448,7 @@ class AgentRuntime:
                 self._emit_user_message(task, emit, question, final=True)
                 return
 
-elif result["timer_task"]:
+            elif result["timer_task"]:
                 timer = result["timer_task"]
                 client = TimerTaskClient()
                 resp = client.create_timer_task(

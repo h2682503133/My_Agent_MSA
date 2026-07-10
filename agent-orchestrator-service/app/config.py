@@ -17,16 +17,13 @@ MODEL_PROXY_TARGET = os.getenv(
 )
 
 TOOL_RUNTIME_TARGET = os.getenv(
-TIMER_TASK_TARGET = os.getenv(
-    "TIMER_TASK_TARGET",
-    "timer-task-service.agent.svc.cluster.local:5103",
-)
     "TOOL_RUNTIME_TARGET",
+    "tool-runtime-service:5303",
+)
+
 TIMER_TASK_TARGET = os.getenv(
     "TIMER_TASK_TARGET",
     "timer-task-service.agent.svc.cluster.local:5103",
-)
-    "tool-runtime-service:5303",
 )
 
 MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "20"))
