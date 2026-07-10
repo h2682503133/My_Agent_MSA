@@ -43,6 +43,7 @@ class OrchestratorClient:
             channel=task.channel,
             content=task.content,
             created_at=task.created_at_iso,
+            agent_id=task.agent_id,
             metadata=task.to_execute_metadata(),
         )
 

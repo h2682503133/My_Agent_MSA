@@ -5,23 +5,32 @@ set -euo pipefail
 # apply-nfs-pv.sh
 #
 # 用途：
-#   只在这里配置一次 NFS_SERVER / NFS_ROOT，
-#   自动渲染 my-agent-nfs-pv-pvc.yaml.tpl，
-#   然后 kubectl apply。
+#   渲染 my-agent-nfs-pv-pvc.yaml.tpl，然后 kubectl apply。
+#
+# 使用方式：
+#   NFS_SERVER=172.27.146.29 NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh
 #
 # 注意：
 #   如果之前已经用错误 StorageClass 创建过 PVC/PV，
 #   请先执行：
 #
-#   kubectl delete pvc my-agent-config-pvc my-agent-openviking-pvc my-agent-assets-pvc my-agent-workspace-pvc my-agent-timer-tasks-pvc -n agent
-#   kubectl delete pv my-agent-config-pv my-agent-openviking-pv my-agent-assets-pv my-agent-workspace-pv my-agent-timer-tasks-pv
+#   kubectl delete pvc my-agent-config-pvc my-agent-openviking-pvc my-agent-assets-pvc my-agent-workspace-pvc my-agent-timer-tasks-pvc my-agent-user-data-pvc -n agent
+#   kubectl delete pv my-agent-config-pv my-agent-openviking-pv my-agent-assets-pv my-agent-workspace-pv my-agent-timer-tasks-pv my-agent-user-data-pv
 #
 # 再执行本脚本。
 # ============================================================
 
-# 只需要改这里两项。
-NFS_SERVER="${NFS_SERVER:-172.29.219.49}"
-NFS_ROOT="${NFS_ROOT:-/srv/nfs/my-agent}"
+if [ -z "${NFS_SERVER:-}" ]; then
+  echo "[ERROR] NFS_SERVER 未设置，请指定 NFS 服务器地址："
+  echo "  NFS_SERVER=172.27.146.29 NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh"
+  exit 1
+fi
+
+if [ -z "${NFS_ROOT:-}" ]; then
+  echo "[ERROR] NFS_ROOT 未设置，请指定 NFS 根路径："
+  echo "  NFS_SERVER=172.27.146.29 NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh"
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_FILE="$SCRIPT_DIR/my-agent-nfs-pv-pvc.yaml.tpl"

@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package timer_task.v1;
+
+message CreateTimerTaskRequest {
+  string user_id = 1;
+  string channel_id = 2;
+  string session_id = 3;
+  double trigger_timestamp = 4;
+  string content = 5;
+  string task_type = 6;
+  string client_message_id = 7;
+}
+
+message CreateTimerTaskResponse {
+  bool ok = 1;
+  string task_id = 2;
+  string message = 3;
+}
+
+message ListUserTasksRequest {
+  string user_id = 1;
+}
+
+message TimerTaskInfo {
+  string task_id = 1;
+  string user_id = 2;
+  string channel_id = 3;
+  string session_id = 4;
+  double trigger_time = 5;
+  string trigger_time_str = 6;
+  string content = 7;
+  string task_type = 8;
+  string client_message_id = 9;
+  string created_at = 10;
+}
+
+message ListUserTasksResponse {
+  repeated TimerTaskInfo tasks = 1;
+}
+
+message DeleteUserTaskRequest {
+  string user_id = 1;
+  string task_id = 2;
+}
+
+message DeleteUserTaskResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+service TimerTask {
+  rpc CreateTimerTask(CreateTimerTaskRequest) returns (CreateTimerTaskResponse);
+  rpc ListUserTasks(ListUserTasksRequest) returns (ListUserTasksResponse);
+  rpc DeleteUserTask(DeleteUserTaskRequest) returns (DeleteUserTaskResponse);
+}

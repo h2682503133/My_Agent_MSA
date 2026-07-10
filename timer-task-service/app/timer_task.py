@@ -1,3 +1,8 @@
+"""
+独立定时任务服务核心逻辑。
+
+从 task-scheduler-service 分离出来，通过 gRPC 回调 scheduler 触发任务执行。
+"""
 import json
 import os
 import time
@@ -6,10 +11,8 @@ from datetime import datetime
 from pathlib import Path
 
 from app import config
-from app.event_bus import event_bus, task_event
-from app.logger import gateway_log
-from app.scheduled_task import DeliveryTarget, ScheduledTask
-from app.scheduler import submit_task
+from app.logger import timer_log
+from app.scheduler_client import SchedulerClient
 
 # ======================
 # 定时任务配置
@@ -21,6 +24,16 @@ scan_interval = float(config.TIMER_SCAN_INTERVAL_FAST)
 NEED_FAST_SCAN = False
 LAST_TASK_ADD_TIME = 0
 
+_scheduler_client: SchedulerClient | None = None
+
+
+def _get_scheduler_client() -> SchedulerClient:
+    global _scheduler_client
+    if _scheduler_client is None:
+        _scheduler_client = SchedulerClient()
+    return _scheduler_client
+
+
 # ======================
 # 1. 添加定时任务
 # ======================
@@ -29,17 +42,12 @@ def add_timer_task(
     channel_id: str,
     trigger_timestamp: float,
     content: str = "system:auto_commit",
-    task_type: str = "submit_task",  # submit_task / send_message
+    task_type: str = "submit_task",
     session_id: str | None = None,
     client_message_id: str = "",
 ) -> str:
     global NEED_FAST_SCAN, LAST_TASK_ADD_TIME
-    """
-    添加定时任务。
 
-    原 timer_task.py 通过 HTTP 调 main /submit_task；微服务化后直接构造
-    ScheduledTask 并提交到本服务队列。它不构造 Agent Runtime Task。
-    """
     try:
         task_id = f"task_{int(time.time() * 1000)}_{user_id}"
         session_id = session_id or f"{channel_id}_{user_id}"
@@ -63,18 +71,18 @@ def add_timer_task(
         NEED_FAST_SCAN = True
         LAST_TASK_ADD_TIME = time.time()
 
-        gateway_log(f"创建定时任务：{user_id} {task_type} {trigger_timestamp} {content}")
+        timer_log(f"创建定时任务：{user_id} {task_type} {trigger_timestamp} {content}")
         return f"定时任务{task_type}:{content}创建成功，将在指定时间执行"
 
     except Exception as e:
-        gateway_log(f"定时任务创建失败：{user_id} {task_type} {trigger_timestamp} {content}")
+        timer_log(f"定时任务创建失败：{user_id} {task_type} {trigger_timestamp} {content}")
         return f"定时任务创建失败：{str(e)}"
 
 
 # ======================
-# 2. 查询当前用户所有定时任务（只return，不发消息）
+# 2. 查询当前用户所有定时任务
 # ======================
-def list_user_tasks(user_id: str) -> str:
+def list_user_tasks(user_id: str) -> list[dict]:
     tasks = []
     try:
         for filename in os.listdir(TASK_DIR):
@@ -87,25 +95,16 @@ def list_user_tasks(user_id: str) -> str:
 
             if task.get("user_id") == user_id:
                 trigger_time = task.get("trigger_time", 0)
-                task["trigger_time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(trigger_time))
+                task["trigger_time_str"] = time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(trigger_time)
+                )
                 tasks.append(task)
 
         tasks.sort(key=lambda x: x["trigger_time"])
-
-        if not tasks:
-            return "当前无任何定时任务"
-
-        msg = "当前定时任务列表：\n\n"
-        for idx, t in enumerate(tasks, 1):
-            msg += f"{idx}. {t['trigger_time_str']}\n"
-            msg += f"   类型：{t['task_type']}\n"
-            msg += f"   内容：{t['content']}\n"
-            msg += f"   任务ID：{t['task_id']}\n\n"
-
-        return msg.strip()
+        return tasks
 
     except Exception:
-        return "查询定时任务失败"
+        return []
 
 
 # ======================
@@ -129,16 +128,16 @@ def delete_user_task(user_id: str, task_id: str) -> str:
             return "未找到该定时任务"
 
         os.remove(target_file)
-        gateway_log(f"用户 {user_id} 删除定时任务 {task_id} 成功")
+        timer_log(f"用户 {user_id} 删除定时任务 {task_id} 成功")
         return "定时任务已删除"
 
     except Exception as e:
-        gateway_log(f"删除定时任务失败：{user_id} {task_id} {str(e)}")
+        timer_log(f"删除定时任务失败：{user_id} {task_id} {str(e)}")
         return "删除定时任务失败"
 
 
 # ======================
-# 智能扫描核心：检查是否有 3 分钟内的任务
+# 智能扫描：检查是否有临近任务
 # ======================
 def has_nearby_task(seconds=180):
     now = time.time()
@@ -189,14 +188,14 @@ def timer_scan_loop():
                     execute_timer_task(task)
                     os.remove(path)
             except Exception as e:
-                gateway_log(f"定时任务扫描失败：{path} {e}")
+                timer_log(f"定时任务扫描失败：{path} {e}")
                 continue
 
         time.sleep(scan_interval)
 
 
 # ======================
-# 执行任务
+# 执行任务：通过 gRPC 回调 scheduler
 # ======================
 def execute_timer_task(task_data: dict):
     task_type = task_data.get("task_type", "submit_task")
@@ -205,32 +204,27 @@ def execute_timer_task(task_data: dict):
     session_id = task_data.get("session_id") or f"{channel_id}_{user_id}"
     content = task_data["content"]
     client_message_id = task_data.get("client_message_id", "")
-    task_id = task_data.get("task_id", f"task_{int(time.time() * 1000)}_{user_id}")
 
-    gateway_log(f"{user_id}于{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}的定时任务[{content}]开始执行")
-
-    delivery_target = DeliveryTarget(
-        channel=channel_id,
-        user_id=user_id,
-        conversation_id=session_id,
-        reply_to=client_message_id,
-    )
-
-    scheduled_task = ScheduledTask(
-        task_id=task_id,
-        user_id=user_id,
-        session_id=session_id,
-        channel=channel_id,
-        content=content,
-        client_message_id=client_message_id,
-        delivery_target=delivery_target,
-        metadata={"source": "timer_task"},
+    timer_log(
+        f"{user_id}于{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}"
+        f"的定时任务[{content}]开始执行"
     )
 
     if task_type == "submit_task":
-        submit_task(scheduled_task)
-    elif task_type == "send_message":
-        event_bus.publish(task_event(scheduled_task, "assistant_message", text=content))
+        client = _get_scheduler_client()
+        result = client.create_task(
+            user_id=user_id,
+            session_id=session_id,
+            channel=channel_id,
+            content=content,
+            client_message_id=client_message_id,
+        )
+        if result["ok"]:
+            timer_log(f"定时任务提交成功：{user_id} {content} -> task_id={result['task_id']}")
+        else:
+            timer_log(f"定时任务提交失败：{user_id} {content} -> {result['error']}")
+    else:
+        timer_log(f"未知定时任务类型：{task_type}，跳过执行")
 
 
 # ======================
@@ -239,4 +233,4 @@ def execute_timer_task(task_data: dict):
 def start_timer_service():
     t = threading.Thread(target=timer_scan_loop, daemon=True)
     t.start()
-    print(f"定时任务服务已启动，task_dir={TASK_DIR}", flush=True)
+    print(f"timer-task-service 扫描已启动，task_dir={TASK_DIR}", flush=True)

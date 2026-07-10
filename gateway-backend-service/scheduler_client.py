@@ -142,6 +142,7 @@ class GrpcSchedulerClient(SchedulerClient):
                         reply_to=message.client_message_id or "",
                     ),
                     metadata=message.metadata,
+                    agent_id=message.agent_id or "",
                 )
 
                 resp = await stub.CreateTask(req)

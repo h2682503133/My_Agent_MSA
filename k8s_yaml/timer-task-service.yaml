@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timer-task-service
+  namespace: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: timer-task-service
+  template:
+    metadata:
+      labels:
+        app: timer-task-service
+    spec:
+      containers:
+      - name: timer-task-service
+        image: agent/timer-task-service:v1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5103
+        env:
+        - name: TIMER_GRPC_PORT
+          value: "5103"
+        - name: SCHEDULER_TARGET
+          value: "task-scheduler-service.agent.svc.cluster.local:5100"
+        - name: TIMER_SCAN_INTERVAL_FAST
+          value: "5"
+        - name: TIMER_SCAN_INTERVAL_SLOW
+          value: "60"
+        - name: TIMER_TASK_DIR
+          value: "/data/tasks"
+        volumeMounts:
+        - name: timer-tasks
+          mountPath: /data/tasks
+      volumes:
+      - name: timer-tasks
+        persistentVolumeClaim:
+          claimName: my-agent-timer-tasks-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timer-task-service
+  namespace: agent
+spec:
+  selector:
+    app: timer-task-service
+  ports:
+  - name: grpc
+    port: 5103
+    targetPort: 5103
+  type: ClusterIP

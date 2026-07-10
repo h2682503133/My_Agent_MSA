@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+      - name: user-service
+        image: agent/user-service:v1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5104
+        env:
+        - name: USER_GRPC_PORT
+          value: "5104"
+        - name: USER_DATA_DIR
+          value: "/data/users"
+        volumeMounts:
+        - name: user-data
+          mountPath: /data/users
+      volumes:
+      - name: user-data
+        persistentVolumeClaim:
+          claimName: my-agent-user-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: agent
+spec:
+  selector:
+    app: user-service
+  ports:
+  - name: grpc
+    port: 5104
+    targetPort: 5104
+  type: ClusterIP

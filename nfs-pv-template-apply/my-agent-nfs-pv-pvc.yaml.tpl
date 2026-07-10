@@ -162,3 +162,33 @@ spec:
   resources:
     requests:
       storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: my-agent-user-data-pv
+spec:
+  storageClassName: ""
+  capacity:
+    storage: 1Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: ${NFS_SERVER}
+    path: ${NFS_ROOT}/user-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-agent-user-data-pvc
+  namespace: agent
+spec:
+  storageClassName: ""
+  accessModes:
+  - ReadWriteMany
+  volumeName: my-agent-user-data-pv
+  resources:
+    requests:
+      storage: 1Gi

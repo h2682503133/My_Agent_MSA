@@ -17,7 +17,6 @@ message CreateTaskRequest {
   string client_message_id = 5;
   DeliveryTarget delivery_target = 6;
   map<string, string> metadata = 7;
-  string agent_id = 8;
 }
 
 message CreateTaskResponse {

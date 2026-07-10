@@ -48,6 +48,7 @@ class ScheduledTask:
     client_message_id: str = ""
     delivery_target: DeliveryTarget = field(default_factory=DeliveryTarget)
     metadata: dict[str, str] = field(default_factory=dict)
+    agent_id: str = ""
 
     # Scheduling-only state. These fields replace the tiny subset of the old
     # Task object that scheduler.py actually needs.

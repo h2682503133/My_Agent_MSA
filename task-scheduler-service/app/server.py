@@ -35,6 +35,7 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
             channel = request.channel or "web"
             session_id = request.session_id or f"{channel}_{user_id}"
             client_message_id = request.client_message_id
+            agent_id = request.agent_id or ""
             content = request.content
 
             if not user_id:
@@ -62,6 +63,7 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
                 client_message_id=client_message_id,
                 delivery_target=delivery_target,
                 metadata=metadata,
+                agent_id=agent_id,
             )
 
             result = submit_task(task)
@@ -113,9 +115,6 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
 
 def serve():
     start_scheduler(OrchestratorClient(config.ORCHESTRATOR_TARGET))
-    if config.ENABLE_TIMER_TASKS:
-        from app.timer_task import start_timer_service
-        start_timer_service()
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
     task_scheduler_pb2_grpc.add_TaskSchedulerServicer_to_server(TaskSchedulerService(), server)

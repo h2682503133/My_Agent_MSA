@@ -81,6 +81,7 @@ mkdir -p "$NFS_ROOT/openviking/viking_data"
 mkdir -p "$NFS_ROOT/assets"
 mkdir -p "$NFS_ROOT/workspace"
 mkdir -p "$NFS_ROOT/timer-tasks"
+mkdir -p "$NFS_ROOT/user-data"
 
 # 本地开发阶段给宽权限，避免 Pod 写入权限问题。
 chmod -R 777 "$NFS_ROOT"

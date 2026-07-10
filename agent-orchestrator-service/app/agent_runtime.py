@@ -181,7 +181,7 @@ class AgentRuntime:
 
     @classmethod
     def first_call(cls, task):
-        agent_id = cls.default_agent.get(task.user.session_id, "main")
+        agent_id = task.agent_id or cls.default_agent.get(task.user.session_id, "main")
         cls.default_agent[task.user.session_id] = agent_id
         target = cls.get_agent(agent_id, task.user.session_id, task.user.id)
         task.target = target

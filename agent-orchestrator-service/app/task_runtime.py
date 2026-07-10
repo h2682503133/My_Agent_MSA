@@ -26,6 +26,7 @@ class TaskRuntime:
     channel: str
     created_at: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    agent_id: str = ""
 
     status: str = "running"
     default_agent: Any = None
@@ -65,6 +66,7 @@ class TaskRuntime:
             channel=request.channel,
             created_at=request.created_at,
             metadata=dict(request.metadata),
+            agent_id=request.agent_id or "",
         )
 
     def push_context(self, from_obj, input_text: str) -> None:

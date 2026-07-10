@@ -10,6 +10,7 @@ message ExecuteTaskRequest {
   string content = 5;
   string created_at = 6;
   map<string, string> metadata = 7;
+  string agent_id = 8;
 }
 
 message DeliveryTarget {
