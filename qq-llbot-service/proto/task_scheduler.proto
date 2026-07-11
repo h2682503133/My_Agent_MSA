@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package task_scheduler.v1;
+
+message DeliveryTarget {
+  string channel = 1;
+  string user_id = 2;
+  string conversation_id = 3;
+  string reply_to = 4;
+}
+
+message CreateTaskRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string channel = 3;
+  string content = 4;
+  string client_message_id = 5;
+  DeliveryTarget delivery_target = 6;
+  map<string, string> metadata = 7;
+  string agent_id = 8;
+}
+
+message CreateTaskResponse {
+  bool ok = 1;
+  string task_id = 2;
+  string status = 3;
+  int32 waiting = 4;
+  string error = 5;
+}
+
+message SubscribeEventsRequest {
+  string subscriber_id = 1;
+  repeated string channels = 2;
+}
+
+message TaskEvent {
+  string event_id = 1;
+  string task_id = 2;
+  string user_id = 3;
+  string session_id = 4;
+  string channel = 5;
+  string type = 6;
+  string text = 7;
+  repeated string images = 8;
+  int32 waiting = 9;
+  string error = 10;
+  DeliveryTarget delivery_target = 11;
+  map<string, string> metadata = 12;
+}
+
+service TaskScheduler {
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream TaskEvent);
+}

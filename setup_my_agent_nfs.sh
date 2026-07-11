@@ -76,6 +76,7 @@ mkdir -p "$NFS_ROOT/config/orchestrator/system_prompt/tool"
 mkdir -p "$NFS_ROOT/config/orchestrator/system_prompt/reader"
 mkdir -p "$NFS_ROOT/config/model-proxy/config"
 mkdir -p "$NFS_ROOT/config/tool-runtime/config"
+mkdir -p "$NFS_ROOT/config/qq-llbot"
 
 mkdir -p "$NFS_ROOT/openviking/viking_data"
 mkdir -p "$NFS_ROOT/assets"

@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qq-llbot-service
+  namespace: agent
+  labels:
+    app: qq-llbot-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qq-llbot-service
+  template:
+    metadata:
+      labels:
+        app: qq-llbot-service
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: qq-llbot-service
+          image: agent/qq-llbot-service:v1
+          imagePullPolicy: Always
+          env:
+            - name: QQ_LLBOT_CONFIG_PATH
+              value: "/service/config/qq_llbot_config.json"
+            - name: SCHEDULER_TARGET
+              value: "task-scheduler-service.agent.svc.cluster.local:5100"
+            - name: SATORI_HOST
+              value: "host.docker.internal"
+            - name: SATORI_PORT
+              value: "5600"
+            - name: SATORI_TOKEN
+              value: ""
+            - name: SUBSCRIBER_ID
+              value: "qq-llbot-1"
+          volumeMounts:
+            - name: my-agent-config
+              mountPath: /service/config
+              subPath: qq-llbot
+      volumes:
+        - name: my-agent-config
+          persistentVolumeClaim:
+            claimName: my-agent-config-pvc

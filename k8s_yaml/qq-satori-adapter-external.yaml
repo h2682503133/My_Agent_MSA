@@ -1,0 +1,31 @@
+# qq-satori-adapter 外部服务映射
+#
+# LLBot Satori 适配器运行在 Windows 宿主机上（10.83.101.77:5600），
+# 通过 Service + Endpoints 将其注册到 K8s DNS，使 qq-llbot-service
+# 可以通过域名 qq-satori-adapter 访问。
+#
+# 前提：Windows 上 LLBot 必须监听 0.0.0.0:5600（不能是 127.0.0.1）
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qq-satori-adapter
+  namespace: agent
+spec:
+  type: ClusterIP
+  ports:
+    - name: ws
+      port: 5600
+      targetPort: 5600
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: qq-satori-adapter
+  namespace: agent
+subsets:
+  - addresses:
+      - ip: 10.83.101.77
+    ports:
+      - name: ws
+        port: 5600
