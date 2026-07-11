@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /service
 
 COPY requirements.txt .
@@ -26,6 +28,8 @@ ENV SCHEDULER_HOST=0.0.0.0
 ENV SCHEDULER_GRPC_PORT=5100
 ENV SCHEDULER_PORT=5100
 ENV ORCHESTRATOR_TARGET=agent-orchestrator-service:5300
+
+ENV TZ=Asia/Shanghai
 
 EXPOSE 5100
 CMD ["python", "-m", "app.main"]

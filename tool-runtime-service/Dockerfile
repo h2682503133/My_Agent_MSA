@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends openssh-client ca-certificates curl && \
+    apt-get install -y --no-install-recommends tzdata openssh-client ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
@@ -36,6 +36,8 @@ ENV TOOL_RUNTIME_HOST=0.0.0.0
 ENV TOOL_RUNTIME_PORT=5303
 ENV WORKSPACE_DIR=/app/workspace
 ENV ENABLE_SHELL_TOOLS=false
+
+ENV TZ=Asia/Shanghai
 
 EXPOSE 5303
 

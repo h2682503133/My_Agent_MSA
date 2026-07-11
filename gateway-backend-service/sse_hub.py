@@ -51,14 +51,27 @@ class SSEHub:
                 except asyncio.QueueFull:
                     pass
 
-    async def event_stream(self, user_id: str) -> AsyncIterator[str]:
+    async def event_stream(
+        self,
+        user_id: str,
+        agent_id: str | None = None,
+    ) -> AsyncIterator[str]:
         queue = await self.subscribe(user_id)
 
         try:
             yield ": connected\n\n"
 
             while True:
-                data = await queue.get()
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if agent_id:
+                    meta = data.get("metadata", {})
+                    event_agent = meta.get("agent_id") or data.get("agent_id", "")
+                    if event_agent and event_agent != agent_id:
+                        continue
                 text = json.dumps(data, ensure_ascii=False)
                 yield f"data: {text}\n\n"
 

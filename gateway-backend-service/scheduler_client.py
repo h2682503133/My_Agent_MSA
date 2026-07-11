@@ -25,6 +25,7 @@ class MockSchedulerClient(SchedulerClient):
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         task_id = f"task-{uuid.uuid4().hex[:12]}"
         session_id = message.session_id or f"web_{message.user_id}"
+        agent_id = message.agent_id or "main"
 
         await self._event_queue.put(
             TaskEvent(
@@ -41,14 +42,20 @@ class MockSchedulerClient(SchedulerClient):
                     conversation_id=session_id,
                     reply_to=message.client_message_id or "",
                 ),
+                metadata={"agent_id": agent_id},
             )
         )
 
-        asyncio.create_task(self._mock_run_task(task_id, message))
+        asyncio.create_task(self._mock_run_task(task_id, message, agent_id))
 
         return CreateTaskResult(ok=True, task_id=task_id, status="queued", waiting=0)
 
-    async def _mock_run_task(self, task_id: str, message: FrontendMessage) -> None:
+    async def _mock_run_task(
+        self,
+        task_id: str,
+        message: FrontendMessage,
+        agent_id: str,
+    ) -> None:
         session_id = message.session_id or f"web_{message.user_id}"
 
         await asyncio.sleep(0.4)
@@ -61,6 +68,7 @@ class MockSchedulerClient(SchedulerClient):
                 channel="web",
                 type="task_started",
                 text="Mock task started.",
+                metadata={"agent_id": agent_id},
             )
         )
 
@@ -73,8 +81,9 @@ class MockSchedulerClient(SchedulerClient):
                 session_id=session_id,
                 channel="web",
                 type="assistant_message",
-                text=f"Mock gateway reply: {message.content}",
+                text=f"[{agent_id}] Mock gateway reply: {message.content}",
                 images=[],
+                metadata={"agent_id": agent_id, "visible_to_user": "true", "final": "true"},
             )
         )
 
@@ -88,6 +97,7 @@ class MockSchedulerClient(SchedulerClient):
                 channel="web",
                 type="task_finished",
                 waiting=0,
+                metadata={"agent_id": agent_id},
             )
         )
 
@@ -117,13 +127,18 @@ class GrpcSchedulerClient(SchedulerClient):
 
     @staticmethod
     def _session_id(message: FrontendMessage) -> str:
-        return message.session_id or f"web_{message.user_id}"
+        agent_id = message.agent_id or "main"
+        return message.session_id or f"web_{message.user_id}_{agent_id}"
 
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         import grpc
 
         scheduler_pb2, scheduler_pb2_grpc = self._import_proto_modules()
         session_id = self._session_id(message)
+        agent_id = message.agent_id or "main"
+
+        metadata = dict(message.metadata)
+        metadata.setdefault("agent_id", agent_id)
 
         try:
             async with grpc.aio.insecure_channel(self.target) as channel:
@@ -141,8 +156,8 @@ class GrpcSchedulerClient(SchedulerClient):
                         conversation_id=session_id,
                         reply_to=message.client_message_id or "",
                     ),
-                    metadata=message.metadata,
-                    agent_id=message.agent_id or "",
+                    metadata=metadata,
+                    agent_id=agent_id,
                 )
 
                 resp = await stub.CreateTask(req)

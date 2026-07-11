@@ -97,6 +97,8 @@ async def list_pods():
         for item in data.get("items", []):
             name = item["metadata"]["name"]
             status = item["status"]["phase"]
+            labels = item["metadata"].get("labels", {})
+            deployment = labels.get("app", name.rsplit("-", 2)[0] if "-" in name else name)
             containers = []
             for c in item["status"].get("containerStatuses", []):
                 containers.append({
@@ -105,7 +107,7 @@ async def list_pods():
                     "restarts": c["restartCount"],
                     "image": c["image"]
                 })
-            pods.append({"name": name, "status": status, "containers": containers})
+            pods.append({"name": name, "deployment": deployment, "status": status, "containers": containers})
         return {"pods": pods}
     except Exception as e:
         return {"error": str(e), "pods": []}

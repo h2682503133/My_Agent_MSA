@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package tool_runtime.v1;
+
+message ExecuteToolRequest {
+  string task_id = 1;
+  string tool_name = 2;
+  string skill_name = 3;
+  repeated string args = 4;
+  map<string, string> kwargs = 5;
+  string workspace_dir = 6;
+  int32 timeout_seconds = 7;
+}
+
+message Artifact {
+  string type = 1;
+  string local_path = 2;
+  string asset_url = 3;
+}
+
+message ExecuteToolResponse {
+  bool ok = 1;
+  string output = 2;
+  repeated Artifact artifacts = 3;
+  string logs = 4;
+  string error = 5;
+}
+
+service ToolRuntime {
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+}

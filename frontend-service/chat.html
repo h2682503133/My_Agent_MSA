@@ -5,462 +5,117 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>智能体对话</title>
 
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      height: 100vh;
-      font-family: Arial, "Microsoft YaHei", sans-serif;
-      background: #f5f5f5;
-      color: #222222;
-    }
-
-    .page {
-      max-width: 920px;
-      height: 100vh;
-      margin: 0 auto;
-      display: flex;
-      flex-direction: column;
-      padding: 14px;
-    }
-
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 10px;
-    }
-
-    .top-left {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .title {
-      font-size: 18px;
-      font-weight: 700;
-    }
-
-    .status-row {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      color: #666666;
-      font-size: 13px;
-    }
-
-    .status-online {
-      color: #2e7d32;
-    }
-
-    .status-offline {
-      color: #c62828;
-    }
-
-    .logout-btn {
-      border: 1px solid #d0d0d0;
-      background: #ffffff;
-      border-radius: 8px;
-      padding: 8px 12px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-
-    #chat-box {
-      flex: 1;
-      overflow-y: auto;
-      background: #ffffff;
-      border: 1px solid #dddddd;
-      border-radius: 12px;
-      padding: 14px;
-    }
-
-    .msg-row {
-      display: flex;
-      margin: 10px 0;
-    }
-
-    .msg-row.user {
-      justify-content: flex-end;
-    }
-
-    .msg-row.agent {
-      justify-content: flex-start;
-    }
-
-    .msg {
-      max-width: min(74%, 680px);
-      padding: 10px 12px;
-      border-radius: 12px;
-      line-height: 1.55;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 15px;
-    }
-
-    .msg.user {
-      background: #d9fdd3;
-      border-top-right-radius: 4px;
-    }
-
-    .msg.agent {
-      background: #f0f0f0;
-      border-top-left-radius: 4px;
-    }
-
-    .msg.system {
-      max-width: 100%;
-      margin: 8px auto;
-      background: #fff8e1;
-      color: #795548;
-      font-size: 13px;
-    }
-
-    .msg-img {
-      display: block;
-      max-width: 280px;
-      max-height: 280px;
-      margin-top: 8px;
-      border-radius: 8px;
-      border: 1px solid #dddddd;
-      object-fit: contain;
-      background: #ffffff;
-    }
-
-    .input-row {
-      display: flex;
-      gap: 8px;
-      margin-top: 10px;
-    }
-
-    #message-input {
-      flex: 1;
-      min-height: 42px;
-      max-height: 120px;
-      padding: 10px 12px;
-      border: 1px solid #d0d0d0;
-      border-radius: 10px;
-      font-size: 15px;
-      resize: none;
-      outline: none;
-      font-family: inherit;
-    }
-
-    #message-input:focus {
-      border-color: #666666;
-    }
-
-    .send-btn {
-      width: 88px;
-      border: none;
-      border-radius: 10px;
-      background: #222222;
-      color: #ffffff;
-      font-size: 15px;
-      cursor: pointer;
-    }
-
-    .send-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
-    @media (max-width: 640px) {
-      .page {
-        padding: 10px;
-      }
-
-      .msg {
-        max-width: 86%;
-      }
-
-      .send-btn {
-        width: 72px;
-      }
-    }
-  </style>
+  
+  <link rel="stylesheet" href="chat.css" />
 </head>
-
 <body>
-  <main class="page">
-    <header class="topbar">
-      <div class="top-left">
-        <div class="title">智能体对话</div>
+  <div class="app" id="app">
+    <!-- ═══ Sidebar ═══ -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <h2>智能体对话</h2>
+        <span class="user-badge" id="user-badge">-</span>
+      </div>
+      <div class="sidebar-actions">
+        <button onclick="showNewConvModal()">+ 新建对话</button>
+      </div>
+      <div class="conv-list" id="conv-list"></div>
+      <div class="sidebar-footer">
+        <span id="queue-status">排队：0</span>
+        <button onclick="logout()">切换用户 / 退出</button>
+      </div>
+    </aside>
+
+    <!-- ═══ Main Chat Area ═══ -->
+    <main class="main-area" id="main-area">
+      <div class="chat-header">
+        <div class="agent-info">
+          <span class="agent-name" id="current-agent-name">main</span>
+          <span class="agent-id" id="current-agent-id">agent: main</span>
+        </div>
         <div class="status-row">
-          <span id="user-label">用户：-</span>
-          <span id="queue-status">当前排队：0</span>
           <span id="connection-status" class="status-offline">事件流：未连接</span>
+          <button class="btn-sm outline" onclick="toggleRightPanel()" id="toggle-panel-btn">面板 ▸</button>
         </div>
       </div>
 
-      <button class="logout-btn" onclick="logout()">切换用户/退出登录</button>
-    </header>
+      <section id="chat-box">
+        <div class="ws-empty">请选择一个对话开始</div>
+      </section>
 
-    <section id="chat-box"></section>
+      <footer class="input-row">
+        <textarea id="message-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
+        <button id="send-btn" class="send-btn" onclick="sendMessage()" disabled>发送</button>
+      </footer>
+    </main>
 
-    <footer class="input-row">
-      <textarea id="message-input" placeholder="输入消息，Enter 发送，Shift + Enter 换行"></textarea>
-      <button id="send-btn" class="send-btn" onclick="sendMessage()">发送</button>
-    </footer>
-  </main>
+    <!-- ═══ Right Panel ═══ -->
+    <aside class="right-panel" id="right-panel">
+      <div class="panel-tabs" id="panel-tabs">
+        <button class="panel-tab active" data-tab="user-settings">用户设置</button>
+        <button class="panel-tab" data-tab="workspace">工作空间</button>
+        <button class="panel-tab" data-tab="logs">日志</button>
+      </div>
+      <div class="panel-body" id="panel-body">
+        <!-- User Settings -->
+        <div class="tab-content active" id="tab-user-settings">
+          <div class="setting-section">
+            <h4>用户信息</h4>
+            <div class="setting-row"><label>用户 ID</label><span id="profile-user-id">-</span></div>
+            <div class="setting-row"><label>渠道数</label><span id="profile-channel-count">0</span></div>
+          </div>
+          <div class="setting-section">
+            <h4>渠道绑定</h4>
+            <div class="channel-list" id="channel-list"><div class="ws-empty">暂无绑定渠道</div></div>
+            <div class="add-channel-row">
+              <select id="new-channel-type">
+                <option value="qq">QQ</option>
+                <option value="wechat">微信</option>
+                <option value="web">Web</option>
+                <option value="custom">自定义</option>
+              </select>
+              <input id="new-channel-uid" placeholder="渠道用户ID" />
+              <button class="btn-sm" onclick="bindChannel()">绑定</button>
+            </div>
+          </div>
+        </div>
 
-  <script>
-    const userId = localStorage.getItem("user_id");
-    const sessionId = localStorage.getItem("session_id") || (userId ? `web_${userId}` : "");
+        <!-- Workspace -->
+        <div class="tab-content" id="tab-workspace">
+          <div class="ws-toolbar">
+            <input id="ws-path-input" placeholder="/app/workspace/users/..." value="/" />
+            <button class="btn-sm" onclick="loadWorkspaceFiles()">浏览</button>
+          </div>
+          <div class="ws-tree" id="ws-tree"><div class="ws-empty">输入路径后点击浏览</div></div>
+          <div class="ws-preview" id="ws-preview"><div class="ws-empty">选择文件查看内容</div></div>
+        </div>
 
-    const chatBox = document.getElementById("chat-box");
-    const input = document.getElementById("message-input");
-    const sendBtn = document.getElementById("send-btn");
-    const userLabel = document.getElementById("user-label");
-    const queueStatus = document.getElementById("queue-status");
-    const connectionStatus = document.getElementById("connection-status");
+        <!-- Logs -->
+        <div class="tab-content" id="tab-logs">
+          <div class="log-toolbar">
+            <input id="log-filter" placeholder="过滤关键字" />
+            <button class="btn-sm" onclick="loadLogs()">刷新</button>
+            <button class="btn-sm outline" onclick="startLogAutoRefresh()">自动</button>
+          </div>
+          <div class="log-content" id="log-content"><div class="log-empty">点击刷新加载日志</div></div>
+        </div>
+      </div>
+    </aside>
+  </div>
 
-    let eventSource = null;
+  <!-- ═══ New Conversation Modal ═══ -->
+  <div class="modal-overlay hidden" id="new-conv-modal">
+    <div class="modal-card">
+      <h3>新建对话</h3>
+      <label for="new-agent-id">智能体 ID (agent_id)</label>
+      <input id="new-agent-id" type="text" placeholder="例如：main、tool、..." value="main" />
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeNewConvModal()">取消</button>
+        <button class="btn-confirm" onclick="confirmNewConv()">创建</button>
+      </div>
+    </div>
+  </div>
 
-    if (!userId) {
-      window.location.href = "/login.html";
-    } else {
-      userLabel.textContent = `用户：${userId}`;
-      connectEvents();
-      addSystemMessage("已进入会话。");
-    }
-
-    function escapeHtml(str) {
-      return String(str)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
-
-    function escapeAttr(str) {
-      return String(str).replaceAll('"', "%22");
-    }
-
-    function scrollToBottom() {
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    function addSystemMessage(text) {
-      const row = document.createElement("div");
-      row.className = "msg-row agent";
-
-      const bubble = document.createElement("div");
-      bubble.className = "msg system";
-      bubble.textContent = text;
-
-      row.appendChild(bubble);
-      chatBox.appendChild(row);
-      scrollToBottom();
-    }
-
-    function addMsg(role, text, images = []) {
-      const row = document.createElement("div");
-      row.className = `msg-row ${role}`;
-
-      const bubble = document.createElement("div");
-      bubble.className = `msg ${role}`;
-
-      let html = "";
-
-      if (text) {
-        html += escapeHtml(text);
-      }
-
-      if (Array.isArray(images) && images.length > 0) {
-        for (const url of images) {
-          html += `<img src="${escapeAttr(url)}" class="msg-img" alt="assistant image" />`;
-        }
-      }
-
-      bubble.innerHTML = html || "";
-      row.appendChild(bubble);
-      chatBox.appendChild(row);
-      scrollToBottom();
-    }
-
-    function setConnectionStatus(connected) {
-      if (connected) {
-        connectionStatus.textContent = "事件流：已连接";
-        connectionStatus.className = "status-online";
-      } else {
-        connectionStatus.textContent = "事件流：重连中";
-        connectionStatus.className = "status-offline";
-      }
-    }
-
-    function buildClientMessageId() {
-      return `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    }
-
-    async function sendMessage() {
-      const text = input.value.trim();
-
-      if (!text) {
-        return;
-      }
-
-      addMsg("user", text);
-      input.value = "";
-      sendBtn.disabled = true;
-
-      try {
-        const response = await fetch("/api/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            user_id: userId,
-            session_id: sessionId,
-            content: text,
-            client_message_id: buildClientMessageId()
-          })
-        });
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(errText || `发送失败：HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        if (data.ok === false) {
-          throw new Error(data.error || "发送失败");
-        }
-
-        if (data.task_id) {
-          addSystemMessage(`任务已创建：${data.task_id}`);
-        }
-
-        if (typeof data.waiting === "number") {
-          queueStatus.textContent = `当前排队：${data.waiting}`;
-        }
-      } catch (err) {
-        addMsg("agent", `消息发送失败：${err.message || err}`);
-      } finally {
-        sendBtn.disabled = false;
-        input.focus();
-      }
-    }
-
-    function handleTaskEvent(data) {
-      if (!data || typeof data !== "object") {
-        return;
-      }
-
-      switch (data.type) {
-        case "task_queued":
-          if (typeof data.waiting === "number") {
-            queueStatus.textContent = `当前排队：${data.waiting}`;
-          }
-          break;
-
-        case "task_started":
-          addSystemMessage(`任务开始：${data.task_id || ""}`);
-          break;
-
-        case "task_progress":
-          if (data.text) {
-            addSystemMessage(data.text);
-          }
-          break;
-
-        case "model_call_started":
-          addSystemMessage("正在调用模型...");
-          break;
-
-        case "tool_call_started":
-          addSystemMessage(data.text || "正在执行工具...");
-          break;
-
-        case "tool_call_finished":
-          if (data.text) {
-            addSystemMessage(data.text);
-          }
-          break;
-
-        case "assistant_message":
-          addMsg("agent", data.text || "", data.images || []);
-
-          if (window.AndroidNotify) {
-            AndroidNotify.notifyMsg(data.text || "收到新消息");
-          }
-          break;
-
-        case "task_waiting_user":
-          addMsg("agent", data.text || "需要你补充信息。");
-          break;
-
-        case "task_finished":
-          if (typeof data.waiting === "number") {
-            queueStatus.textContent = `当前排队：${data.waiting}`;
-          }
-          break;
-
-        case "task_failed":
-          addMsg("agent", `任务失败：${data.error || "未知错误"}`);
-          break;
-
-        default:
-          if ("waiting" in data) {
-            queueStatus.textContent = `当前排队：${data.waiting}`;
-          } else if ("text" in data || "images" in data) {
-            addMsg("agent", data.text || "", data.images || []);
-          }
-          break;
-      }
-    }
-
-    function connectEvents() {
-      if (eventSource) {
-        eventSource.close();
-      }
-
-      const url = `/api/events?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(sessionId)}`;
-
-      eventSource = new EventSource(url);
-
-      eventSource.onopen = function () {
-        setConnectionStatus(true);
-      };
-
-      eventSource.onmessage = function (event) {
-        try {
-          const data = JSON.parse(event.data);
-          handleTaskEvent(data);
-        } catch (err) {
-          addSystemMessage(event.data);
-        }
-      };
-
-      eventSource.onerror = function () {
-        setConnectionStatus(false);
-      };
-    }
-
-    function logout() {
-      if (eventSource) {
-        eventSource.close();
-      }
-
-      localStorage.removeItem("user_id");
-      localStorage.removeItem("session_id");
-      window.location.href = "/login.html";
-    }
-
-    input.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    });
-  </script>
+  <script src="chat.js"></script>
 </body>
 </html>

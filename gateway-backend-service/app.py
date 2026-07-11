@@ -1,14 +1,28 @@
 import asyncio
+import json
 import os
+from pathlib import Path
 from typing import List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from conversations import conversation_manager
 from scheduler_client import build_scheduler_client
-from schemas import FrontendMessage, LoginRequest, LoginResponse
+from schemas import (
+    BindChannelRequest,
+    ConversationSummary,
+    CreateConversationRequest,
+    FrontendMessage,
+    LoginRequest,
+    LoginResponse,
+    UserProfileUpdate,
+    WorkspaceFileWrite,
+)
 from sse_hub import SSEHub
+from tool_client import build_tool_client
+from user_client import build_user_client
 
 
 APP_NAME = "gateway-backend-service"
@@ -25,10 +39,12 @@ app.add_middleware(
 
 sse_hub = SSEHub()
 scheduler_client = build_scheduler_client()
+user_client = build_user_client()
+tool_client = build_tool_client()
 
 
-def build_session_id(user_id: str) -> str:
-    return f"web_{user_id}"
+def build_session_id(user_id: str, agent_id: str = "main") -> str:
+    return f"web_{user_id}_{agent_id}"
 
 
 def get_whitelist() -> List[str]:
@@ -59,6 +75,9 @@ async def on_startup() -> None:
     asyncio.create_task(scheduler_event_consumer())
 
 
+# ═══════════════════════════════════════════════════════════════
+# 健康检查
+# ═══════════════════════════════════════════════════════════════
 @app.get("/api/health")
 async def health():
     return {
@@ -72,6 +91,9 @@ async def health():
     }
 
 
+# ═══════════════════════════════════════════════════════════════
+# 登录
+# ═══════════════════════════════════════════════════════════════
 @app.post("/api/login", response_model=LoginResponse)
 async def login(req: LoginRequest):
     user_id = req.user_id.strip()
@@ -86,10 +108,14 @@ async def login(req: LoginRequest):
     return LoginResponse(ok=True, user_id=user_id, session_id=session_id)
 
 
+# ═══════════════════════════════════════════════════════════════
+# 消息（支持 agent_id）
+# ═══════════════════════════════════════════════════════════════
 @app.post("/api/messages")
 async def create_message(req: FrontendMessage):
     user_id = req.user_id.strip()
     content = req.content.strip()
+    agent_id = req.agent_id or "main"
 
     if not user_id:
         raise HTTPException(status_code=400, detail="missing user_id")
@@ -100,7 +126,11 @@ async def create_message(req: FrontendMessage):
     ensure_allowed_user(user_id)
 
     if not req.session_id:
-        req.session_id = build_session_id(user_id)
+        req.session_id = build_session_id(user_id, agent_id)
+
+    req.agent_id = agent_id
+    req.metadata = dict(req.metadata)
+    req.metadata["agent_id"] = agent_id
 
     result = await scheduler_client.create_task(req)
 
@@ -110,18 +140,31 @@ async def create_message(req: FrontendMessage):
             detail=result.error or "failed to create task",
         )
 
+    conversation_manager.add_message(
+        user_id=user_id,
+        agent_id=agent_id,
+        msg={"role": "user", "content": content, "task_id": result.task_id},
+    )
+
     return result.model_dump()
 
 
+# ═══════════════════════════════════════════════════════════════
+# SSE 事件流（支持 agent_id 过滤）
+# ═══════════════════════════════════════════════════════════════
 @app.get("/api/events")
 async def events(
     user_id: str = Query(..., min_length=1),
     session_id: str = Query(default=""),
+    agent_id: str = Query(default=""),
 ):
     ensure_allowed_user(user_id)
 
     async def stream():
-        async for item in sse_hub.event_stream(user_id=user_id):
+        async for item in sse_hub.event_stream(
+            user_id=user_id,
+            agent_id=agent_id or None,
+        ):
             yield item
 
     return StreamingResponse(
@@ -133,3 +176,393 @@ async def events(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# 智能体列表
+# ═══════════════════════════════════════════════════════════════
+@app.get("/api/agents")
+async def list_agents(
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    config_path = os.getenv("AGENT_LIST_PATH", "/app/config/agent_list.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {"agents": [], "error": f"agent_list.json not found at {config_path}"}
+    except json.JSONDecodeError:
+        return {"agents": [], "error": "agent_list.json is not valid JSON"}
+
+    if "default" in data:
+        default_agents = data["default"]
+        if "agents" in default_agents:
+            default_agents = default_agents["agents"]
+        agent_ids = sorted(default_agents.keys())
+    else:
+        # legacy flat format
+        agent_ids = sorted(k for k in data.keys() if k not in ("users", "default"))
+
+    return {"agents": [{"agent_id": aid, "is_default": aid == "main"} for aid in agent_ids]}
+
+
+# ═══════════════════════════════════════════════════════════════
+# 对话管理
+# ═══════════════════════════════════════════════════════════════
+@app.get("/api/conversations")
+async def list_conversations(
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    convs = conversation_manager.list_conversations(user_id)
+    return {"conversations": convs}
+
+
+@app.post("/api/conversations")
+async def create_conversation(
+    req: CreateConversationRequest,
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    agent_id = req.agent_id.strip() or "main"
+    conv = conversation_manager.create_conversation(user_id, agent_id)
+    return ConversationSummary(
+        agent_id=conv.agent_id,
+        user_id=conv.user_id,
+        message_count=len(conv.messages),
+        created_at=conv.created_at,
+        last_active=conv.last_active,
+    ).model_dump()
+
+
+@app.delete("/api/conversations/{agent_id}")
+async def delete_conversation(
+    agent_id: str,
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    deleted = conversation_manager.delete_conversation(user_id, agent_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return {"ok": True, "agent_id": agent_id}
+
+
+# ═══════════════════════════════════════════════════════════════
+# 用户 & 渠道
+# ═══════════════════════════════════════════════════════════════
+@app.get("/api/user/profile")
+async def get_user_profile(
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    result = await user_client.get_user(user_id)
+    if not result.get("ok"):
+        return {"ok": False, "user_id": user_id, "error": result.get("error", "user not found")}
+
+    try:
+        user_data = json.loads(result.get("user_json", "{}"))
+    except json.JSONDecodeError:
+        user_data = {}
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "profile": user_data,
+        "channels": user_data.get("channels", {}),
+    }
+
+
+@app.put("/api/user/profile")
+async def update_user_profile(
+    req: UserProfileUpdate,
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    if req.user_json is not None:
+        try:
+            json.loads(req.user_json)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="user_json is not valid JSON")
+
+    result = await user_client.upsert_user(user_id, req.user_json or "{}")
+    return result
+
+
+@app.post("/api/user/channels")
+async def bind_channel(
+    req: BindChannelRequest,
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    result = await user_client.bind_channel(
+        user_id=user_id,
+        channel=req.channel,
+        channel_user_id=req.channel_user_id,
+        priority=req.priority,
+    )
+    return result
+
+
+@app.delete("/api/user/channels/{channel}")
+async def unbind_channel(
+    channel: str,
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    result = await user_client.unbind_channel(user_id, channel)
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════
+# 工作空间
+# ═══════════════════════════════════════════════════════════════
+WORKSPACE_USERS_BASE = os.getenv("WORKSPACE_USERS_BASE", "/app/workspace/users")
+
+
+def _user_workspace(user_id: str) -> str:
+    return f"{WORKSPACE_USERS_BASE}/{user_id}"
+
+def _clean_path(path: str) -> str:
+    return path.lstrip("/")
+
+@app.get("/api/workspace/files")
+async def list_workspace_files(
+    user_id: str = Query(..., min_length=1),
+    path: str = Query(default=""),
+):
+    ensure_allowed_user(user_id)
+
+    result = await tool_client.list_workspace(workspace_dir=_user_workspace(user_id))
+    raw = result.get("output", "")
+
+    # Parse all entries from tool-runtime output
+    all_entries: list[dict] = []
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("[dir]"):
+            name = line[5:].strip()
+            all_entries.append({"name": name, "path": name, "type": "dir", "size": 0})
+        elif line.startswith("[file]"):
+            parts = line[6:].rsplit("(", 1)
+            name = parts[0].strip()
+            try:
+                size_str = parts[1].replace("bytes)", "").strip() if len(parts) > 1 else "0"
+                size = int(size_str)
+            except (ValueError, IndexError):
+                size = 0
+            all_entries.append({"name": name, "path": name, "type": "file", "size": size})
+
+    # Build a set of all directory paths for quick lookup
+    dir_paths = {e["path"] for e in all_entries if e["type"] == "dir"}
+    # Also include implicit directories (parent paths of any entry)
+    for e in all_entries:
+        parts = e["path"].split("/")
+        for i in range(1, len(parts)):
+            dir_paths.add("/".join(parts[:i]))
+
+    # Normalize current path
+    current = _clean_path(path)
+    prefix = (current + "/") if current else ""
+
+    # Find only direct children of current path
+    seen: set[str] = set()
+    files: list[dict] = []
+    for e in all_entries:
+        rel = e["path"]
+        # Must be under current path, not the path itself
+        if not rel.startswith(prefix) or rel == current:
+            continue
+        # Get the part after the prefix
+        sub = rel[len(prefix):]
+        # Get the first component (direct child name)
+        first = sub.split("/")[0]
+        if first in seen:
+            continue
+        seen.add(first)
+
+        child_path = prefix + first
+        is_dir = child_path in dir_paths
+        size = e["size"] if e["type"] == "file" and not is_dir else 0
+        files.append({
+            "name": first,
+            "path": child_path,
+            "type": "dir" if is_dir else "file",
+            "size": size,
+        })
+
+    return {"files": files, "ok": result.get("ok", False)}
+
+
+@app.get("/api/workspace/files/read")
+async def read_workspace_file(
+    user_id: str = Query(..., min_length=1),
+    path: str = Query(..., min_length=1),
+    encoding: str = Query(default="utf-8"),
+):
+    ensure_allowed_user(user_id)
+
+    result = await tool_client.file_read(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
+    return {
+        "ok": result.get("ok", False),
+        "path": path,
+        "encoding": encoding,
+        "content": result.get("output", ""),
+        "error": result.get("error", ""),
+    }
+
+
+@app.get("/api/workspace/files/raw")
+async def raw_workspace_file(
+    user_id: str = Query(..., min_length=1),
+    path: str = Query(..., min_length=1),
+):
+    """返回原始文件内容（用于图片等二进制预览）。
+
+    当前通过 tool-runtime 的 file-read 获取文本内容。
+    完整二进制支持需要 tool-runtime 暴露 HTTP 文件服务或挂载共享 PV。
+    """
+    ensure_allowed_user(user_id)
+
+    result = await tool_client.file_read(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error", "file not found"))
+
+    content = result.get("output", "")
+
+    # 推断 MIME 类型
+    ext = Path(path).suffix.lower()
+    mime_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".bmp": "image/bmp",
+        ".ico": "image/x-icon",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".json": "application/json",
+        ".yaml": "text/yaml",
+        ".yml": "text/yaml",
+        ".py": "text/x-python",
+        ".html": "text/html",
+        ".css": "text/css",
+        ".js": "text/javascript",
+        ".xml": "text/xml",
+        ".log": "text/plain",
+    }
+    media_type = mime_map.get(ext, "application/octet-stream")
+
+    from fastapi.responses import Response
+    return Response(content=content.encode("utf-8"), media_type=media_type)
+
+
+@app.post("/api/workspace/files/write")
+async def write_workspace_file(
+    req: WorkspaceFileWrite,
+    user_id: str = Query(..., min_length=1),
+    path: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    result = await tool_client.file_write(path=_clean_path(path), text=req.text, workspace_dir=_user_workspace(user_id))
+    return {
+        "ok": result.get("ok", False),
+        "path": path,
+        "output": result.get("output", ""),
+        "error": result.get("error", ""),
+    }
+
+
+@app.delete("/api/workspace/files")
+async def delete_workspace_file(
+    user_id: str = Query(..., min_length=1),
+    path: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    result = await tool_client.delete_file(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
+    return {
+        "ok": result.get("ok", False),
+        "path": path,
+        "output": result.get("output", ""),
+        "error": result.get("error", ""),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# 日志
+# ═══════════════════════════════════════════════════════════════
+@app.get("/api/logs/orchestrator")
+async def get_orchestrator_logs(
+    user_id: str = Query(..., min_length=1),
+    lines: int = Query(default=200, ge=1, le=2000),
+    agent_id: str = Query(default=""),
+):
+    """获取 agent-orchestrator-service 中当前用户的相关日志。
+
+    通过 kubectl logs 读取 pod 日志并 grep 过滤 user_id。
+    需要 dashboard-sa 或同等 RBAC 权限。
+    """
+    ensure_allowed_user(user_id)
+
+    namespace = os.getenv("K8S_NAMESPACE", "agent")
+    label_selector = "app=agent-orchestrator-service"
+
+    cmd = [
+        "kubectl", "logs",
+        "-n", namespace,
+        "-l", label_selector,
+        "--tail", str(lines),
+        "--timestamps",
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=10,
+        )
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "kubectl logs timed out", "lines": []}
+    except FileNotFoundError:
+        return {"ok": False, "error": "kubectl not found in PATH", "lines": []}
+
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": stderr.decode("utf-8", errors="replace").strip(),
+            "lines": [],
+        }
+
+    raw = stdout.decode("utf-8", errors="replace")
+    filtered: list[str] = []
+    for line in raw.split("\n"):
+        if user_id in line:
+            if agent_id and agent_id not in line:
+                continue
+            filtered.append(line.strip())
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "agent_id": agent_id or None,
+        "total_lines": len(filtered),
+        "lines": filtered[-lines:],
+    }

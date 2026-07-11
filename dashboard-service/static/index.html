@@ -217,7 +217,7 @@ async function refreshPods() {
         <td>${p.containers.map(c => `${c.name}${c.ready ? '✓' : '✗'}`).join(', ')}</td>
         <td>${p.containers.map(c => c.image.split('/').pop()).join(', ')}</td>
         <td>${p.containers.map(c => c.restarts).join(', ')}</td>
-        <td><button class="btn" onclick="restartOne('${p.name.split('-')[0]}')">重启</button></td>
+        <td><button class="btn" onclick="restartOne('${p.deployment}')">重启</button></td>
       </tr>`).join('') || '<tr><td colspan="6">无数据</td></tr>';
 
     const stbody = document.querySelector('#svc-table tbody');
@@ -338,7 +338,7 @@ const ALL_SERVICES = [
 async function refreshDeployTab() {
   const data = await fetch('/api/pods').then(r => r.json());
   const sel = document.getElementById('restart-select');
-  const names = [...new Set(data.pods.map(p => p.name.split('-')[0]))];
+  const names = [...new Set(data.pods.map(p => p.deployment))].filter(Boolean);
   sel.innerHTML = names.map(n => `<option value="${n}">${n}</option>`).join('');
 
   const checks = document.getElementById('deploy-checks');

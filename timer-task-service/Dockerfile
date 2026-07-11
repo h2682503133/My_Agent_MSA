@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /service
 
 COPY requirements.txt .
@@ -25,6 +27,8 @@ ENV PYTHONPATH=/service:/service/app/generated
 ENV TIMER_GRPC_HOST=0.0.0.0
 ENV TIMER_GRPC_PORT=5103
 ENV SCHEDULER_TARGET=task-scheduler-service.agent.svc.cluster.local:5100
+
+ENV TZ=Asia/Shanghai
 
 EXPOSE 5103
 CMD ["python", "-m", "app.main"]

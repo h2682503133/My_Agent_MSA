@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# ── 登录 ──
 class LoginRequest(BaseModel):
     user_id: str = Field(..., min_length=1)
     session_id: Optional[str] = None
@@ -15,6 +16,7 @@ class LoginResponse(BaseModel):
     error: str = ""
 
 
+# ── 消息 / 对话 ──
 class FrontendMessage(BaseModel):
     user_id: str = Field(..., min_length=1)
     session_id: Optional[str] = None
@@ -52,3 +54,39 @@ class TaskEvent(BaseModel):
     error: str = ""
     delivery_target: Optional[DeliveryTarget] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ── 对话管理 ──
+class CreateConversationRequest(BaseModel):
+    agent_id: str = Field(default="main", min_length=1)
+
+
+class ConversationSummary(BaseModel):
+    agent_id: str
+    user_id: str
+    message_count: int
+    created_at: float
+    last_active: float
+
+
+# ── 用户 & 渠道 ──
+class UserProfileUpdate(BaseModel):
+    user_json: Optional[str] = None
+
+
+class BindChannelRequest(BaseModel):
+    channel: str = Field(..., min_length=1)
+    channel_user_id: str = Field(..., min_length=1)
+    priority: int = 0
+
+
+# ── 工作空间 ──
+class WorkspaceFileWrite(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+class WorkspaceFileInfo(BaseModel):
+    name: str
+    path: str
+    type: str  # "file" | "dir"
+    size: int = 0

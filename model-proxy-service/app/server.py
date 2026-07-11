@@ -38,6 +38,14 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
                 params=dict(request.params),
             )
 
+            # 成功日志：模型ID + 最后一条用户消息（截断80字符）
+            last_msg = messages[-1]["content"] if messages else ""
+            log(
+                f"ChatCompletion success "
+                f"model={result.get('model', '?')} "
+                f"content={last_msg[:80]}{'...' if len(last_msg) > 80 else ''}"
+            )
+
             return model_proxy_pb2.ChatCompletionResponse(
                 ok=True,
                 text=result["text"],
