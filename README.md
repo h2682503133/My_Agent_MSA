@@ -15,8 +15,7 @@ task-scheduler-service:5100 (槽位调度 + 事件总线)
   ↓ gRPC
 agent-orchestrator-service:5300 (Agent 运行时编排)
   ├── openviking-context-service:5301 (RAG 上下文检索)
-  ├── model-proxy-service:5302 (统一模型调用)
-  │     └── model-serving:8000 (Ollama / vLLM)
+  ├── model-proxy-service:5302 (统一模型调用 → host.docker.internal:11434)
   ├── tool-runtime-service:5303 (工具执行 + workspace)
   └── timer-task-service:5103 (定时任务)
         └── task-scheduler-service:5100 (到期回调)
@@ -38,7 +37,6 @@ user-service:5104 (用户信息)
 | model-proxy-service | 5302 | gRPC | 统一模型调用适配 |
 | tool-runtime-service | 5303 | gRPC | 工具执行、skill、workspace |
 | user-service | 5104 | gRPC | 用户信息与多渠道绑定 |
-| model-serving | 8000 | HTTP | Ollama / vLLM 兼容 API |
 
 ## 核心功能
 
@@ -94,32 +92,29 @@ Agent 运行时支持 `main`、`tool`、`reader` 三种智能体角色，通过 
 
 ```
 My_Agent_MSA/
-├── frontend-service/           # Nginx 前端静态服务
+├── agent-orchestrator-service/ # gRPC Agent 编排服务
+├── task-scheduler-service/     # gRPC 任务调度服务
+├── timer-task-service/         # gRPC 定时任务服务
 ├── gateway-backend-service/    # FastAPI Web 网关 + SSE
 ├── qq-llbot-service/           # QQ LLBot 渠道网关
-│   ├── app/
-│   │   ├── main.py             # 入口：并行启动 Satori + gRPC 事件订阅
-│   │   ├── qq_bridge.py        # Satori QQ 消息收发
-│   │   ├── scheduler_client.py # 异步 gRPC 客户端
-│   │   └── config.py           # 环境变量配置
-│   ├── proto/                  # task_scheduler.proto
-│   ├── scripts/gen_proto.sh    # proto 生成脚本
-│   ├── Dockerfile
-│   └── requirements.txt
-├── task-scheduler-service/     # gRPC 任务调度服务
-├── agent-orchestrator-service/ # gRPC Agent 编排服务
-├── openviking-context-service/ # gRPC 上下文检索服务
 ├── model-proxy-service/        # gRPC 模型代理服务
+├── openviking-context-service/ # gRPC 上下文检索服务
 ├── tool-runtime-service/       # gRPC 工具运行服务
-├── timer-task-service/         # gRPC 定时任务服务
 ├── user-service/               # gRPC 用户服务
-├── config/                     # NFS 持久化配置
-│   ├── agent_list.json         # 智能体配置
-│   ├── model_list.json         # 模型列表
-│   └── system_prompt/          # 系统提示词
-├── k8s_yaml/                   # Kubernetes 部署清单
-├── nfs-pv-template-apply/      # NFS PV/PVC 模板
-└── setup_my_agent_nfs.sh       # NFS 环境初始化脚本
+├── frontend-service/           # Nginx 前端静态服务
+├── config/                     # 持久化配置（同步到 NFS）
+│   ├── agent_list.json
+│   ├── model_list.json
+│   └── system_prompt/
+├── deploy/                     # 部署相关（脚本 + YAML）
+│   ├── setup-nfs.sh            # NFS 初始化
+│   ├── sync-config.sh          # 同步 config → NFS
+│   ├── apply-pv.sh             # 创建 PV/PVC
+│   ├── services/               # K8s 服务 YAML
+│   └── tool-runtime-apply.sh   # tool-runtime 外部 VM 部署
+├── deploy-all.ps1              # 一键部署（PowerShell）
+├── deploy-all.bat              # 一键部署（双击运行）
+└── 常见问题处理.md
 ```
 
 ## 快速开始
@@ -127,38 +122,41 @@ My_Agent_MSA/
 ### 前置条件
 
 - Kubernetes 集群（推荐 Docker Desktop + WSL2）
-- NFS 服务端（运行 `setup_my_agent_nfs.sh` 初始化）
+- NFS 服务端（WSL 内运行 `deploy/setup-nfs.sh` 初始化）
 - Docker（用于构建镜像）
 - LLBot / Satori 适配器（QQ 渠道接入需要）
 
-### 1. 初始化 NFS
+### 一键部署（推荐）
+
+在 Windows 上双击 `deploy-all.bat`，按提示选择要部署的服务，自动完成 `docker build` + `kubectl apply`。
+
+### 手动部署
+
+#### 1. 初始化 NFS（WSL 内执行）
 
 ```bash
-sudo ./setup_my_agent_nfs.sh
+sudo bash deploy/setup-nfs.sh
 ```
 
-### 2. 构建镜像
+#### 2. 同步配置到 NFS（WSL 内执行）
 
 ```bash
-docker build -t agent/agent-orchestrator-service:v11 agent-orchestrator-service/
-docker build -t agent/task-scheduler-service:v5 task-scheduler-service/
-docker build -t agent/timer-task-service:v2 timer-task-service/
-docker build -t agent/gateway-backend-service:v4 gateway-backend-service/
-docker build -t agent/qq-llbot-service:v1 qq-llbot-service/
-docker build -t agent/model-proxy-service:v1 model-proxy-service/
-docker build -t agent/openviking-context-service:v1 openviking-context-service/
-docker build -t agent/tool-runtime-service:v1 tool-runtime-service/
-docker build -t agent/user-service:v1 user-service/
-docker build -t agent/frontend-service:v1 frontend-service/
+bash deploy/sync-config.sh
 ```
 
-### 3. 部署到 K8s
+#### 3. 创建 PV/PVC（WSL 内执行）
 
 ```bash
-kubectl apply -f k8s_yaml/
+NFS_SERVER=172.29.219.49 NFS_ROOT=/srv/nfs/my-agent bash deploy/apply-pv.sh
 ```
 
-### 4. 本地访问
+#### 4. 部署服务
+
+```bash
+kubectl apply -f deploy/services/
+```
+
+### 本地访问
 
 ```bash
 # Web 渠道
@@ -209,8 +207,8 @@ LLBot 运行在 Windows 宿主机，使用 `SATORI_HOST=host.docker.internal` �
 | gateway-backend-service | `agent/gateway-backend-service` | v4 |
 | qq-llbot-service | `agent/qq-llbot-service` | v1 |
 | frontend-service | `agent/frontend-service` | v1 |
-| model-proxy-service | `agent/model-proxy-service` | v1 |
-| openviking-context-service | `agent/openviking-context-service` | v1 |
+| model-proxy-service | `agent/model-proxy-service` | v3 |
+| openviking-context-service | `agent/openviking-context-service` | v17 |
 | tool-runtime-service | `agent/tool-runtime-service` | v1 |
 | user-service | `agent/user-service` | v1 |
 

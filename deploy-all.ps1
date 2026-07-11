@@ -1,0 +1,191 @@
+﻿# ============================================================
+# My_Agent_MSA 一键部署脚本
+# 在项目根目录 PowerShell 中运行
+# ============================================================
+
+$ErrorActionPreference = "Stop"
+
+# ─── 镜像版本配置 ───────────────────────────────────────────
+$IMAGES = @{
+    "agent-orchestrator-service"   = @{ dir = "agent-orchestrator-service";   tag = "v11" }
+    "task-scheduler-service"       = @{ dir = "task-scheduler-service";       tag = "v5"  }
+    "timer-task-service"           = @{ dir = "timer-task-service";           tag = "v2"  }
+    "gateway-backend-service"      = @{ dir = "gateway-backend-service";      tag = "v4"  }
+    "qq-llbot-service"             = @{ dir = "qq-llbot-service";             tag = "v1"  }
+    "model-proxy-service"          = @{ dir = "model-proxy-service";          tag = "v3"  }
+    "openviking-context-service"   = @{ dir = "openviking-context-service";   tag = "v17" }
+    "tool-runtime-service"         = @{ dir = "tool-runtime-service";         tag = "v1"  }
+    "user-service"                 = @{ dir = "user-service";                 tag = "v1"  }
+    "frontend-service"             = @{ dir = "frontend-service";             tag = "v1"  }
+}
+
+# 服务名 → YAML 文件映射
+$YAML_MAP = @{
+    "agent-orchestrator-service"   = "deploy/services/agent-orchestrator-service.yaml"
+    "task-scheduler-service"       = "deploy/services/task-scheduler-service.yaml"
+    "timer-task-service"           = "deploy/services/timer-task-service.yaml"
+    "gateway-backend-service"      = "deploy/services/gateway-backend-service.yaml"
+    "qq-llbot-service"             = "deploy/services/qq-llbot-service.yaml"
+    "model-proxy-service"          = "deploy/services/model-proxy-service.yaml"
+    "openviking-context-service"   = "deploy/services/openviking-context-service.yaml"
+    "user-service"                 = "deploy/services/user-service.yaml"
+    "frontend-service"             = "deploy/services/frontend-service.yaml"
+}
+
+# tool-runtime 使用特殊部署脚本
+$TOOL_RUNTIME_YAML = "deploy/services/tool-runtime-service.yaml"
+
+# ─── 辅助函数 ───────────────────────────────────────────────
+
+function Write-Step {
+    param([string]$Text)
+    Write-Host "`n>>> $Text" -ForegroundColor Cyan
+}
+
+function Write-OK {
+    param([string]$Text)
+    Write-Host "  [OK] $Text" -ForegroundColor Green
+}
+
+function Write-Warn {
+    param([string]$Text)
+    Write-Host "  [WARN] $Text" -ForegroundColor Yellow
+}
+
+# ─── 检查前置条件 ───────────────────────────────────────────
+
+Write-Step "检查前置条件"
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Host "[ERROR] 找不到 docker，请安装 Docker Desktop" -ForegroundColor Red
+    exit 1
+}
+Write-OK "docker 已就绪"
+
+if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {
+    Write-Host "[ERROR] 找不到 kubectl，请安装或启用 Docker Desktop 的 Kubernetes" -ForegroundColor Red
+    exit 1
+}
+Write-OK "kubectl 已就绪"
+
+# 检查 kubectl 能否连接集群
+$clusterCheck = kubectl cluster-info 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] kubectl 无法连接集群，请确认 Docker Desktop Kubernetes 已启动" -ForegroundColor Red
+    exit 1
+}
+Write-OK "K8s 集群已连接"
+
+# ─── 交互式服务选择 ─────────────────────────────────────────
+
+Write-Step "选择要部署的服务"
+
+$serviceNames = $IMAGES.Keys | Sort-Object
+$selected = @{}
+
+Write-Host "`n输入 y/n 选择每个服务，直接回车使用默认值 [y]"
+Write-Host "输入 'all' 全选，输入 'none' 全不选`n"
+
+foreach ($svc in $serviceNames) {
+    $tag = $IMAGES[$svc].tag
+    $response = Read-Host "  部署 $svc ($tag)? [Y/n]"
+    if ($response -eq 'all') {
+        foreach ($s in $serviceNames) { $selected[$s] = $true }
+        break
+    }
+    if ($response -eq 'none') {
+        foreach ($s in $serviceNames) { $selected[$s] = $false }
+        break
+    }
+    $selected[$svc] = ($response -ne 'n' -and $response -ne 'N')
+}
+
+# 汇总确认
+Write-Host "`n将要部署的服务：" -ForegroundColor Yellow
+$toDeploy = @()
+foreach ($svc in $serviceNames) {
+    if ($selected[$svc]) {
+        $tag = $IMAGES[$svc].tag
+        Write-Host "  [✓] $svc ($tag)"
+        $toDeploy += $svc
+    } else {
+        Write-Host "  [ ] $svc" -ForegroundColor DarkGray
+    }
+}
+
+if ($toDeploy.Count -eq 0) {
+    Write-Host "`n没有选择任何服务，退出。" -ForegroundColor Yellow
+    exit 0
+}
+
+$confirm = Read-Host "`n确认开始部署? [Y/n]"
+if ($confirm -eq 'n' -or $confirm -eq 'N') {
+    Write-Host "已取消。"
+    exit 0
+}
+
+# ─── Docker 构建 ────────────────────────────────────────────
+
+Write-Step "Docker 构建"
+
+foreach ($svc in $toDeploy) {
+    $dir = $IMAGES[$svc].dir
+    $tag = $IMAGES[$svc].tag
+    $image = "agent/$($svc):$tag"
+
+    if (-not (Test-Path $dir)) {
+        Write-Warn "$dir 目录不存在，跳过 $svc"
+        continue
+    }
+    if (-not (Test-Path "$dir/Dockerfile")) {
+        Write-Warn "$dir/Dockerfile 不存在，跳过 $svc"
+        continue
+    }
+
+    Write-Host "  构建 $image ..."
+    docker build -t $image $dir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [FAIL] $svc 构建失败" -ForegroundColor Red
+        exit 1
+    }
+    Write-OK "$svc 构建完成"
+}
+
+# ─── K8s 部署 ───────────────────────────────────────────────
+
+Write-Step "K8s 部署"
+
+# 确保 namespace 存在
+kubectl create namespace agent --dry-run=client -o yaml | kubectl apply -f -
+
+foreach ($svc in $toDeploy) {
+    $yamlFile = $YAML_MAP[$svc]
+    if (-not $yamlFile) {
+        Write-Warn "未找到 $svc 的 YAML 映射，跳过"
+        continue
+    }
+    if (-not (Test-Path $yamlFile)) {
+        Write-Warn "$yamlFile 不存在，跳过 $svc"
+        continue
+    }
+
+    Write-Host "  部署 $svc ..."
+    kubectl apply -f $yamlFile
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [FAIL] $svc 部署失败" -ForegroundColor Red
+        exit 1
+    }
+    Write-OK "$svc 已部署"
+}
+
+# ─── 完成 ───────────────────────────────────────────────────
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "  部署完成！" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+
+Write-Host "`n检查 Pod 状态："
+kubectl -n agent get pods
+
+Write-Host "`n检查 Service："
+kubectl -n agent get svc
