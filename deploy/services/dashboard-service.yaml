@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-service
+  namespace: agent
+  labels:
+    app: dashboard-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard-service
+  template:
+    metadata:
+      labels:
+        app: dashboard-service
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: dashboard-sa
+      containers:
+        - name: dashboard-service
+          image: docker.io/agent/dashboard-service:v2
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5601
+          env:
+            - name: CONFIG_ROOT
+              value: "/app/config"
+            - name: NAMESPACE
+              value: "agent"
+          volumeMounts:
+            - name: my-agent-config
+              mountPath: /app/config
+      volumes:
+        - name: my-agent-config
+          persistentVolumeClaim:
+            claimName: my-agent-config-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-service
+  namespace: agent
+  labels:
+    app: dashboard-service
+spec:
+  type: ClusterIP
+  selector:
+    app: dashboard-service
+  ports:
+    - name: http
+      port: 5601
+      targetPort: 5601
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard-sa
+  namespace: agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dashboard-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "endpoints", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dashboard-binding
+subjects:
+  - kind: ServiceAccount
+    name: dashboard-sa
+    namespace: agent
+roleRef:
+  kind: ClusterRole
+  name: dashboard-role
+  apiGroup: rbac.authorization.k8s.io

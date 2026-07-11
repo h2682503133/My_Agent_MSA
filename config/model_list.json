@@ -6,7 +6,7 @@
       "api_url": "https://api.moonshot.cn/v1/chat/completions",
       "method": "POST",
       "model": "kimi-k2-thinking",
-      "api_key_env": "sk-kTREKQEz52lwLMLjPAAe6WKqFpbuMt12DawZqIYVUzXY1BtZ",
+      "api_key_env": "API_KEY",
       "temperature": 0.7,
       "model_params": {}
     },

@@ -16,7 +16,7 @@ spec:
       containers:
       - name: timer-task-service
         image: agent/timer-task-service:v2
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 5103
         env:

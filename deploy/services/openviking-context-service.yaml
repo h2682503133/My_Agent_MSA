@@ -16,7 +16,7 @@ spec:
       containers:
         - name: openviking-context-service
           image: agent/openviking-context-service:v17
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 5301
           env:

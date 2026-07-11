@@ -112,6 +112,7 @@ My_Agent_MSA/
 │   ├── apply-pv.sh             # 创建 PV/PVC
 │   ├── services/               # K8s 服务 YAML
 │   └── tool-runtime-apply.sh   # tool-runtime 外部 VM 部署
+├── dashboard-service/          # 管理控制面板
 ├── deploy-all.ps1              # 一键部署（PowerShell）
 ├── deploy-all.bat              # 一键部署（双击运行）
 └── 常见问题处理.md
@@ -201,6 +202,7 @@ LLBot 运行在 Windows 宿主机，使用 `SATORI_HOST=host.docker.internal` �
 
 | 服务 | 镜像 | 版本 |
 |------|------|------|
+| dashboard-service | `agent/dashboard-service` | v1 |
 | agent-orchestrator-service | `agent/agent-orchestrator-service` | v11 |
 | task-scheduler-service | `agent/task-scheduler-service` | v5 |
 | timer-task-service | `agent/timer-task-service` | v2 |

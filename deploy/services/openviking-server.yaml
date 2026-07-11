@@ -51,7 +51,7 @@ spec:
       containers:
         - name: openviking
           image: ghcr.io/volcengine/openviking:v0.3.6
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 1933
           env:

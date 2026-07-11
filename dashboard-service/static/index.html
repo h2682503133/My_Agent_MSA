@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My_Agent Dashboard</title>
+<style>
+:root {
+  --bg: #1a1a2e; --panel: #16213e; --accent: #0f3460;
+  --text: #e0e0e0; --dim: #8892a4; --green: #4caf50;
+  --red: #f44336; --yellow: #ff9800; --blue: #2196f3;
+  --border: #2a2a4a;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+header { background: var(--panel); padding: 12px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; }
+header h1 { font-size: 1.2rem; color: var(--accent); }
+nav { display: flex; gap: 4px; }
+nav button { background: none; border: 1px solid transparent; color: var(--dim); padding: 6px 16px; cursor: pointer; border-radius: 4px; font-size: 0.9rem; }
+nav button:hover, nav button.active { color: var(--text); border-color: var(--accent); background: rgba(15,52,96,0.3); }
+main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+.tab { display: none; }
+.tab.active { display: block; }
+h2 { font-size: 1.1rem; margin-bottom: 16px; color: var(--dim); }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.card h3 { font-size: 0.95rem; margin-bottom: 12px; color: var(--accent); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+th { color: var(--dim); font-weight: 500; }
+.status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; }
+.status.running { background: rgba(76,175,80,0.2); color: var(--green); }
+.status.pending { background: rgba(255,152,0,0.2); color: var(--yellow); }
+.status.failed { background: rgba(244,67,54,0.2); color: var(--red); }
+.btn { padding: 6px 14px; border: 1px solid var(--accent); background: rgba(15,52,96,0.3); color: var(--text); border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.btn:hover { background: var(--accent); }
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn.danger:hover { background: var(--red); color: #fff; }
+.btn.green { border-color: var(--green); color: var(--green); }
+.btn.green:hover { background: var(--green); color: #fff; }
+textarea, pre.logs { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 12px; font-family: 'Consolas', monospace; font-size: 0.8rem; resize: vertical; }
+textarea { min-height: 300px; }
+pre.logs { max-height: 500px; overflow-y: auto; white-space: pre-wrap; }
+select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; }
+label.file-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; font-size: 0.85rem; }
+label.file-item:hover { color: var(--accent); }
+.check-group { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+.check-group label { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer; }
+.toast { position: fixed; top: 16px; right: 16px; padding: 10px 20px; border-radius: 6px; font-size: 0.85rem; z-index: 999; animation: fadeIn 0.3s; }
+.toast.ok { background: rgba(76,175,80,0.9); color: #fff; }
+.toast.err { background: rgba(244,67,54,0.9); color: #fff; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--dim); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚙️ My_Agent Dashboard</h1>
+  <nav>
+    <button data-tab="pods" class="active">Pod 状态</button>
+    <button data-tab="config">配置管理</button>
+    <button data-tab="logs">日志查看</button>
+    <button data-tab="deploy">部署管理</button>
+    <button data-tab="sprompt">System Prompt</button>
+  </nav>
+  <span id="status" style="margin-left:auto;font-size:0.8rem;color:var(--dim)"></span>
+</header>
+
+<main>
+  <!-- Pod 状态 -->
+  <div id="tab-pods" class="tab active">
+    <h2>Pod 状态</h2>
+    <div class="card">
+      <table id="pod-table">
+        <thead><tr><th>Pod</th><th>状态</th><th>容器</th><th>镜像</th><th>重启</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <h2>Service</h2>
+    <div class="card">
+      <table id="svc-table">
+        <thead><tr><th>名称</th><th>类型</th><th>ClusterIP</th><th>端口</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 配置管理 -->
+  <div id="tab-config" class="tab">
+    <h2>配置文件</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>文件列表</h3>
+        <div id="config-list"></div>
+      </div>
+      <div class="card">
+        <h3>编辑 <span id="config-filename"></span></h3>
+        <textarea id="config-editor" placeholder="选择左侧文件编辑..."></textarea>
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <button class="btn green" onclick="saveConfig()">保存</button>
+          <button class="btn" onclick="reloadConfig()">重新加载</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日志查看 -->
+  <div id="tab-logs" class="tab">
+    <h2>日志查看</h2>
+    <div class="card" style="margin-bottom:12px;">
+      <h3>快捷入口</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn green" onclick="quickLogs('task-scheduler-service')">Scheduler</button>
+        <button class="btn green" onclick="quickLogs('tool-runtime-service')">Tool Runtime</button>
+        <button class="btn green" onclick="quickLogs('agent-orchestrator-service')">Orchestrator</button>
+      </div>
+    </div>
+    <div class="card">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <select id="log-pod-select" onchange="loadLogs()"></select>
+        <select id="log-container-select" onchange="loadLogs()"><option value="">默认容器</option></select>
+        <input type="number" id="log-tail" value="200" min="10" max="5000" style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;">
+        <button class="btn" onclick="loadLogs()">加载</button>
+        <button class="btn green" onclick="streamLogs()">实时跟踪</button>
+        <button class="btn" onclick="stopStream()">停止</button>
+      </div>
+      <pre class="logs" id="log-output" style="margin-top:12px;">选择 Pod 查看日志...</pre>
+    </div>
+  </div>
+
+  <!-- System Prompt -->
+  <div id="tab-sprompt" class="tab">
+    <h2>System Prompt 管理</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>智能体</h3>
+        <div style="margin-bottom:8px;display:flex;gap:8px;">
+          <input id="sp-agent-input" placeholder="新智能体名称" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;">
+          <button class="btn green" onclick="spAddAgent()">添加</button>
+        </div>
+        <div id="sp-agent-list"></div>
+      </div>
+      <div class="card">
+        <h3 id="sp-editor-title">文件</h3>
+        <div style="margin-bottom:8px;display:flex;gap:8px;">
+          <input id="sp-file-input" placeholder="文件名.md" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;">
+          <button class="btn green" onclick="spAddFile()">添加</button>
+        </div>
+        <textarea id="sp-editor" style="min-height:300px;" placeholder="选择文件编辑..."></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;">
+          <button class="btn green" onclick="spSave()">保存</button>
+          <button class="btn danger" onclick="spDeleteFile()">删除文件</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 部署管理 -->
+  <div id="tab-deploy" class="tab">
+    <h2>部署管理</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>重启服务</h3>
+        <select id="restart-select"></select>
+        <button class="btn danger" onclick="restartService()" style="margin-left:8px;">重启</button>
+      </div>
+      <div class="card">
+        <h3>生成部署脚本</h3>
+        <div class="check-group" id="deploy-checks"></div>
+        <button class="btn green" onclick="genDeployScript()" style="margin-top:8px;">生成脚本</button>
+        <pre class="logs" id="deploy-script" style="margin-top:12px;max-height:300px;"></pre>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ─── Tab 切换 ────────────────────────────────────────────
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'pods') refreshPods();
+    if (btn.dataset.tab === 'config') refreshConfigs();
+    if (btn.dataset.tab === 'logs') refreshLogPods();
+    if (btn.dataset.tab === 'deploy') refreshDeployTab();
+    if (btn.dataset.tab === 'sprompt') spRefresh();
+  });
+});
+
+// ─── Toast ────────────────────────────────────────────────
+function toast(msg, ok = true) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2500);
+}
+
+// ─── Pod 状态 ─────────────────────────────────────────────
+async function refreshPods() {
+  try {
+    const [pods, svcs] = await Promise.all([
+      fetch('/api/pods').then(r => r.json()),
+      fetch('/api/services').then(r => r.json())
+    ]);
+    const tbody = document.querySelector('#pod-table tbody');
+    tbody.innerHTML = pods.pods.map(p => `
+      <tr>
+        <td>${p.name}</td>
+        <td><span class="status ${p.status === 'Running' ? 'running' : p.status === 'Pending' ? 'pending' : 'failed'}">${p.status}</span></td>
+        <td>${p.containers.map(c => `${c.name}${c.ready ? '✓' : '✗'}`).join(', ')}</td>
+        <td>${p.containers.map(c => c.image.split('/').pop()).join(', ')}</td>
+        <td>${p.containers.map(c => c.restarts).join(', ')}</td>
+        <td><button class="btn" onclick="restartOne('${p.name.split('-')[0]}')">重启</button></td>
+      </tr>`).join('') || '<tr><td colspan="6">无数据</td></tr>';
+
+    const stbody = document.querySelector('#svc-table tbody');
+    stbody.innerHTML = svcs.services.map(s => `
+      <tr><td>${s.name}</td><td>${s.type}</td><td>${s.clusterIP}</td><td>${s.ports.join(', ')}</td></tr>`).join('') || '<tr><td colspan="4">无数据</td></tr>';
+
+    document.getElementById('status').textContent = `Pods: ${pods.pods.length} | Svc: ${svcs.services.length}`;
+  } catch(e) { toast('加载失败: ' + e, false); }
+}
+
+async function restartOne(name) {
+  const r = await fetch(`/api/restart?service=${name}`, { method: 'POST' }).then(r => r.json());
+  toast(r.ok ? `${name} 重启中...` : r.error, r.ok);
+  if (r.ok) setTimeout(refreshPods, 2000);
+}
+
+// ─── 配置管理 ──────────────────────────────────────────────
+let currentConfigPath = '';
+
+async function refreshConfigs() {
+  const data = await fetch('/api/config').then(r => r.json());
+  const list = document.getElementById('config-list');
+  list.innerHTML = data.files.map(f => `
+    <label class="file-item">
+      <input type="radio" name="config-file" value="${f.path}" onchange="loadConfig('${f.path}')">
+      ${f.path} <span style="color:var(--dim);font-size:0.7rem;">(${f.size}B)</span>
+    </label>`).join('');
+}
+
+async function loadConfig(path) {
+  currentConfigPath = path;
+  document.getElementById('config-filename').textContent = path;
+  const data = await fetch('/api/config/' + path).then(r => r.json());
+  document.getElementById('config-editor').value = data.content;
+}
+
+async function reloadConfig() {
+  if (currentConfigPath) loadConfig(currentConfigPath);
+}
+
+async function saveConfig() {
+  if (!currentConfigPath) return toast('请先选择文件', false);
+  const content = document.getElementById('config-editor').value;
+  const r = await fetch('/api/config/' + currentConfigPath, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: currentConfigPath, content })
+  }).then(r => r.json());
+  toast(r.ok ? '保存成功' : '保存失败', r.ok);
+}
+
+// ─── 日志查看 ──────────────────────────────────────────────
+let logStream = null;
+
+async function quickLogs(name) {
+  const data = await fetch('/api/pods').then(r => r.json());
+  const pod = data.pods.find(p => p.name.startsWith(name));
+  if (pod) {
+    document.getElementById('log-pod-select').value = pod.name;
+    updateLogContainers(pod.containers);
+    loadLogs();
+  } else {
+    toast('未找到 ' + name + ' Pod', false);
+  }
+}
+
+async function refreshLogPods() {
+  const data = await fetch('/api/pods').then(r => r.json());
+  const sel = document.getElementById('log-pod-select');
+  sel.innerHTML = data.pods.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+  if (data.pods.length > 0) {
+    updateLogContainers(data.pods[0].containers);
+  }
+}
+
+function updateLogContainers(containers) {
+  const sel = document.getElementById('log-container-select');
+  sel.innerHTML = '<option value="">默认容器</option>' +
+    containers.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+}
+
+async function loadLogs() {
+  const pod = document.getElementById('log-pod-select').value;
+  const container = document.getElementById('log-container-select').value;
+  const tail = document.getElementById('log-tail').value;
+  if (!pod) return;
+  const params = new URLSearchParams({ pod, tail, container });
+  const data = await fetch('/api/logs?' + params).then(r => r.json());
+  document.getElementById('log-output').textContent = data.logs || data.error || '(无日志)';
+}
+
+async function streamLogs() {
+  stopStream();
+  const pod = document.getElementById('log-pod-select').value;
+  const container = document.getElementById('log-container-select').value;
+  const tail = document.getElementById('log-tail').value;
+  if (!pod) return;
+  const params = new URLSearchParams({ pod, tail, container });
+  const out = document.getElementById('log-output');
+  out.textContent = '';
+
+  logStream = new EventSource('/api/logs/stream?' + params);
+  logStream.onmessage = (e) => { out.textContent += e.data + '\n'; out.scrollTop = out.scrollHeight; };
+  logStream.onerror = () => { stopStream(); out.textContent += '\n--- 流已断开 ---'; };
+}
+
+function stopStream() {
+  if (logStream) { logStream.close(); logStream = null; }
+}
+
+// ─── 部署管理 ──────────────────────────────────────────────
+const ALL_SERVICES = [
+  'dashboard-service',
+  'agent-orchestrator-service', 'task-scheduler-service', 'timer-task-service',
+  'gateway-backend-service', 'qq-llbot-service', 'model-proxy-service',
+  'openviking-context-service', 'tool-runtime-service', 'user-service', 'frontend-service'
+];
+
+async function refreshDeployTab() {
+  const data = await fetch('/api/pods').then(r => r.json());
+  const sel = document.getElementById('restart-select');
+  const names = [...new Set(data.pods.map(p => p.name.split('-')[0]))];
+  sel.innerHTML = names.map(n => `<option value="${n}">${n}</option>`).join('');
+
+  const checks = document.getElementById('deploy-checks');
+  checks.innerHTML = ALL_SERVICES.map(s => `
+    <label><input type="checkbox" value="${s}" checked> ${s}</label>`).join('');
+}
+
+async function restartService() {
+  const name = document.getElementById('restart-select').value;
+  if (!name) return;
+  await restartOne(name);
+}
+
+async function genDeployScript() {
+  const checked = [...document.querySelectorAll('#deploy-checks input:checked')].map(c => c.value);
+  const params = new URLSearchParams({ services: checked.join(',') });
+  const data = await fetch('/api/deploy/script?' + params).then(r => r.json());
+  document.getElementById('deploy-script').textContent = data.script;
+}
+
+// ─── System Prompt ─────────────────────────────────────────
+let spAgent = '', spFile = '';
+
+async function spRefresh() {
+  const data = await fetch('/api/system_prompt').then(r => r.json());
+  const list = document.getElementById('sp-agent-list');
+  let html = '';
+  // Global files (GLOBAL_SETTING.md etc.)
+  if (data.global_files && data.global_files.length > 0) {
+    html += '<div style="padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:8px;">';
+    html += '<span style="color:var(--yellow);font-weight:bold;">全局文件</span>';
+    data.global_files.forEach(f => {
+      html += `<div style="cursor:pointer;padding:2px 0 2px 16px;font-size:0.8rem;color:var(--dim)"
+                onclick="spLoadGlobal('${f.name}')">${f.name} (${f.size}B)</div>`;
+    });
+    html += '</div>';
+  }
+  // Agents
+  html += data.agents.map(a => {
+    const files = a.files.map(f =>
+      `<div style="cursor:pointer;padding:2px 0 2px 16px;font-size:0.8rem;color:var(--dim)"
+            onclick="spLoad('${a.name}','${f.name}')">${f.name} (${f.size}B)</div>`).join('');
+    return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="cursor:pointer;color:var(--accent);font-weight:bold;"
+              onclick="spSelectAgent('${a.name}')">${a.name}</span>
+        <button class="btn danger" style="padding:2px 8px;font-size:0.7rem;" onclick="spDeleteAgent('${a.name}')">删除</button>
+      </div>${files}</div>`;
+  }).join('') || '<div style="color:var(--dim);">暂无智能体</div>';
+  list.innerHTML = html;
+}
+
+async function spLoadGlobal(file) {
+  spAgent = ''; spFile = file;
+  document.getElementById('sp-editor-title').textContent = '全局 / ' + file;
+  const data = await fetch('/api/system_prompt/global/' + file).then(r => r.json());
+  document.getElementById('sp-editor').value = data.content;
+}
+
+async function spSelectAgent(name) {
+  spAgent = name;
+  document.getElementById('sp-editor-title').textContent = '文件 - ' + name;
+  spFile = '';
+  document.getElementById('sp-editor').value = '';
+}
+
+async function spLoad(agent, file) {
+  spAgent = agent; spFile = file;
+  document.getElementById('sp-editor-title').textContent = agent + ' / ' + file;
+  const data = await fetch('/api/system_prompt/' + agent + '/' + file).then(r => r.json());
+  document.getElementById('sp-editor').value = data.content;
+}
+
+async function spAddAgent() {
+  const name = document.getElementById('sp-agent-input').value.trim();
+  if (!name) return;
+  await fetch('/api/system_prompt/agent?name=' + name, {method:'POST'});
+  document.getElementById('sp-agent-input').value = '';
+  spRefresh();
+}
+
+async function spDeleteAgent(name) {
+  if (!confirm('删除 ' + name + ' 及其所有文件?')) return;
+  await fetch('/api/system_prompt/agent/' + name, {method:'DELETE'});
+  if (spAgent === name) { spAgent = ''; spFile = ''; document.getElementById('sp-editor').value = ''; }
+  spRefresh();
+}
+
+async function spAddFile() {
+  if (!spAgent) return toast('请先选择智能体', false);
+  const name = document.getElementById('sp-file-input').value.trim();
+  if (!name) return;
+  if (!name.endsWith('.md')) return toast('文件名需以 .md 结尾', false);
+  await fetch('/api/system_prompt/file', {
+    method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({agent:spAgent, filename:name, content:''})
+  });
+  document.getElementById('sp-file-input').value = '';
+  spRefresh();
+  spLoad(spAgent, name);
+}
+
+async function spSave() {
+  if (!spAgent || !spFile) return toast('请先选择文件', false);
+  await fetch('/api/system_prompt/file', {
+    method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({agent:spAgent, filename:spFile, content: document.getElementById('sp-editor').value})
+  });
+  toast('保存成功');
+}
+
+async function spDeleteFile() {
+  if (!spAgent || !spFile) return toast('请先选择文件', false);
+  if (!confirm('删除 ' + spAgent + '/' + spFile + '?')) return;
+  await fetch('/api/system_prompt/file/' + spAgent + '/' + spFile, {method:'DELETE'});
+  spFile = '';
+  document.getElementById('sp-editor').value = '';
+  spRefresh();
+}
+
+// ─── 初始化 ────────────────────────────────────────────────
+refreshPods();
+setInterval(refreshPods, 15000);
+</script>
+</body>
+</html>

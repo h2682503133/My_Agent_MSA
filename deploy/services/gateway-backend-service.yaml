@@ -20,7 +20,7 @@ spec:
       containers:
         - name: gateway-backend-service
           image: agent/gateway-backend-service:v4
-          imagePullPolicy: Never
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 5210

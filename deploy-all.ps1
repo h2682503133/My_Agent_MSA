@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 
 # ─── 镜像版本配置 ───────────────────────────────────────────
 $IMAGES = @{
+    "dashboard-service"            = @{ dir = "dashboard-service";            tag = "v2"  }
     "agent-orchestrator-service"   = @{ dir = "agent-orchestrator-service";   tag = "v11" }
     "task-scheduler-service"       = @{ dir = "task-scheduler-service";       tag = "v5"  }
     "timer-task-service"           = @{ dir = "timer-task-service";           tag = "v2"  }
@@ -21,6 +22,7 @@ $IMAGES = @{
 
 # 服务名 → YAML 文件映射
 $YAML_MAP = @{
+    "dashboard-service"            = "deploy/services/dashboard-service.yaml"
     "agent-orchestrator-service"   = "deploy/services/agent-orchestrator-service.yaml"
     "task-scheduler-service"       = "deploy/services/task-scheduler-service.yaml"
     "timer-task-service"           = "deploy/services/timer-task-service.yaml"
