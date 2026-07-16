@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>智能体对话</title>
+  <!-- PC 端自动跳转 -->
+  <script>
+    if (window.innerWidth > 768) { window.location.href = '/chat.html'; }
+  </script>
+  <link rel="stylesheet" href="chat-mobile.css" />
+</head>
+<body>
+  <div class="mobile-app" id="app">
+
+    <!-- ═══ Top Bar ═══ -->
+    <header class="mobile-topbar">
+      <button class="topbar-btn" id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+      <div class="topbar-title">
+        <span class="agent-name" id="current-agent-name">main</span>
+        <span class="agent-id" id="current-agent-id">agent: main</span>
+      </div>
+      <div class="topbar-status">
+        <span id="connection-status" class="status-offline">●</span>
+        <span id="queue-status">0</span>
+      </div>
+    </header>
+
+    <!-- ═══ Sidebar Drawer ═══ -->
+    <aside class="mobile-drawer" id="sidebar">
+      <div class="drawer-header">
+        <h2>对话列表</h2>
+        <span class="user-badge" id="user-badge">-</span>
+        <button class="drawer-close" onclick="toggleSidebar()">✕</button>
+      </div>
+      <div class="drawer-actions">
+        <button onclick="showNewConvModal()">+ 新建对话</button>
+      </div>
+      <div class="conv-list" id="conv-list"></div>
+      <div class="drawer-footer">
+        <button onclick="togglePanel()">工作空间 & 日志</button>
+        <button onclick="logout()">退出</button>
+      </div>
+    </aside>
+
+    <!-- ═══ Chat Area ═══ -->
+    <main class="mobile-chat" id="main-area">
+      <section id="chat-box">
+        <div class="ws-empty">请选择一个对话开始</div>
+      </section>
+
+      <footer class="input-row">
+        <textarea id="message-input" placeholder="输入消息…" disabled></textarea>
+        <button id="send-btn" class="send-btn" onclick="sendMessage()" disabled>发送</button>
+      </footer>
+    </main>
+
+    <!-- ═══ Right Panel Drawer ═══ -->
+    <aside class="mobile-drawer mobile-drawer-right" id="right-panel">
+      <div class="drawer-header">
+        <h2>面板</h2>
+        <button class="drawer-close" onclick="togglePanel()">✕</button>
+      </div>
+      <div class="panel-body" id="panel-body">
+        <!-- User Settings -->
+        <div class="setting-section">
+          <h4>用户信息</h4>
+          <div class="setting-row"><label>用户 ID</label><span id="profile-user-id">-</span></div>
+          <div class="setting-row"><label>渠道数</label><span id="profile-channel-count">0</span></div>
+        </div>
+        <div class="setting-section">
+          <h4>渠道绑定</h4>
+          <div class="channel-list" id="channel-list"><div class="ws-empty">暂无绑定渠道</div></div>
+          <div class="add-channel-row">
+            <select id="new-channel-type">
+              <option value="qq">QQ</option>
+              <option value="wechat">微信</option>
+              <option value="web">Web</option>
+              <option value="custom">自定义</option>
+            </select>
+            <input id="new-channel-uid" placeholder="渠道用户ID" />
+            <button class="btn-sm" onclick="bindChannel()">绑定</button>
+          </div>
+        </div>
+        <!-- Workspace -->
+        <div class="setting-section">
+          <h4>工作空间</h4>
+          <div class="ws-toolbar">
+            <input id="ws-path-input" placeholder="/app/workspace/users/..." value="/" />
+            <button class="btn-sm" onclick="loadWorkspaceFiles()">浏览</button>
+          </div>
+          <div class="ws-tree" id="ws-tree"><div class="ws-empty">输入路径后点击浏览</div></div>
+          <div class="ws-preview" id="ws-preview"><div class="ws-empty">选择文件查看内容</div></div>
+        </div>
+        <!-- Logs -->
+        <div class="setting-section">
+          <h4>日志</h4>
+          <div class="log-toolbar">
+            <input id="log-filter" placeholder="过滤关键字" />
+            <button class="btn-sm" onclick="loadLogs()">刷新</button>
+            <button class="btn-sm outline" onclick="startLogAutoRefresh()">自动</button>
+          </div>
+          <div class="log-content" id="log-content"><div class="log-empty">点击刷新加载日志</div></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ═══ Overlay ═══ -->
+    <div class="overlay hidden" id="overlay" onclick="closeAllDrawers()"></div>
+
+  </div>
+
+  <!-- ═══ New Conversation Modal ═══ -->
+  <div class="modal-overlay hidden" id="new-conv-modal">
+    <div class="modal-card">
+      <h3>新建对话</h3>
+      <label for="new-agent-id">智能体 ID (agent_id)</label>
+      <input id="new-agent-id" type="text" placeholder="例如：main、tool、..." value="main" />
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeNewConvModal()">取消</button>
+        <button class="btn-confirm" onclick="confirmNewConv()">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="chat.js"></script>
+  <script>
+    // Mobile-specific: override right panel toggle
+    function togglePanel() {
+      const panel = document.getElementById("right-panel");
+      const overlay = document.getElementById("overlay");
+      const isOpen = panel.classList.toggle("open");
+      overlay.classList.toggle("hidden", !isOpen);
+      if (isOpen) {
+        document.getElementById("sidebar").classList.remove("open");
+      }
+    }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById("sidebar");
+      const overlay = document.getElementById("overlay");
+      const isOpen = sidebar.classList.toggle("open");
+      overlay.classList.toggle("hidden", !isOpen);
+      if (isOpen) {
+        document.getElementById("right-panel").classList.remove("open");
+      }
+    }
+
+    function closeAllDrawers() {
+      document.getElementById("sidebar").classList.remove("open");
+      document.getElementById("right-panel").classList.remove("open");
+      document.getElementById("overlay").classList.add("hidden");
+    }
+
+    // Override PC toggleRightPanel (not used on mobile)
+    function toggleRightPanel() { togglePanel(); }
+  </script>
+</body>
+</html>

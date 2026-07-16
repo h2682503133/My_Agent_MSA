@@ -6,6 +6,7 @@ FastAPI 后端 + 静态前端
 import json
 import os
 import subprocess
+import shutil
 import asyncio
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,7 @@ app = FastAPI(title="My_Agent Dashboard")
 CONFIG_ROOT = Path(os.environ.get("CONFIG_ROOT", "/app/config"))
 STATIC_DIR = Path(__file__).parent.parent / "static"
 NAMESPACE = os.environ.get("NAMESPACE", "agent")
+SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/session"))
 
 # ─── Pydantic models ────────────────────────────────────────
 
@@ -37,6 +39,9 @@ class SystemPromptFile(BaseModel):
 class DeployRequest(BaseModel):
     services: list[str]
     path: str = ""     # 项目根路径（可选，默认使用内置 deploy 脚本）
+
+class MessageDelete(BaseModel):
+    lines: list[int]
 
 
 # ─── 配置管理 ────────────────────────────────────────────────
@@ -305,6 +310,145 @@ async def dashboard():
 
 
 # ─── 入口 ────────────────────────────────────────────────────
+
+
+# ═══ Session 管理 ═══════════════════════════════════════════
+
+
+@app.get("/api/session/users")
+
+async def session_users():
+
+    if not SESSION_ROOT.exists():
+
+        return {"users": []}
+
+    users = []
+
+    for d in sorted(SESSION_ROOT.iterdir()):
+
+        if d.is_dir() and not d.name.startswith("."):
+
+            agent_count = sum(1 for a in d.iterdir() if a.is_dir() and not a.name.startswith("."))
+
+            users.append({"name": d.name, "agent_count": agent_count})
+
+    return {"users": users}
+
+
+
+@app.get("/api/session/{user_id}/agents")
+
+async def session_agents(user_id: str):
+
+    user_dir = SESSION_ROOT / user_id
+
+    if not user_dir.exists():
+
+        raise HTTPException(404, "用户不存在")
+
+    agents = []
+
+    for d in sorted(user_dir.iterdir()):
+
+        if d.is_dir() and not d.name.startswith("."):
+
+            msg_file = d / "messages.jsonl"
+
+            msg_count = 0
+
+            if msg_file.exists():
+
+                with open(msg_file, "r", encoding="utf-8") as f:
+
+                    msg_count = sum(1 for _ in f)
+
+            has_history = (d / "history").exists()
+
+            agents.append({"name": d.name, "msg_count": msg_count, "has_history": has_history})
+
+    return {"agents": agents}
+
+
+
+@app.get("/api/session/{user_id}/{agent_id}/messages")
+
+async def session_messages(user_id: str, agent_id: str):
+
+    msg_file = SESSION_ROOT / user_id / agent_id / "messages.jsonl"
+
+    if not msg_file.exists():
+
+        return {"messages": [], "total": 0}
+
+    messages = []
+
+    with open(msg_file, "r", encoding="utf-8") as f:
+
+        for i, line in enumerate(f):
+
+            line = line.strip()
+
+            if not line:
+
+                continue
+
+            try:
+
+                msg = json.loads(line)
+
+                msg["_line"] = i
+
+                messages.append(msg)
+
+            except json.JSONDecodeError:
+
+                continue
+
+    return {"messages": messages, "total": len(messages)}
+
+
+
+@app.delete("/api/session/{user_id}/{agent_id}/messages")
+
+async def session_delete_messages(user_id: str, agent_id: str, body: MessageDelete):
+
+    msg_file = SESSION_ROOT / user_id / agent_id / "messages.jsonl"
+
+    if not msg_file.exists():
+
+        raise HTTPException(404, "messages.jsonl 不存在")
+
+    lines_to_delete = set(body.lines)
+
+    with open(msg_file, "r", encoding="utf-8") as f:
+
+        all_lines = f.readlines()
+
+    kept = [l for i, l in enumerate(all_lines) if i not in lines_to_delete]
+
+    with open(msg_file, "w", encoding="utf-8") as f:
+
+        f.writelines(kept)
+
+    return {"ok": True, "deleted": len(lines_to_delete & set(range(len(all_lines)))), "remaining": len(kept)}
+
+
+
+@app.delete("/api/session/{user_id}/{agent_id}")
+
+async def session_delete_agent(user_id: str, agent_id: str):
+
+    agent_dir = SESSION_ROOT / user_id / agent_id
+
+    if not agent_dir.exists():
+
+        raise HTTPException(404, "智能体目录不存在")
+
+    shutil.rmtree(agent_dir)
+
+    return {"ok": True, "deleted": str(agent_dir)}
+
 
 def main():
     uvicorn.run("app.main:app", host="0.0.0.0", port=5601, reload=False)

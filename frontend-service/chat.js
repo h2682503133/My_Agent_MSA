@@ -7,6 +7,8 @@
     if (!userId) { window.location.href = "/login.html"; }
 
     let conversations = [];           // [{agent_id, message_count, created_at, last_active}]
+    let messageCache = {};            // {agent_id: [{role, text, images}]}
+    let _restoring = false;           // skip cache sync during restore
     let currentAgentId = null;       // currently selected agent_id
     let eventSource = null;
     let logAutoRefreshTimer = null;
@@ -23,6 +25,9 @@
     const currentAgentIdEl = document.getElementById("current-agent-id");
     const rightPanel = document.getElementById("right-panel");
     const togglePanelBtn = document.getElementById("toggle-panel-btn");
+    const mobileMenuBtn = document.getElementById("mobile-menu-btn");
+    const mobilePanelBtn = document.getElementById("mobile-panel-btn");
+    const overlay = document.getElementById("overlay");
 
     // ═══════════════════════════════════════════════════════════════
     // Init
@@ -31,6 +36,10 @@
     document.getElementById("profile-user-id").textContent = userId;
     initPanelTabs();
     loadConversations().then(() => {
+      // Preload cached messages from localStorage for all known conversations
+      for (const conv of conversations) {
+        loadCacheFromStorage(conv.agent_id);
+      }
       // Auto-select first conversation if any
       if (conversations.length > 0) {
         switchConversation(conversations[0].agent_id);
@@ -75,11 +84,26 @@
 
     async function switchConversation(agentId) {
       if (agentId === currentAgentId) return;
+
+      // Save current messages to cache before switching away
+      if (currentAgentId) {
+        messageCache[currentAgentId] = collectChatMessages();
+      }
+
       currentAgentId = agentId;
       currentAgentName.textContent = agentId;
       currentAgentIdEl.textContent = `agent: ${agentId}`;
       renderConvList();
       clearChatBox();
+
+      // Restore messages from cache or fetch from backend
+      const cached = messageCache[agentId];
+      if (cached && cached.length > 0) {
+        restoreChatMessages(cached);
+      } else {
+        await loadConversationMessages(agentId);
+      }
+
       input.disabled = false;
       sendBtn.disabled = false;
       input.focus();
@@ -122,6 +146,8 @@
           method: "DELETE",
         });
         if (!resp.ok) return;
+        delete messageCache[agentId];
+        try { localStorage.removeItem(localStorageKey(agentId)); } catch (_) {}
         if (currentAgentId === agentId) {
           currentAgentId = null;
           currentAgentName.textContent = "-";
@@ -173,6 +199,100 @@
         connectionStatus.textContent = "事件流：重连中";
         connectionStatus.className = "status-offline";
       }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Message Cache Helpers
+    // ═══════════════════════════════════════════════════════════════
+    function collectChatMessages() {
+      const msgs = [];
+      const rows = chatBox.querySelectorAll('.msg-row');
+      for (const row of rows) {
+        const bubble = row.querySelector('.msg');
+        if (!bubble) continue;
+        const role = row.classList.contains('user') ? 'user'
+          : row.classList.contains('agent') ? 'agent'
+          : 'system';
+        const text = bubble.textContent || '';
+        const imgs = [];
+        bubble.querySelectorAll('img.msg-img').forEach(img => imgs.push(img.src));
+        msgs.push({ role, text, images: imgs });
+      }
+      return msgs;
+    }
+
+    function restoreChatMessages(msgs) {
+      _restoring = true;
+      for (const msg of msgs) {
+        if (msg.role === 'system') {
+          addSystemMessage(msg.text);
+        } else {
+          addMsg(msg.role, msg.text, msg.images || []);
+        }
+      }
+      _restoring = false;
+    }
+
+    async function loadConversationMessages(agentId) {
+      try {
+        const resp = await fetch(`/api/conversations/${encodeURIComponent(agentId)}/messages?user_id=${encodeURIComponent(userId)}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const msgs = data.messages || [];
+        if (msgs.length > 0) {
+          messageCache[agentId] = msgs.map(m => ({
+            role: m.role || 'system',
+            text: m.content || '',
+            images: m.images || [],
+          }));
+          restoreChatMessages(messageCache[agentId]);
+        }
+      } catch (e) { console.error("loadConversationMessages failed:", e); }
+    }
+
+    const MAX_CACHED_MESSAGES = 200;
+
+    function localStorageKey(agentId) {
+      return `chat_cache_${userId}_${agentId}`;
+    }
+
+    function saveCacheToStorage(agentId) {
+      if (!messageCache[agentId]) return;
+      let msgs = messageCache[agentId];
+      if (msgs.length > MAX_CACHED_MESSAGES) {
+        msgs = msgs.slice(msgs.length - MAX_CACHED_MESSAGES);
+        messageCache[agentId] = msgs;
+      }
+      try {
+        localStorage.setItem(localStorageKey(agentId), JSON.stringify(msgs));
+      } catch (e) {
+        console.warn("localStorage full, trimming cache for", agentId);
+        // Keep only the newer half of current agent's messages (min 20)
+        const trimmed = msgs.slice(msgs.length - Math.max(Math.floor(msgs.length / 2), 20));
+        messageCache[agentId] = trimmed;
+        try { localStorage.setItem(localStorageKey(agentId), JSON.stringify(trimmed)); } catch (_) {}
+      }
+    }
+
+    function loadCacheFromStorage(agentId) {
+      try {
+        const raw = localStorage.getItem(localStorageKey(agentId));
+        if (!raw) return null;
+        const msgs = JSON.parse(raw);
+        if (!Array.isArray(msgs) || msgs.length === 0) return null;
+        messageCache[agentId] = msgs;
+        return msgs;
+      } catch (_) { return null; }
+    }
+
+    function syncMessageToCache(role, text, images) {
+      if (_restoring) return;
+      if (!currentAgentId) return;
+      if (!messageCache[currentAgentId]) {
+        messageCache[currentAgentId] = [];
+      }
+      messageCache[currentAgentId].push({ role, text, images: images || [] });
+      saveCacheToStorage(currentAgentId);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -274,6 +394,7 @@
     }
 
     function addMsg(role, text, images) {
+      syncMessageToCache(role, text, images);
       const row = document.createElement("div");
       row.className = `msg-row ${role}`;
       const bubble = document.createElement("div");
@@ -294,6 +415,7 @@
     }
 
     function addSystemMessage(text) {
+      syncMessageToCache('system', text, []);
       const row = document.createElement("div");
       row.className = "msg-row";
       const bubble = document.createElement("div");
@@ -324,6 +446,7 @@
           tab.classList.add("active");
           const target = document.getElementById("tab-" + tab.dataset.tab);
           if (target) target.classList.add("active");
+          if (tab.dataset.tab === "user-settings") loadUserProfile();
         };
       });
     }
@@ -333,6 +456,37 @@
       panelVisible = !panelVisible;
       rightPanel.classList.toggle("collapsed", !panelVisible);
       togglePanelBtn.textContent = panelVisible ? "面板 ▸" : "面板 ◂";
+    }
+
+    // Mobile: sidebar drawer
+    function toggleSidebar() {
+      const sidebar = document.getElementById("sidebar");
+      const isOpen = sidebar.classList.toggle("open");
+      overlay.classList.toggle("hidden", !isOpen);
+      if (isOpen) {
+        // Close right panel if open
+        document.getElementById("right-panel").classList.remove("open");
+      }
+    }
+
+    // Mobile: right panel drawer
+    function toggleMobilePanel() {
+      const panel = document.getElementById("right-panel");
+      const isOpen = panel.classList.toggle("open");
+      overlay.classList.toggle("hidden", !isOpen);
+      if (isOpen) {
+        // Close sidebar if open
+        document.getElementById("sidebar").classList.remove("open");
+      }
+    }
+
+    // Overlay click closes all drawers (mobile only)
+    if (overlay) {
+      overlay.addEventListener("click", function() {
+        document.getElementById("sidebar").classList.remove("open");
+        document.getElementById("right-panel").classList.remove("open");
+        overlay.classList.add("hidden");
+      });
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -353,24 +507,35 @@
     }
 
     function renderChannels(channels) {
-      // Convert dict to array if backend returns object instead of array
-      if (channels && !Array.isArray(channels)) {
-        channels = Object.values(channels);
+      // Convert dict to array, preserving channel name as "channel" field
+      const arr = [];
+      if (channels) {
+        if (Array.isArray(channels)) {
+          arr.push(...channels);
+        } else {
+          for (const [chName, chData] of Object.entries(channels)) {
+            arr.push({
+              channel: chData.channel || chName,
+              channel_user_id: chData.channel_user_id || chData.user_id || '',
+              priority: (chData.priority != null ? chData.priority : 0),
+            });
+          }
+        }
       }
       const list = document.getElementById("channel-list");
       list.innerHTML = "";
-      if (!channels || channels.length === 0) {
+      if (arr.length === 0) {
         list.innerHTML = '<div class="ws-empty">暂无绑定渠道</div>';
         return;
       }
-      for (const ch of channels) {
+      for (const ch of arr) {
         const div = document.createElement("div");
         div.className = "channel-item";
         div.innerHTML = `
           <div class="channel-info">
             <span class="channel-tag">${escHtml(ch.channel)}</span>
             <span>${escHtml(ch.channel_user_id)}</span>
-            <span style="color:#888;font-size:11px;">优先级: ${ch.priority ?? 0}</span>
+            <span style="color:#888;font-size:11px;">优先级: ${ch.priority != null ? ch.priority : 0}</span>
           </div>
           <button class="channel-del" onclick="unbindChannel('${escHtml(ch.channel)}')">✕</button>
         `;
@@ -388,9 +553,12 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channel, channel_user_id: channelUserId, priority: 0 }),
         });
-        if (resp.ok) {
+        const data = await resp.json();
+        if (data.ok) {
           document.getElementById("new-channel-uid").value = "";
           loadUserProfile();
+        } else {
+          alert("绑定失败: " + (data.message || data.error || "未知错误"));
         }
       } catch (e) { console.error("bindChannel failed:", e); }
     }
@@ -483,7 +651,7 @@
         preview.querySelector("img").onclick = () => window.open(url, "_blank");
       } else {
         // Text preview with encoding selector
-        const encoding = document.getElementById("preview-encoding")?.value || "utf-8";
+        const encoding = (document.getElementById("preview-encoding") || {}).value || "utf-8";
         const url = `/api/workspace/files/read?user_id=${encodeURIComponent(userId)}&path=${encodeURIComponent(filePath)}&encoding=${encoding}`;
         try {
           const resp = await fetch(url);

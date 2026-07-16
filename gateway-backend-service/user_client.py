@@ -1,4 +1,4 @@
-"""user-service gRPC 代理客户端。"""
+"""user-service gRPC 代理客户端（grpc.aio）。"""
 
 import os
 import sys
@@ -22,7 +22,7 @@ class UserClient:
     def __init__(self, target: str | None = None):
         self.target = target or os.getenv(
             "USER_GRPC_TARGET",
-            "user-service.agent.svc.cluster.local:5301",
+            "user-service.agent.svc.cluster.local:5104",
         )
 
     def _ensure_imports(self):
@@ -38,7 +38,7 @@ class UserClient:
             async with grpc.aio.insecure_channel(self.target) as channel:
                 stub = user_pb2_grpc.UserStub(channel)
                 req = user_pb2.GetUserRequest(user_id=user_id)
-                resp = await stub.GetUser(req)
+                resp = await stub.GetUser(req, timeout=5)
                 return {
                     "ok": resp.ok,
                     "user_id": resp.user_id,
@@ -56,29 +56,25 @@ class UserClient:
                     user_id=user_id,
                     user_json=user_json,
                 )
-                resp = await stub.UpsertUser(req)
+                resp = await stub.UpsertUser(req, timeout=5)
                 return {"ok": resp.ok, "user_id": resp.user_id}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
     async def bind_channel(
-        self,
-        user_id: str,
-        channel: str,
-        channel_user_id: str,
-        priority: int = 0,
+        self, user_id: str, channel: str, channel_user_id: str, priority: int = 0
     ) -> dict:
         self._ensure_imports()
         try:
-            async with grpc.aio.insecure_channel(self.target) as channel:
-                stub = user_pb2_grpc.UserStub(channel)
+            async with grpc.aio.insecure_channel(self.target) as ch:
+                stub = user_pb2_grpc.UserStub(ch)
                 req = user_pb2.BindChannelRequest(
                     user_id=user_id,
                     channel=channel,
                     channel_user_id=channel_user_id,
                     priority=priority,
                 )
-                resp = await stub.BindChannel(req)
+                resp = await stub.BindChannel(req, timeout=5)
                 return {"ok": resp.ok, "message": resp.message}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -86,13 +82,10 @@ class UserClient:
     async def unbind_channel(self, user_id: str, channel: str) -> dict:
         self._ensure_imports()
         try:
-            async with grpc.aio.insecure_channel(self.target) as channel:
-                stub = user_pb2_grpc.UserStub(channel)
-                req = user_pb2.UnbindChannelRequest(
-                    user_id=user_id,
-                    channel=channel,
-                )
-                resp = await stub.UnbindChannel(req)
+            async with grpc.aio.insecure_channel(self.target) as ch:
+                stub = user_pb2_grpc.UserStub(ch)
+                req = user_pb2.UnbindChannelRequest(user_id=user_id, channel=channel)
+                resp = await stub.UnbindChannel(req, timeout=5)
                 return {"ok": resp.ok, "message": resp.message}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}

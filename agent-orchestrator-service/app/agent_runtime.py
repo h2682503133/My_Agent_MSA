@@ -158,7 +158,7 @@ class AgentRuntime:
             fallback_text = f"任务处理异常：{exc}" if exc else "任务处理异常，但没有可用的模型原始输出。"
 
         if exc is not None:
-            debug_log(f"[fallback_raw_model_output] {exc}")
+            debug_log(f"[{task.user.id}] [fallback_raw_model_output] {exc}")
 
         return cls._emit_user_message(task, emit, fallback_text, final=True)
 
@@ -173,11 +173,11 @@ class AgentRuntime:
         if len(cls._agent_instances) >= cls.MAX_INSTANCES:
             oldest_key = next(iter(cls._agent_instances))
             del cls._agent_instances[oldest_key]
-            debug_log(f"[实例上限] 删除最久未使用: {oldest_key}")
+            debug_log(f"[{user_id}] [实例上限] 删除最久未使用: {oldest_key}")
 
         agent = cls(agent_id, session_id, user_id)
         cls._agent_instances[key] = agent
-        debug_log(f"{session_id} 新建智能体: {agent_id}")
+        debug_log(f"[{user_id}] {session_id} 新建智能体: {agent_id}")
         return agent
 
     @classmethod
@@ -186,8 +186,8 @@ class AgentRuntime:
         cls.default_agent[task.user.session_id] = agent_id
         target = cls.get_agent(agent_id, task.user.session_id, task.user.id)
         task.target = target
-        chat_log(f"{task.user.session_id}->{target.id}\n{task.content}")
-        debug_log(f"[user_chat]{task.user.session_id}->{target.id}")
+        chat_log(f"[{task.user.id}] {task.user.session_id}->{target.id}\n{task.content}")
+        debug_log(f"[{task.user.id}] [user_chat]{task.user.session_id}->{target.id}")
 
     @classmethod
     def process_task(cls, task, emit: Callable[[TaskEventDTO], None]) -> str:
@@ -214,7 +214,7 @@ class AgentRuntime:
                 emit(cls.build_event(task, "task_failed", error=final_reply, text=final_reply))
                 return final_reply
 
-            debug_log(f"弹回复栈，当前栈长 {len(task.agent_context)}")
+            debug_log(f"[{task.user.id}] 弹回复栈，当前栈长 {len(task.agent_context)}")
             context = task.pop_context()
             task.target = context["from"]
             request = context["input"]
@@ -259,7 +259,7 @@ class AgentRuntime:
                     commit_limit=int(default_agent_config.get("commit_limit", 0) or 0),
                 )
             except Exception as exc:
-                debug_log(f"append_turn failed: {exc}")
+                debug_log(f"[{task.user.id}] append_turn failed: {exc}")
 
         emit(cls.build_event(task, "task_completed"))
         return final_reply
@@ -342,7 +342,7 @@ class AgentRuntime:
         ]
 
         task.set_temp_dialog_input(content)
-        chat_log(f"{self.id}收到:\n{content}")
+        chat_log(f"[{self.user_id}] {self.id}收到:\n{content}")
 
         long_context_message = [
             {"role": "system", "content": "以下是你和用户的历史对话记录，请根据上下文继续回答"}
@@ -410,15 +410,15 @@ class AgentRuntime:
 
             if result.get("switch_call") and result["agent_call"]:
                 debug_log(
-                    f"[switch_route] {self.id} -> {result['agent_call']['target_id']} "
+                    f"[{self.user_id}] [switch_route] {self.id} -> {result['agent_call']['target_id']} "
                     f"content={result['agent_call']['content']}"
                 )
                 chat_log(
-                    f"{self.id} 切换并转交:\n "
+                    f"[{self.user_id}] {self.id} 切换并转交:\n "
                     f"{result['agent_call']['target_id']}|{result['agent_call']['content']}"
                 )
             else:
-                chat_log(f"{self.id} 回复:\n {result['final_reply']}")
+                chat_log(f"[{self.user_id}] {self.id} 回复:\n {result['final_reply']}")
 
             task.set_temp_dialog_output(result["final_reply"])
             task.caller = self
@@ -488,8 +488,8 @@ class AgentRuntime:
             return
 
         task.push_context(self, content)
-        chat_log(f"<{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
-        debug_log(f"[agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
+        chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
+        debug_log(f"[{self.user_id}] [agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
         task.target = AgentRuntime.get_agent(target_agent_id, self.session_id, task.user.id)
         task.caller = self
         task.set_temp_dialog_input(content)
@@ -503,7 +503,7 @@ class AgentRuntime:
 
         tool_name = tool_call["tool"]
         args = tool_call["args"]
-        debug_log(f"[工具执行] {self.id} → {tool_name} {args}")
+        debug_log(f"[{self.user_id}] [工具执行] {self.id} → {tool_name} {args}")
 
         emit(self.build_event(
             task,
@@ -535,5 +535,5 @@ class AgentRuntime:
             output = f"工具执行失败：{result['error']}"
 
         task.set_temp_dialog_output(output)
-        chat_log(f"{self.id} 执行工具 {tool_name}:\n结果: {output}")
-        debug_log(f"[工具结果] {self.id} {output}")
+        chat_log(f"[{self.user_id}] {self.id} 执行工具 {tool_name}:\n结果: {output}")
+        debug_log(f"[{self.user_id}] [工具结果] {self.id} {output}")

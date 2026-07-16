@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from typing import List
 
@@ -41,6 +42,7 @@ sse_hub = SSEHub()
 scheduler_client = build_scheduler_client()
 user_client = build_user_client()
 tool_client = build_tool_client()
+_consumer_task = None
 
 
 def build_session_id(user_id: str, agent_id: str = "main") -> str:
@@ -69,10 +71,36 @@ async def scheduler_event_consumer() -> None:
     ):
         await sse_hub.publish(event)
 
+        # Store assistant replies in conversation history
+        if event.type in ("assistant_message", "task_failed") and event.user_id:
+            agent_id = event.metadata.get("agent_id") or "main"
+            conversation_manager.add_message(
+                user_id=event.user_id,
+                agent_id=agent_id,
+                msg={
+                    "role": "agent" if event.type == "assistant_message" else "system",
+                    "content": event.text or event.error or "",
+                    "task_id": event.task_id,
+                    "images": event.images,
+                },
+            )
+
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    asyncio.create_task(scheduler_event_consumer())
+    global _consumer_task
+    _consumer_task = asyncio.create_task(scheduler_event_consumer())
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    global _consumer_task
+    if _consumer_task and not _consumer_task.done():
+        _consumer_task.cancel()
+        try:
+            await _consumer_task
+        except asyncio.CancelledError:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -104,6 +132,17 @@ async def login(req: LoginRequest):
     ensure_allowed_user(user_id)
 
     session_id = req.session_id or build_session_id(user_id)
+
+    # Auto-bind web channel on login
+    try:
+        await user_client.bind_channel(
+            user_id=user_id,
+            channel="web",
+            channel_user_id=user_id,
+            priority=0,
+        )
+    except Exception:
+        pass
 
     return LoginResponse(ok=True, user_id=user_id, session_id=session_id)
 
@@ -250,6 +289,26 @@ async def delete_conversation(
     if not deleted:
         raise HTTPException(status_code=404, detail="conversation not found")
     return {"ok": True, "agent_id": agent_id}
+
+@app.get("/api/conversations/{agent_id}/messages")
+async def get_conversation_messages(
+    agent_id: str,
+    user_id: str = Query(..., min_length=1),
+):
+    ensure_allowed_user(user_id)
+
+    conv = conversation_manager.get_conversation(user_id, agent_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    return {
+        "agent_id": conv.agent_id,
+        "user_id": conv.user_id,
+        "messages": conv.messages,
+        "message_count": len(conv.messages),
+        "created_at": conv.created_at,
+        "last_active": conv.last_active,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -553,11 +612,26 @@ async def get_orchestrator_logs(
 
     raw = stdout.decode("utf-8", errors="replace")
     filtered: list[str] = []
+    # kubectl --timestamps 会给每一行加时间戳，需要按 app 日志前缀分组
+    # 新条目特征：kubectl时间戳 + [HH:MM:SS] [chat] 或 [HH:MM:SS] [debug]
+    _LOG_PREFIX_RE = re.compile(r"\[\d{2}:\d{2}:\d{2}\] \[(chat|debug)\]")
+    current_entry: list[str] = []
     for line in raw.split("\n"):
-        if user_id in line:
-            if agent_id and agent_id not in line:
-                continue
-            filtered.append(line.strip())
+        if _LOG_PREFIX_RE.search(line):
+            # 新条目开始 → 先处理上一个条目
+            if current_entry:
+                if user_id in current_entry[0]:
+                    if not agent_id or agent_id in current_entry[0]:
+                        filtered.append("\n".join(current_entry))
+            current_entry = [line.rstrip()]
+        else:
+            if current_entry:
+                current_entry.append(line.rstrip())
+    # 处理最后一条
+    if current_entry:
+        if user_id in current_entry[0]:
+            if not agent_id or agent_id in current_entry[0]:
+                filtered.append("\n".join(current_entry))
 
     return {
         "ok": True,

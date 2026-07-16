@@ -53,6 +53,16 @@ label.file-item:hover { color: var(--accent); }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--dim); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* Session 管理 */
+.session-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.session-toolbar select { min-width: 160px; }
+.msg-row { cursor: pointer; }
+.msg-row:hover { background: rgba(15,52,96,0.2); }
+.msg-row.selected { background: rgba(15,52,96,0.4); }
+.msg-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 0.8rem; }
+.role-badge { display: inline-block; padding: 1px 8px; border-radius: 8px; font-size: 0.7rem; }
+.role-badge.user { background: rgba(33,150,243,0.2); color: var(--blue); }
+.role-badge.assistant { background: rgba(76,175,80,0.2); color: var(--green); }
 </style>
 </head>
 <body>
@@ -65,6 +75,7 @@ label.file-item:hover { color: var(--accent); }
     <button data-tab="logs">日志查看</button>
     <button data-tab="deploy">部署管理</button>
     <button data-tab="sprompt">System Prompt</button>
+    <button data-tab="session">Session 管理</button>
   </nav>
   <span id="status" style="margin-left:auto;font-size:0.8rem;color:var(--dim)"></span>
 </header>
@@ -175,6 +186,40 @@ label.file-item:hover { color: var(--accent); }
       </div>
     </div>
   </div>
+
+  <!-- Session 管理 -->
+  <div id="tab-session" class="tab">
+    <h2>Session 管理 <span style="font-size:0.8rem;color:var(--dim);">(openviking 对话记录)</span></h2>
+    <div class="card">
+      <div class="session-toolbar">
+        <span style="color:var(--dim);">用户：</span>
+        <select id="sess-user-select" onchange="sessLoadAgents()">
+          <option value="">-- 选择用户 --</option>
+        </select>
+        <span style="color:var(--dim);">智能体：</span>
+        <select id="sess-agent-select" onchange="sessLoadMessages()">
+          <option value="">-- 选择智能体 --</option>
+        </select>
+        <span id="sess-info" style="color:var(--dim);font-size:0.8rem;"></span>
+      </div>
+    </div>
+    <div class="card" id="sess-msg-card" style="display:none;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3>消息列表 <span id="sess-msg-count" style="color:var(--dim);font-size:0.8rem;"></span></h3>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" onclick="sessToggleAll()">全选/取消</button>
+          <button class="btn danger" onclick="sessDeleteMessages()">删除选中</button>
+          <button class="btn danger" onclick="sessDeleteAgent()">删除整个文件夹</button>
+        </div>
+      </div>
+      <div style="max-height:500px;overflow-y:auto;">
+        <table>
+          <thead><tr><th style="width:40px;">选</th><th style="width:60px;">行号</th><th style="width:80px;">角色</th><th>内容预览</th><th style="width:160px;">时间</th></tr></thead>
+          <tbody id="sess-msg-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -189,6 +234,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     if (btn.dataset.tab === 'config') refreshConfigs();
     if (btn.dataset.tab === 'logs') refreshLogPods();
     if (btn.dataset.tab === 'deploy') refreshDeployTab();
+        if (btn.dataset.tab === 'session') sessLoadUsers();
     if (btn.dataset.tab === 'sprompt') spRefresh();
   });
 });
@@ -457,6 +503,111 @@ async function spDeleteFile() {
   spFile = '';
   document.getElementById('sp-editor').value = '';
   spRefresh();
+}
+
+
+// ═══ Session 管理 ═════════════════════════════════════════
+
+let sessUser = '', sessAgent = '', sessMessages = [];
+
+async function sessLoadUsers() {
+  const sel = document.getElementById('sess-user-select');
+  sel.innerHTML = '<option value="">-- 加载中 --</option>';
+  try {
+    const data = await fetch('/api/session/users').then(r => r.json());
+    sel.innerHTML = '<option value="">-- 选择用户 --</option>' +
+      (data.users || []).map(u => `<option value="${u.name}">${u.name} (${u.agent_count}个智能体)</option>`).join('');
+  } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
+}
+
+async function sessLoadAgents() {
+  sessUser = document.getElementById('sess-user-select').value;
+  sessAgent = ''; sessMessages = [];
+  document.getElementById('sess-msg-card').style.display = 'none';
+  const sel = document.getElementById('sess-agent-select');
+  if (!sessUser) { sel.innerHTML = '<option value="">-- 选择智能体 --</option>'; return; }
+  sel.innerHTML = '<option value="">-- 加载中 --</option>';
+  try {
+    const data = await fetch('/api/session/' + sessUser + '/agents').then(r => r.json());
+    sel.innerHTML = '<option value="">-- 选择智能体 --</option>' +
+      (data.agents || []).map(a => `<option value="${a.name}">${a.name} (${a.msg_count}条, ${a.has_history?'有历史':'无历史'})</option>`).join('');
+  } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
+}
+
+async function sessLoadMessages() {
+  sessAgent = document.getElementById('sess-agent-select').value;
+  sessMessages = [];
+  document.getElementById('sess-msg-card').style.display = 'none';
+  if (!sessAgent) return;
+  document.getElementById('sess-info').textContent = '加载中...';
+  try {
+    const data = await fetch('/api/session/' + sessUser + '/' + sessAgent + '/messages').then(r => r.json());
+    sessMessages = data.messages || [];
+    document.getElementById('sess-msg-count').textContent = '共 ' + sessMessages.length + ' 条';
+    document.getElementById('sess-info').textContent = '';
+    sessRenderMessages();
+    document.getElementById('sess-msg-card').style.display = 'block';
+  } catch(e) { document.getElementById('sess-info').textContent = '加载失败'; toast('加载消息失败', false); }
+}
+
+function sessRenderMessages() {
+  const tbody = document.getElementById('sess-msg-tbody');
+  if (!sessMessages.length) { tbody.innerHTML = '<tr><td colspan="5" style="color:var(--dim);">暂无消息</td></tr>'; return; }
+  tbody.innerHTML = sessMessages.map((m, i) => {
+    const role = m.role || 'unknown';
+    const roleCls = role === 'user' ? 'user' : 'assistant';
+    let preview = '';
+    if (m.parts && m.parts.length > 0) preview = (m.parts[0].text || '').replace(/\n/g, ' ').substring(0, 80);
+    const time = m.created_at ? m.created_at.replace('T', ' ').substring(0, 19) : '';
+    return `<tr class="msg-row" data-line="${m._line}" onclick="sessToggleRow(this, ${m._line})">
+      <td><input type="checkbox" class="sess-cb" data-line="${m._line}" onclick="event.stopPropagation();"></td>
+      <td>${m._line}</td>
+      <td><span class="role-badge ${roleCls}">${role}</span></td>
+      <td class="msg-preview">${preview}</td>
+      <td style="font-size:0.75rem;color:var(--dim);">${time}</td>
+    </tr>`;
+  }).join('');
+}
+
+function sessToggleRow(tr, line) {
+  const cb = tr.querySelector('.sess-cb');
+  cb.checked = !cb.checked;
+  tr.classList.toggle('selected', cb.checked);
+}
+
+function sessGetSelectedLines() {
+  return [...document.querySelectorAll('.sess-cb:checked')].map(cb => parseInt(cb.dataset.line));
+}
+
+function sessToggleAll() {
+  const all = document.querySelectorAll('.sess-cb');
+  const anyUnchecked = [...all].some(cb => !cb.checked);
+  all.forEach(cb => { cb.checked = anyUnchecked; });
+  document.querySelectorAll('.msg-row').forEach(tr => tr.classList.toggle('selected', anyUnchecked));
+}
+
+async function sessDeleteMessages() {
+  const lines = sessGetSelectedLines();
+  if (!lines.length) return toast('请先选择要删除的消息', false);
+  if (!confirm('确定删除选中的 ' + lines.length + ' 条消息？此操作不可撤销。')) return;
+  try {
+    const data = await fetch('/api/session/' + sessUser + '/' + sessAgent + '/messages', {
+      method: 'DELETE', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lines: lines})
+    }).then(r => r.json());
+    toast('已删除 ' + data.deleted + ' 条，剩余 ' + data.remaining + ' 条');
+    sessLoadMessages();
+  } catch(e) { toast('删除失败', false); }
+}
+
+async function sessDeleteAgent() {
+  if (!confirm('确定删除 ' + sessUser + '/' + sessAgent + ' 整个文件夹？\n\n这将删除所有消息和历史记录，不可撤销！')) return;
+  try {
+    await fetch('/api/session/' + sessUser + '/' + sessAgent, {method: 'DELETE'}).then(r => r.json());
+    toast('已删除 ' + sessUser + '/' + sessAgent);
+    sessLoadAgents();
+    document.getElementById('sess-msg-card').style.display = 'none';
+  } catch(e) { toast('删除失败', false); }
 }
 
 // ─── 初始化 ────────────────────────────────────────────────

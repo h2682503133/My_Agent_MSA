@@ -32,7 +32,7 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app:/app/proto_gen
 ENV SCHEDULER_CLIENT_MODE=grpc
 ENV SCHEDULER_GRPC_TARGET=task-scheduler-service.agent.svc.cluster.local:5100
-ENV USER_GRPC_TARGET=user-service.agent.svc.cluster.local:5301
+ENV USER_GRPC_TARGET=user-service.agent.svc.cluster.local:5104
 ENV TOOL_RUNTIME_GRPC_TARGET=tool-runtime-service.agent.svc.cluster.local:5303
 
 ENV TZ=Asia/Shanghai

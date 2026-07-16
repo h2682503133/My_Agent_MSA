@@ -28,7 +28,12 @@ class UserStore:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def get_user(self, user_id: str) -> dict | None:
-        return self._load(user_id)
+        data = self._load(user_id)
+        if data is None:
+            data = {"user_id": user_id, "channels": {}, "created_at": datetime.now().isoformat()}
+            self._save(user_id, data)
+            user_log(f"自动创建用户: {user_id}")
+        return data
 
     def upsert_user(self, user_id: str, user_json: str) -> str:
         try:
@@ -74,11 +79,13 @@ class UserStore:
     def bind_channel(self, user_id: str, channel: str, channel_user_id: str, priority: int) -> str:
         data = self._load(user_id)
         if data is None:
-            return "用户不存在"
+            data = {"user_id": user_id, "channels": {}, "created_at": datetime.now().isoformat()}
+            user_log(f"自动创建用户: {user_id}")
 
         channels = data.setdefault("channels", {})
         channels[channel] = {
-            "user_id": channel_user_id,
+            "channel": channel,
+            "channel_user_id": channel_user_id,
             "priority": priority,
         }
         self._save(user_id, data)

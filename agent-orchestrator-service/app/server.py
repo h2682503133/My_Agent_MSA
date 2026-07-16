@@ -65,7 +65,7 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
         except Exception as exc:
             from app.events import TaskEventDTO, DeliveryTarget, new_event_id
 
-            log(f"ExecuteTask failed: {exc}")
+            log(f"[{task.user.id}] ExecuteTask failed: {exc}")
             events.append(TaskEventDTO(
                 event_id=new_event_id(),
                 task_id=task.task_id,

@@ -85,34 +85,44 @@ Write-Step "选择要部署的服务"
 $serviceNames = $IMAGES.Keys | Sort-Object
 $selected = @{}
 
-Write-Host "`n输入 y/n 选择每个服务，直接回车使用默认值 [y]"
-Write-Host "输入 'all' 全选，输入 'none' 全不选`n"
+# 默认全选
+foreach ($svc in $serviceNames) { $selected[$svc] = $true }
 
-foreach ($svc in $serviceNames) {
-    $tag = $IMAGES[$svc].tag
-    $response = Read-Host "  部署 $svc ($tag)? [Y/n]"
-    if ($response -eq 'all') {
-        foreach ($s in $serviceNames) { $selected[$s] = $true }
-        break
+# 多选界面
+$cursorIdx = 0
+$svcArray = @($serviceNames)
+
+function Draw-Selection {
+    Clear-Host
+    Write-Host "`n  选择要部署的服务（↑↓ 移动  Space 选择  Enter 确认  Q 退出）`n" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $svcArray.Count; $i++) {
+        $svc = $svcArray[$i]
+        $tag = $IMAGES[$svc].tag
+        $check = if ($selected[$svc]) { "[✓]" } else { "[ ]" }
+        $prefix = if ($i -eq $cursorIdx) { " >" } else { "  " }
+        $color = if ($i -eq $cursorIdx) { "Cyan" } else { "White" }
+        if (-not $selected[$svc]) { $color = "DarkGray" }
+        Write-Host "$prefix $check $svc ($tag)" -ForegroundColor $color
     }
-    if ($response -eq 'none') {
-        foreach ($s in $serviceNames) { $selected[$s] = $false }
-        break
-    }
-    $selected[$svc] = ($response -ne 'n' -and $response -ne 'N')
+    Write-Host "`n  提示：↑↓ 移动光标  Space 切换选中  Enter 确认  Q 退出" -ForegroundColor DarkGray
 }
 
-# 汇总确认
-Write-Host "`n将要部署的服务：" -ForegroundColor Yellow
+Draw-Selection
+while ($true) {
+    $key = [Console]::ReadKey($true)
+    switch ($key.Key) {
+        UpArrow    { $cursorIdx = [Math]::Max(0, $cursorIdx - 1); Draw-Selection }
+        DownArrow  { $cursorIdx = [Math]::Min($svcArray.Count - 1, $cursorIdx + 1); Draw-Selection }
+        Spacebar   { $svc = $svcArray[$cursorIdx]; $selected[$svc] = -not $selected[$svc]; Draw-Selection }
+        Q          { Write-Host "`n已取消。" -ForegroundColor Yellow; exit 0 }
+        Enter      { break }
+    }
+    if ($key.Key -eq "Enter") { break }
+}
+
 $toDeploy = @()
 foreach ($svc in $serviceNames) {
-    if ($selected[$svc]) {
-        $tag = $IMAGES[$svc].tag
-        Write-Host "  [✓] $svc ($tag)"
-        $toDeploy += $svc
-    } else {
-        Write-Host "  [ ] $svc" -ForegroundColor DarkGray
-    }
+    if ($selected[$svc]) { $toDeploy += $svc }
 }
 
 if ($toDeploy.Count -eq 0) {
@@ -120,11 +130,8 @@ if ($toDeploy.Count -eq 0) {
     exit 0
 }
 
-$confirm = Read-Host "`n确认开始部署? [Y/n]"
-if ($confirm -eq 'n' -or $confirm -eq 'N') {
-    Write-Host "已取消。"
-    exit 0
-}
+Write-Host "`n将要部署：" -ForegroundColor Yellow -NoNewline
+Write-Host " $($toDeploy -join ', ')" -ForegroundColor White
 
 # ─── Docker 构建 ────────────────────────────────────────────
 
@@ -159,6 +166,10 @@ Write-Step "K8s 部署"
 
 # 确保 namespace 存在
 kubectl create namespace agent --dry-run=client -o yaml | kubectl apply -f -
+
+# RBAC: 允许 default SA 读取 Pod 日志（gateway-backend-service 日志接口需要）
+kubectl -n agent create role pod-log-reader --verb=get,list --resource=pods,namespaces,pods/log --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n agent create rolebinding pod-log-reader-binding --role=pod-log-reader --serviceaccount=agent:default --dry-run=client -o yaml | kubectl apply -f -
 
 foreach ($svc in $toDeploy) {
     $yamlFile = $YAML_MAP[$svc]

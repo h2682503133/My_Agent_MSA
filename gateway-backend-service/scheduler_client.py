@@ -227,6 +227,9 @@ class GrpcSchedulerClient(SchedulerClient):
                             metadata=dict(event.metadata),
                         )
 
+            except asyncio.CancelledError:
+                print("[gateway] scheduler event subscription cancelled", flush=True)
+                raise
             except Exception as exc:
                 print(f"[gateway] scheduler event subscription disconnected: {exc}", flush=True)
                 await asyncio.sleep(2)

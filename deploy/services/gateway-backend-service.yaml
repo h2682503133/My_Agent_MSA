@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: gateway-backend-service
-          image: agent/gateway-backend-service:v8
+          image: agent/gateway-backend-service:v17
           imagePullPolicy: Always
           ports:
             - name: http
@@ -33,6 +33,7 @@ spec:
               value: "web-gateway-1"
             - name: USER_WHITELIST
               value: ""
+      terminationGracePeriodSeconds: 30
 ---
 apiVersion: v1
 kind: Service
