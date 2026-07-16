@@ -28,7 +28,7 @@ user-service:5104 (用户信息)
 |------|------|------|------|
 | frontend-service | 80 | HTTP | Nginx 静态页面 + API 代理 |
 | gateway-backend-service | 5210 | HTTP | Web 后端网关，SSE 事件推送 |
-| qq-llbot-service | — | Satori/gRPC | QQ 渠道接入，LLBot Satori 协议 |
+| qq-llbot-service | 5601 | Satori/gRPC | QQ 渠道接入，LLBot Satori 协议 |
 | qq-satori-adapter | 5600 | HTTP/WS | LLBot Satori 适配器（外部部署） |
 | task-scheduler-service | 5100 | gRPC | 任务调度、槽位管理、事件总线 |
 | timer-task-service | 5103 | gRPC | 定时任务管理，到期回调 scheduler |
