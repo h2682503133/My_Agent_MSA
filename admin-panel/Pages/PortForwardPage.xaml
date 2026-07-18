@@ -63,8 +63,7 @@
                                 </Border.Style>
                                 <TextBlock Text="{Binding Status}"
                                            Foreground="White" FontSize="12"
-                                           Padding="8,4" HorizontalAlignment="Center"
-                                           CornerRadius="4"/>
+                                           Padding="8,4" HorizontalAlignment="Center"/>
                             </Border>
 
                             <StackPanel Grid.Column="3" Orientation="Horizontal"

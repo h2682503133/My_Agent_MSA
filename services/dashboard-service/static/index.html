@@ -76,6 +76,7 @@ label.file-item:hover { color: var(--accent); }
     <button data-tab="deploy">部署管理</button>
     <button data-tab="sprompt">System Prompt</button>
     <button data-tab="session">Session 管理</button>
+    <button data-tab="qrcode">二维码</button>
   </nav>
   <span id="status" style="margin-left:auto;font-size:0.8rem;color:var(--dim)"></span>
 </header>
@@ -220,6 +221,20 @@ label.file-item:hover { color: var(--accent); }
       </div>
     </div>
   </div>
+  <!-- 二维码 -->
+  <div id="tab-qrcode" class="tab">
+    <h2>LLBot 二维码</h2>
+    <div class="card" style="text-align:center;padding:32px;">
+      <img id="qrcode-img" src="/api/qrcode?t=0" alt="QR Code"
+           style="max-width:300px;max-height:300px;border:1px solid var(--border);border-radius:8px;"
+           onerror="this.style.display='none';document.getElementById('qrcode-placeholder').style.display='block';">
+      <div id="qrcode-placeholder" style="display:none;padding:60px;color:var(--dim);">
+        <p style="font-size:1.1rem;">暂无二维码</p>
+        <p style="font-size:0.85rem;margin-top:8px;">请先在 LLBot 页面启动 Bot 并推送二维码</p>
+      </div>
+    </div>
+  </div>
+
 </main>
 
 <script>
@@ -235,6 +250,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     if (btn.dataset.tab === 'logs') refreshLogPods();
     if (btn.dataset.tab === 'deploy') refreshDeployTab();
         if (btn.dataset.tab === 'session') sessLoadUsers();
+    if (btn.dataset.tab === 'qrcode') refreshQrcode();
     if (btn.dataset.tab === 'sprompt') spRefresh();
   });
 });
@@ -608,6 +624,13 @@ async function sessDeleteAgent() {
     sessLoadAgents();
     document.getElementById('sess-msg-card').style.display = 'none';
   } catch(e) { toast('删除失败', false); }
+}
+
+// ═══ 二维码 ═════════════════════════════════════════
+
+function refreshQrcode() {
+  const img = document.getElementById('qrcode-img');
+  if (img) img.src = '/api/qrcode?t=' + Date.now();
 }
 
 // ─── 初始化 ────────────────────────────────────────────────

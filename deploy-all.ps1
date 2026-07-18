@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 
 # ─── 镜像版本配置 ───────────────────────────────────────────
 $IMAGES = @{
-    "dashboard-service"            = @{ dir = "services/dashboard-service";            tag = "v2"  }
+    "dashboard-service"            = @{ dir = "services/dashboard-service";            tag = "v5"  }
     "agent-orchestrator-service"   = @{ dir = "services/agent-orchestrator-service";   tag = "v11" }
     "task-scheduler-service"       = @{ dir = "services/task-scheduler-service";       tag = "v5"  }
     "timer-task-service"           = @{ dir = "services/timer-task-service";           tag = "v2"  }

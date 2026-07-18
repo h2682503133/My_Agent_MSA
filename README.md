@@ -37,6 +37,7 @@ user-service:5104 (用户信息)
 | model-proxy-service | 5302 | gRPC | 统一模型调用适配 |
 | tool-runtime-service | 5303 | gRPC | 工具执行、skill、workspace |
 | user-service | 5104 | gRPC | 用户信息与多渠道绑定 |
+| dashboard-service | 5601 | HTTP | 管理控制面板（FastAPI + Web UI） |
 
 ## 核心功能
 
@@ -92,16 +93,25 @@ Agent 运行时支持 `main`、`tool`、`reader` 三种智能体角色，通过 
 
 ```
 My_Agent_MSA/
-├── agent-orchestrator-service/ # gRPC Agent 编排服务
-├── task-scheduler-service/     # gRPC 任务调度服务
-├── timer-task-service/         # gRPC 定时任务服务
-├── gateway-backend-service/    # FastAPI Web 网关 + SSE
-├── qq-llbot-service/           # QQ LLBot 渠道网关
-├── model-proxy-service/        # gRPC 模型代理服务
-├── openviking-context-service/ # gRPC 上下文检索服务
-├── tool-runtime-service/       # gRPC 工具运行服务
-├── user-service/               # gRPC 用户服务
-├── frontend-service/           # Nginx 前端静态服务
+├── services/                   # 所有微服务源码
+│   ├── agent-orchestrator-service/
+│   ├── task-scheduler-service/
+│   ├── timer-task-service/
+│   ├── gateway-backend-service/
+│   ├── qq-llbot-service/
+│   ├── model-proxy-service/
+│   ├── openviking-context-service/
+│   ├── tool-runtime-service/
+│   ├── user-service/
+│   ├── frontend-service/
+│   └── dashboard-service/
+├── admin-panel/                # Windows 管理员控制面板（C# WPF）
+│   ├── MyAgentAdminPanel.csproj
+│   ├── Pages/                  # 端口转发 / 部署 / LLBot / Dashboard
+│   ├── Services/               # kubectl / docker / llbot 服务封装
+│   ├── Models/
+│   ├── build.bat               # 编译脚本
+│   └── README.md
 ├── config/                     # 持久化配置（同步到 NFS）
 │   ├── agent_list.json
 │   ├── model_list.json
@@ -112,11 +122,44 @@ My_Agent_MSA/
 │   ├── apply-pv.sh             # 创建 PV/PVC
 │   ├── services/               # K8s 服务 YAML
 │   └── tool-runtime-apply.sh   # tool-runtime 外部 VM 部署
-├── dashboard-service/          # 管理控制面板
 ├── deploy-all.ps1              # 一键部署（PowerShell）
 ├── deploy-all.bat              # 一键部署（双击运行）
+├── port-forward.bat            # 端口转发（kubectl port-forward）
 └── 常见问题处理.md
 ```
+
+## Windows 管理员面板（admin-panel）
+
+基于 .NET 8 WPF + WebView2 的桌面管理工具，用于日常运维管理。
+
+### 功能
+
+| 页面 | 功能 |
+|------|------|
+| 🔌 端口转发 | 一键启停 dashboard(5601)、gateway(5210)、istio(8080) |
+| 🚀 一键部署 | 从 `deploy-all.ps1` 解析服务列表，多选构建镜像并部署 |
+| 🤖 LLBot | 启动本地 `llbot.exe`，实时日志 + 二维码同步推送 |
+| 📊 Dashboard | WebView2 内嵌 `http://localhost:5601`，直接访问管理后台 |
+
+### 编译与运行
+
+```bat
+cd admin-panel
+build.bat
+```
+
+产物：`admin-panel/publish/MyAgentAdminPanel.exe`
+
+### 环境要求
+
+- Windows 10 / 11
+- .NET 8 Runtime（运行）或 .NET 8 SDK（编译）
+- Docker Desktop（已启用 Kubernetes）
+- kubectl
+
+### 版本管理
+
+服务版本号集中在项目根 `deploy-all.ps1` 的 `$IMAGES` 中维护。admin-panel 启动时自动解析，无需重新编译。
 
 ## 快速开始
 
@@ -164,6 +207,10 @@ kubectl apply -f deploy/services/
 kubectl -n istio-system port-forward svc/istio-ingressgateway 8080:80
 http://localhost:8080/login.html
 
+# Dashboard 管理面板
+kubectl -n agent port-forward svc/dashboard-service 5601:5601
+http://localhost:5601
+
 # QQ 渠道：确保 LLBot Satori 适配器已部署并配置 SATORI_HOST/SATORI_TOKEN
 ```
 
@@ -202,7 +249,7 @@ LLBot 运行在 Windows 宿主机，使用 `SATORI_HOST=host.docker.internal` �
 
 | 服务 | 镜像 | 版本 |
 |------|------|------|
-| dashboard-service | `agent/dashboard-service` | v1 |
+| dashboard-service | `agent/dashboard-service` | v5 |
 | agent-orchestrator-service | `agent/agent-orchestrator-service` | v11 |
 | task-scheduler-service | `agent/task-scheduler-service` | v5 |
 | timer-task-service | `agent/timer-task-service` | v2 |

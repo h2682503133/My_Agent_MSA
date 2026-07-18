@@ -2,8 +2,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace MyAgentAdminPanel.Services;
@@ -13,10 +13,11 @@ public class LlBotService
     private Process? _llbotProcess;
     private FileSystemWatcher? _qrWatcher;
     private string _llbotFolder = "";
+    private string _qqPath = "";
     private bool _isRunning;
 
     public event Action<string>? LogReceived;
-    public event Action<string>? QrCodeChanged; // qrcode.png path
+    public event Action<string>? QrCodeChanged;
     public bool IsRunning => _isRunning;
 
     public string LlbotFolder
@@ -27,6 +28,12 @@ public class LlBotService
             _llbotFolder = value;
             SetupQrWatcher();
         }
+    }
+
+    public string QqPath
+    {
+        get => _qqPath;
+        set => _qqPath = value;
     }
 
     public string QrCodePath => Path.Combine(_llbotFolder, "qrcode.png");
@@ -56,12 +63,21 @@ public class LlBotService
         if (!File.Exists(exePath))
             throw new FileNotFoundException($"找不到 {exePath}");
 
+        var utf8 = new UTF8Encoding(false);
+
+        var args = "";
+        if (!string.IsNullOrEmpty(_qqPath) && File.Exists(_qqPath))
+            args = $"--qq-path \"{_qqPath}\"";
+
         var psi = new ProcessStartInfo
         {
             FileName = exePath,
+            Arguments = args,
             WorkingDirectory = _llbotFolder,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = utf8,
+            StandardErrorEncoding = utf8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -113,19 +129,27 @@ public class LlBotService
         _qrWatcher?.Dispose();
     }
 
-    // Push QR code to dashboard-service
     public async Task PushQrCodeToDashboard(string dashboardUrl = "http://localhost:5601")
     {
         var qrPath = QrCodePath;
-        if (!File.Exists(qrPath)) return;
+        if (!File.Exists(qrPath))
+        {
+            LogReceived?.Invoke("[系统] 推送失败：qrcode.png 不存在");
+            return;
+        }
 
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var content = new ByteArrayContent(File.ReadAllBytes(qrPath));
-            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
-            var resp = await client.PostAsync($"{dashboardUrl}/api/qrcode", content);
-            LogReceived?.Invoke($"[系统] 二维码已推送到 Dashboard: {resp.StatusCode}");
+            using var formData = new MultipartFormDataContent();
+            var fileBytes = File.ReadAllBytes(qrPath);
+            var fileContent = new ByteArrayContent(fileBytes);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+            formData.Add(fileContent, "file", "qrcode.png");
+
+            var resp = await client.PostAsync($"{dashboardUrl}/api/qrcode", formData);
+            var body = await resp.Content.ReadAsStringAsync();
+            LogReceived?.Invoke($"[系统] 二维码推送结果: {resp.StatusCode} {body}");
         }
         catch (Exception ex)
         {

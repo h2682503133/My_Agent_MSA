@@ -1,0 +1,19 @@
+# admin-panel build output
+admin-panel/publish/
+admin-panel/bin/
+admin-panel/obj/
+
+# IDE
+.vs/
+*.user
+*.suo
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db

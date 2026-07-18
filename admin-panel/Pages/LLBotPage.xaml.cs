@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.Text.Json;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -27,10 +26,11 @@ public partial class LLBotPage : Page
         _llbot.LogReceived += OnLogReceived;
         _llbot.QrCodeChanged += OnQrCodeChanged;
 
-        // 加载保存的设置
         LoadSettings();
         if (!string.IsNullOrEmpty(TxtFolderPath.Text))
             _llbot.LlbotFolder = TxtFolderPath.Text;
+        if (!string.IsNullOrEmpty(TxtQqPath.Text))
+            _llbot.QqPath = TxtQqPath.Text;
 
         TxtQrUrl.Text = _llbot.QrCodeUrl;
     }
@@ -54,13 +54,12 @@ public partial class LLBotPage : Page
         });
     }
 
-    private void OnQrCodeChanged(string path)
+    private async void OnQrCodeChanged(string path)
     {
-        Dispatcher.Invoke(() =>
+        await Dispatcher.Invoke(async () =>
         {
             try
             {
-                // 等待文件完全写入
                 System.Threading.Thread.Sleep(300);
                 var bitmap = new BitmapImage();
                 bitmap.BeginInit();
@@ -77,6 +76,9 @@ public partial class LLBotPage : Page
                 TxtQrStatus.Foreground = System.Windows.Media.Brushes.Red;
             }
         });
+
+        // 自动推送到 Dashboard
+        await _llbot.PushQrCodeToDashboard();
     }
 
     private void TxtFolderPath_TextChanged(object sender, TextChangedEventArgs e)
@@ -86,7 +88,13 @@ public partial class LLBotPage : Page
             _llbot.LlbotFolder = TxtFolderPath.Text;
     }
 
-    private void BtnBrowse_Click(object sender, RoutedEventArgs e)
+    private void TxtQqPath_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _llbot.QqPath = TxtQqPath.Text;
+        SaveSettings();
+    }
+
+    private void BtnBrowseFolder_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new System.Windows.Forms.FolderBrowserDialog
         {
@@ -94,6 +102,17 @@ public partial class LLBotPage : Page
         };
         if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
             TxtFolderPath.Text = dialog.SelectedPath;
+    }
+
+    private void BtnBrowseQq_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new System.Windows.Forms.OpenFileDialog
+        {
+            Title = "选择 QQ 程序",
+            Filter = "QQ 程序|QQ.exe|所有文件|*.exe"
+        };
+        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            TxtQqPath.Text = dialog.FileName;
     }
 
     private void BtnStartStop_Click(object sender, RoutedEventArgs e)
@@ -149,7 +168,10 @@ public partial class LLBotPage : Page
                 var json = File.ReadAllText(SettingsFile);
                 var settings = JsonSerializer.Deserialize<SettingsData>(json);
                 if (settings != null)
+                {
                     TxtFolderPath.Text = settings.LlbotFolder ?? "";
+                    TxtQqPath.Text = settings.QqPath ?? "";
+                }
             }
         }
         catch { }
@@ -160,7 +182,11 @@ public partial class LLBotPage : Page
         try
         {
             Directory.CreateDirectory(SettingsDir);
-            var settings = new SettingsData { LlbotFolder = TxtFolderPath.Text };
+            var settings = new SettingsData
+            {
+                LlbotFolder = TxtFolderPath.Text,
+                QqPath = TxtQqPath.Text
+            };
             File.WriteAllText(SettingsFile, JsonSerializer.Serialize(settings));
         }
         catch { }
@@ -169,5 +195,6 @@ public partial class LLBotPage : Page
     private class SettingsData
     {
         public string? LlbotFolder { get; set; }
+        public string? QqPath { get; set; }
     }
 }
