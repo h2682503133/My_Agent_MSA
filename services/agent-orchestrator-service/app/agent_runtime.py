@@ -451,26 +451,70 @@ class AgentRuntime:
             elif result["timer_task"]:
                 timer = result["timer_task"]
                 client = TimerTaskClient()
-                resp = client.create_timer_task(
-                    user_id=task.user.id,
-                    session_id=task.user.session_id,
-                    channel_id=task.channel,
-                    trigger_timestamp=timer.get("trigger_timestamp", 0),
-                    content=timer.get("content", ""),
-                    task_type=timer.get("task_type", "submit_task"),
-                    agent_id=timer.get("agent_id", "") or getattr(self, "id", ""),
-                )
-                if resp["ok"]:
-                    reply = f"定时任务已创建：{resp['message']}"
+                task_type = timer.get("task_type", "submit_task")
+
+                if task_type == "delete":
+                    resp = client.delete_user_task(
+                        user_id=task.user.id,
+                        task_id=timer.get("content", ""),
+                    )
+                    reply = resp["message"]
+                    task.set_temp_dialog_output(reply)
+                    emit(self.build_event(
+                        task,
+                        "assistant_intermediate",
+                        text=reply,
+                        metadata={"visible_to_user": "true", "final": "false"},
+                    ))
+
+                elif task_type == "query":
+                    resp = client.list_user_tasks(
+                        user_id=timer.get("content", "") or task.user.id,
+                    )
+                    if resp["ok"]:
+                        tasks = resp["tasks"]
+                        if not tasks:
+                            reply = "当前没有定时任务"
+                        else:
+                            lines = ["当前定时任务列表："]
+                            for t in tasks:
+                                lines.append(
+                                    f"  - [{t.get('task_id','')}] {t.get('task_type','')} "
+                                    f"| {t.get('content','')} | {t.get('trigger_time_str','')}"
+                                )
+                            reply = "\n".join(lines)
+                    else:
+                        reply = f"查询定时任务失败：{resp['message']}"
+                    task.set_temp_dialog_output(reply)
+                    emit(self.build_event(
+                        task,
+                        "assistant_intermediate",
+                        text=reply,
+                        metadata={"visible_to_user": "true", "final": "false"},
+                    ))
+
                 else:
-                    reply = f"定时任务创建失败：{resp['message']}"
-                task.set_temp_dialog_output(reply)
-                emit(self.build_event(
-                    task,
-                    "assistant_intermediate",
-                    text=reply,
-                    metadata={"visible_to_user": "true", "final": "false"},
-                ))
+                    # submit_task / send_message
+                    resp = client.create_timer_task(
+                        user_id=task.user.id,
+                        session_id=task.user.session_id,
+                        channel_id=task.channel,
+                        trigger_timestamp=timer.get("trigger_timestamp", 0),
+                        content=timer.get("content", ""),
+                        task_type=task_type,
+                        agent_id=timer.get("agent_id", "") or getattr(self, "id", ""),
+                    )
+                    if resp["ok"]:
+                        reply = f"定时任务已创建：{resp['message']}"
+                    else:
+                        reply = f"定时任务创建失败：{resp['message']}"
+                    task.set_temp_dialog_output(reply)
+                    emit(self.build_event(
+                        task,
+                        "assistant_intermediate",
+                        text=reply,
+                        metadata={"visible_to_user": "true", "final": "false"},
+                    ))
 
             else:
                 final_reply = result["final_reply"]

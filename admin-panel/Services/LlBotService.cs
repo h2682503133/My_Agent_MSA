@@ -15,6 +15,7 @@ public class LlBotService
     private string _llbotFolder = "";
     private string _qqPath = "";
     private bool _isRunning;
+    private bool _isRestarting;
 
     public event Action<string>? LogReceived;
     public event Action<string>? QrCodeChanged;
@@ -86,25 +87,63 @@ public class LlBotService
         _llbotProcess.OutputDataReceived += (s, e) =>
         {
             if (!string.IsNullOrEmpty(e.Data))
+            {
                 LogReceived?.Invoke(e.Data);
+                CheckAutoRestart(e.Data);
+            }
         };
         _llbotProcess.ErrorDataReceived += (s, e) =>
         {
             if (!string.IsNullOrEmpty(e.Data))
+            {
                 LogReceived?.Invoke($"[ERR] {e.Data}");
+                CheckAutoRestart(e.Data);
+            }
         };
 
         _llbotProcess.Exited += (s, e) =>
         {
             _isRunning = false;
             LogReceived?.Invoke("[系统] llbot.exe 已退出");
+            // 如果正在自动重启流程中，不再额外处理
+            if (!_isRestarting)
+            {
+                LogReceived?.Invoke("[系统] 如需重启请手动点击启动");
+            }
         };
 
         _llbotProcess.Start();
         _llbotProcess.BeginOutputReadLine();
         _llbotProcess.BeginErrorReadLine();
         _isRunning = true;
+        _isRestarting = false;
         return _llbotProcess;
+    }
+
+    private async void CheckAutoRestart(string line)
+    {
+        if (_isRestarting) return;
+        if (!line.Contains("正在终止 QQ 进程")) return;
+
+        _isRestarting = true;
+        LogReceived?.Invoke("[系统] 检测到「正在终止 QQ 进程」，3 秒后自动重启 LLBot...");
+        await Task.Delay(3000);
+
+        // 停止当前进程
+        StopLlbot();
+        await Task.Delay(1000);
+
+        // 重新启动
+        try
+        {
+            StartLlbot();
+            _isRestarting = false;
+        }
+        catch (Exception ex)
+        {
+            LogReceived?.Invoke($"[ERR] 自动重启失败: {ex.Message}");
+            _isRestarting = false;
+        }
     }
 
     public void StopLlbot()

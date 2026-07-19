@@ -17,7 +17,7 @@ public class KubectlService
         var psi = new ProcessStartInfo
         {
             FileName = "kubectl",
-            Arguments = $"-n {ns} port-forward svc/{svc} {localPort}:{remotePort}",
+            Arguments = $"-n {ns} port-forward --address 0.0.0.0 svc/{svc} {localPort}:{remotePort}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,

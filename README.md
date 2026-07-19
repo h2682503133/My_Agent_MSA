@@ -274,11 +274,20 @@ nfs:
 NFS 目录结构：
 ```
 /srv/nfs/my-agent/
-├── config/          # 智能体配置 & 系统提示词
-├── openviking/      # OpenViking 向量数据库
 ├── assets/          # 静态资源
-├── qq-llbot/       # QQ LLBot 配置（token 等）
-├── workspace/       # 工具执行 workspace
+├── config/          # 各服务持久化配置
+│   ├── model-proxy/config/          # 模型代理配置
+│   ├── openviking/                  # OpenViking 配置
+│   ├── orchestrator/
+│   │   ├── config/                  # orchestrator 配置
+│   │   └── system_prompt/           # 智能体 System Prompt（每个智能体一个子目录）
+│   ├── qq-llbot/                    # QQ LLBot 配置
+│   └── tool-runtime/config/         # 工具执行配置
+├── openviking/      # OpenViking 数据
+│   └── viking_data/workspace/viking/
 ├── timer-tasks/     # 定时任务持久化
-└── user-data/       # 用户数据
+├── user-data/       # 用户数据
+└── workspace/       # 工具执行 workspace
+    ├── skill/       # skill 仓库
+    └── users/       # 用户 workspace（按用户ID分目录）
 ```

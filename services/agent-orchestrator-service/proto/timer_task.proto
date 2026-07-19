@@ -33,7 +33,8 @@ message TimerTaskInfo {
   string content = 7;
   string task_type = 8;
   string client_message_id = 9;
-  string created_at = 10;
+  string agent_id = 10;
+  string created_at = 11;
 }
 
 message ListUserTasksResponse {

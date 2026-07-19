@@ -21,6 +21,14 @@ public partial class PortForwardPage : Page
         InitializeComponent();
         _kubectl = kubectl;
         ForwardList.ItemsSource = Items;
+        Loaded += (s, e) => RefreshStatus();
+        IsVisibleChanged += (s, e) => { if (IsVisible) RefreshStatus(); };
+    }
+
+    private void RefreshStatus()
+    {
+        foreach (var item in Items)
+            item.IsRunning = _kubectl.IsRunning(item.ServiceName);
     }
 
     private void BtnStart_Click(object sender, RoutedEventArgs e)

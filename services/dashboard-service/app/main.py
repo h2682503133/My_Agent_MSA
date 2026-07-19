@@ -8,6 +8,7 @@ import os
 import subprocess
 import shutil
 import asyncio
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,7 @@ CONFIG_ROOT = Path(os.environ.get("CONFIG_ROOT", "/app/config"))
 STATIC_DIR = Path(__file__).parent.parent / "static"
 NAMESPACE = os.environ.get("NAMESPACE", "agent")
 SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/session"))
+PASSWORD_FILE = CONFIG_ROOT / "dashboard_password.json"
 
 # ─── Pydantic models ────────────────────────────────────────
 
@@ -42,6 +44,46 @@ class DeployRequest(BaseModel):
 
 class MessageDelete(BaseModel):
     lines: list[int]
+
+class LoginRequest(BaseModel):
+    password: str
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+# ─── 密码管理 ────────────────────────────────────────────────
+
+def _get_password() -> str:
+    """读取密码，默认 123456"""
+    if PASSWORD_FILE.exists():
+        try:
+            data = json.loads(PASSWORD_FILE.read_text())
+            return data.get("password", "123456")
+        except Exception:
+            pass
+    return "123456"
+
+def _save_password(password: str):
+    """保存密码到 PV config"""
+    PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PASSWORD_FILE.write_text(json.dumps({"password": password}))
+
+@app.post("/api/auth/login")
+async def login(body: LoginRequest):
+    if body.password == _get_password():
+        return {"ok": True}
+    raise HTTPException(401, "密码错误")
+
+@app.post("/api/auth/change-password")
+async def change_password(body: ChangePasswordRequest):
+    if body.old_password != _get_password():
+        raise HTTPException(403, "旧密码错误")
+    if len(body.new_password) < 1:
+        raise HTTPException(400, "新密码不能为空")
+    _save_password(body.new_password)
+    return {"ok": True}
 
 
 # ─── 配置管理 ────────────────────────────────────────────────
@@ -211,7 +253,7 @@ async def deploy_script(services: str = Query("")):
 
 # ─── System Prompt ──────────────────────────────────────────
 
-SYSTEM_PROMPT_ROOT = CONFIG_ROOT / "system_prompt"
+SYSTEM_PROMPT_ROOT = CONFIG_ROOT / "orchestrator" / "system_prompt"
 
 @app.get("/api/system_prompt")
 async def list_sp():
@@ -278,13 +320,19 @@ async def delete_sp(agent: str, filename: str):
 
 # ═══ 二维码 ═════════════════════════════════════════════════
 
+QRCODE_TIME_FILE = STATIC_DIR / "qrcode_time.txt"
+
 @app.post("/api/qrcode")
 async def upload_qrcode(file: UploadFile):
     """接收 admin-panel 推送的二维码图片"""
     qr_path = STATIC_DIR / "qrcode.png"
     content = await file.read()
     qr_path.write_bytes(content)
-    return {"ok": True, "size": len(content)}
+    # 记录更新时间
+    tz_utc8 = timezone(timedelta(hours=8))
+    now = datetime.now(tz_utc8).strftime("%Y-%m-%d %H:%M:%S")
+    QRCODE_TIME_FILE.write_text(now)
+    return {"ok": True, "size": len(content), "updated_at": now}
 
 @app.get("/api/qrcode")
 async def get_qrcode():
@@ -293,6 +341,16 @@ async def get_qrcode():
     if not qr_path.exists():
         raise HTTPException(404, "二维码尚未生成，请先启动 LLBot")
     return FileResponse(qr_path, media_type="image/png")
+
+@app.get("/api/qrcode/info")
+async def qrcode_info():
+    """返回二维码状态信息"""
+    qr_path = STATIC_DIR / "qrcode.png"
+    exists = qr_path.exists()
+    updated_at = ""
+    if exists and QRCODE_TIME_FILE.exists():
+        updated_at = QRCODE_TIME_FILE.read_text().strip()
+    return {"exists": exists, "updated_at": updated_at}
 
 
 # ═══ Session 管理 ═══════════════════════════════════════════

@@ -264,27 +264,38 @@ def parse_syntax(agent, task):
     # 定时任务在询问之前判断，避免同时出现时被询问分支抢走。
     timer_line = _find_command_block(full_text, "定时任务", allow_multiline=False)
     if timer_line:
-        match_timer = re.match(r"([^|]+)\|([^|]+)(?:\|(.+))?", timer_line)
+        # 统一格式: 定时任务:任务类别|智能体id|任务内容|任务时间
+        match_timer = re.match(r"([^|]+)\|([^|]+)\|([^|]+)(?:\|(.+))?", timer_line)
         if match_timer:
             task_type = match_timer.group(1).strip()
-            content = match_timer.group(2).strip()
-            agent_id = ""
-            content_match = re.match(r"^\[(\w+)\](.*)", content)
-            if content_match:
-                agent_id = content_match.group(1).strip()
-                content = content_match.group(2).strip()
-            time_str = match_timer.group(3).strip() if match_timer.group(3) else "2026-01-31 00:00:00"
-            try:
-                trigger_ts = to_timestamp(time_str)
+            agent_id = match_timer.group(2).strip()
+            content = match_timer.group(3).strip()
+            time_str = match_timer.group(4).strip() if match_timer.group(4) else ""
+
+            if task_type in ("delete", "query"):
+                # 定时任务:delete|agent_id|task_id|
+                # 定时任务:query|agent_id|user_id|
                 timer_task = {
                     "task_type": task_type,
-                    "time_str": time_str,
-                    "trigger_timestamp": trigger_ts,
                     "content": content,
                     "agent_id": agent_id,
+                    "time_str": "",
+                    "trigger_timestamp": 0.0,
                 }
-            except Exception:
-                pass
+            else:
+                # submit_task / send_message: 定时任务:类型|agent_id|内容|时间
+                time_str = time_str or "2026-01-31 00:00:00"
+                try:
+                    trigger_ts = to_timestamp(time_str)
+                    timer_task = {
+                        "task_type": task_type,
+                        "time_str": time_str,
+                        "trigger_timestamp": trigger_ts,
+                        "content": content,
+                        "agent_id": agent_id,
+                    }
+                except Exception:
+                    pass
 
     # 最后才判断询问：只有没有工具、智能体调用、定时任务时，才把
     # `询问:` 之后的全部内容作为最终用户可见问题。

@@ -59,3 +59,49 @@ class TimerTaskClient:
         except Exception as e:
             debug_log(f"TimerTaskClient.create_timer_task failed: {e}")
             return {"ok": False, "task_id": "", "message": str(e)}
+
+    def delete_user_task(self, user_id: str, task_id: str) -> dict:
+        try:
+            with grpc.insecure_channel(self.target) as channel:
+                stub = timer_task_pb2_grpc.TimerTaskStub(channel)
+                request = timer_task_pb2.DeleteUserTaskRequest(
+                    user_id=user_id,
+                    task_id=task_id,
+                )
+                response = stub.DeleteUserTask(request, timeout=10)
+                return {
+                    "ok": response.ok,
+                    "message": response.message,
+                }
+        except Exception as e:
+            debug_log(f"TimerTaskClient.delete_user_task failed: {e}")
+            return {"ok": False, "message": str(e)}
+
+    def list_user_tasks(self, user_id: str) -> dict:
+        try:
+            with grpc.insecure_channel(self.target) as channel:
+                stub = timer_task_pb2_grpc.TimerTaskStub(channel)
+                request = timer_task_pb2.ListUserTasksRequest(
+                    user_id=user_id,
+                )
+                response = stub.ListUserTasks(request, timeout=10)
+                tasks = [
+                    {
+                        "task_id": t.task_id,
+                        "user_id": t.user_id,
+                        "channel_id": t.channel_id,
+                        "session_id": t.session_id,
+                        "trigger_time": t.trigger_time,
+                        "trigger_time_str": t.trigger_time_str,
+                        "content": t.content,
+                        "task_type": t.task_type,
+                        "client_message_id": t.client_message_id,
+                        "agent_id": t.agent_id,
+                        "created_at": t.created_at,
+                    }
+                    for t in response.tasks
+                ]
+                return {"ok": True, "tasks": tasks, "message": ""}
+        except Exception as e:
+            debug_log(f"TimerTaskClient.list_user_tasks failed: {e}")
+            return {"ok": False, "tasks": [], "message": str(e)}

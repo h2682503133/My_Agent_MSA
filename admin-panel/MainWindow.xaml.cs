@@ -13,6 +13,12 @@ public partial class MainWindow : Window
     private readonly LlBotService _llbot = new();
     private Button? _activeNav;
 
+    // 页面缓存，复用实例
+    private PortForwardPage? _portForwardPage;
+    private DeployPage? _deployPage;
+    private LLBotPage? _llbotPage;
+    private DashboardPage? _dashboardPage;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -24,7 +30,6 @@ public partial class MainWindow : Window
     {
         if (sender is not Button btn) return;
 
-        // 重置所有按钮样式
         foreach (var child in ((StackPanel)btn.Parent).Children)
         {
             if (child is Button b)
@@ -40,16 +45,28 @@ public partial class MainWindow : Window
     }
 
     private void NavigateToPortForward()
-        => ContentFrame.Navigate(new PortForwardPage(_kubectl));
+    {
+        _portForwardPage ??= new PortForwardPage(_kubectl);
+        ContentFrame.Navigate(_portForwardPage);
+    }
 
     private void NavigateToDeploy()
-        => ContentFrame.Navigate(new DeployPage(_docker, _kubectl));
+    {
+        _deployPage ??= new DeployPage(_docker, _kubectl);
+        ContentFrame.Navigate(_deployPage);
+    }
 
     private void NavigateToLLBot()
-        => ContentFrame.Navigate(new LLBotPage(_llbot));
+    {
+        _llbotPage ??= new LLBotPage(_llbot);
+        ContentFrame.Navigate(_llbotPage);
+    }
 
     private void NavigateToDashboard()
-        => ContentFrame.Navigate(new DashboardPage());
+    {
+        _dashboardPage ??= new DashboardPage();
+        ContentFrame.Navigate(_dashboardPage);
+    }
 
     protected override void OnClosed(EventArgs e)
     {

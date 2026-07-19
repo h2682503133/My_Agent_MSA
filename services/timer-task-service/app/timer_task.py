@@ -103,6 +103,7 @@ def list_user_tasks(user_id: str) -> list[dict]:
                 tasks.append(task)
 
         tasks.sort(key=lambda x: x["trigger_time"])
+        timer_log(f"用户 {user_id} 查询定时任务，共 {len(tasks)} 条")
         return tasks
 
     except Exception:
