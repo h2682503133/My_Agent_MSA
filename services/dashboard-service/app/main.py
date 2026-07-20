@@ -38,10 +38,6 @@ class SystemPromptFile(BaseModel):
     filename: str
     content: str = ""
 
-class DeployRequest(BaseModel):
-    services: list[str]
-    path: str = ""
-
 class MessageDelete(BaseModel):
     lines: list[int]
 
@@ -260,6 +256,10 @@ async def list_sp():
     agents = []
     global_files = []
     if SYSTEM_PROMPT_ROOT.exists():
+        # 根目录下的直接文件（全局通用提示词）
+        for f in sorted(SYSTEM_PROMPT_ROOT.iterdir()):
+            if f.is_file() and not f.name.startswith("."):
+                global_files.append({"name": f.name, "size": f.stat().st_size})
         for d in sorted(SYSTEM_PROMPT_ROOT.iterdir()):
             if d.is_dir() and d.name == "global":
                 for f in sorted(d.iterdir()):
@@ -290,7 +290,10 @@ async def sp_delete_agent(name: str):
 
 @app.get("/api/system_prompt/global/{filename:path}")
 async def read_sp_global(filename: str):
+    # 优先查找根目录文件，再查找 global/ 子目录
     fp = SYSTEM_PROMPT_ROOT / filename
+    if not fp.exists():
+        fp = SYSTEM_PROMPT_ROOT / "global" / filename
     if not fp.exists():
         raise HTTPException(404, "文件不存在")
     return {"agent": "", "filename": filename, "content": fp.read_text("utf-8")}
@@ -304,7 +307,10 @@ async def read_sp(agent: str, filename: str):
 
 @app.put("/api/system_prompt/file")
 async def write_sp(body: SystemPromptFile):
-    fp = SYSTEM_PROMPT_ROOT / body.agent / body.filename
+    if body.agent:
+        fp = SYSTEM_PROMPT_ROOT / body.agent / body.filename
+    else:
+        fp = SYSTEM_PROMPT_ROOT / body.filename
     fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(body.content, encoding="utf-8")
     return {"ok": True}

@@ -7,17 +7,17 @@ $ErrorActionPreference = "Stop"
 
 # ─── 镜像版本配置 ───────────────────────────────────────────
 $IMAGES = @{
-    "dashboard-service"            = @{ dir = "services/dashboard-service";            tag = "v7"  }
-    "agent-orchestrator-service"   = @{ dir = "services/agent-orchestrator-service";   tag = "v15" }
-    "task-scheduler-service"       = @{ dir = "services/task-scheduler-service";       tag = "v5"  }
+    "dashboard-service"            = @{ dir = "services/dashboard-service";            tag = "v8"  }
+    "agent-orchestrator-service"   = @{ dir = "services/agent-orchestrator-service";   tag = "v16" }
+    "task-scheduler-service"       = @{ dir = "services/task-scheduler-service";       tag = "v6"  }
     "timer-task-service"           = @{ dir = "services/timer-task-service";           tag = "v2"  }
-    "gateway-backend-service"      = @{ dir = "services/gateway-backend-service";      tag = "v4"  }
+    "gateway-backend-service"      = @{ dir = "services/gateway-backend-service";      tag = "v18"  }
     "qq-llbot-service"             = @{ dir = "services/qq-llbot-service";             tag = "v1"  }
     "model-proxy-service"          = @{ dir = "services/model-proxy-service";          tag = "v3"  }
-    "openviking-context-service"   = @{ dir = "services/openviking-context-service";   tag = "v17" }
+    "openviking-context-service"   = @{ dir = "services/openviking-context-service";   tag = "v19" }
     "tool-runtime-service"         = @{ dir = "services/tool-runtime-service";         tag = "v1"  }
     "user-service"                 = @{ dir = "services/user-service";                 tag = "v1"  }
-    "frontend-service"             = @{ dir = "services/frontend-service";             tag = "v1"  }
+    "frontend-service"             = @{ dir = "services/frontend-service";             tag = "v10"  }
 }
 
 # 服务名 → YAML 文件映射
@@ -30,6 +30,7 @@ $YAML_MAP = @{
     "qq-llbot-service"             = "deploy/services/qq-llbot-service.yaml"
     "model-proxy-service"          = "deploy/services/model-proxy-service.yaml"
     "openviking-context-service"   = "deploy/services/openviking-context-service.yaml"
+    "openviking-server"            = "deploy/services/openviking-server.yaml"
     "user-service"                 = "deploy/services/user-service.yaml"
     "frontend-service"             = "deploy/services/frontend-service.yaml"
 }

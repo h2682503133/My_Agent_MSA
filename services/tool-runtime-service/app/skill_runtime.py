@@ -59,7 +59,7 @@ class SkillRuntime:
         return value
 
     def _openviking_identity(self) -> tuple[str, str]:
-        user_id = (getattr(config, "OPENVIKING_USER", "") or "system").strip()
+        user_id = (getattr(config, "OPENVIKING_USER", "") or "agent-service").strip()
         agent_id = (getattr(config, "OPENVIKING_AGENT", "") or "skills").strip()
         return user_id, agent_id
 
@@ -77,6 +77,10 @@ class SkillRuntime:
             kwargs["base_url"] = url
         elif "endpoint" in params:
             kwargs["endpoint"] = url
+        else:
+            # openviking >=0.4 uses *args/**kwargs; always pass url
+            kwargs["url"] = url
+            kwargs["api_key"] = config.OPENVIKING_API_KEY
 
         if config.OPENVIKING_API_KEY:
             for key_name in ("api_key", "root_api_key", "token", "auth_token"):
@@ -107,7 +111,6 @@ class SkillRuntime:
     def _apply_openviking_headers(self, client, user_id: str, agent_id: str) -> None:
         for attr, value in (
             ("api_key", config.OPENVIKING_API_KEY),
-            ("root_api_key", config.OPENVIKING_API_KEY),
             ("account", config.OPENVIKING_ACCOUNT),
             ("account_id", config.OPENVIKING_ACCOUNT),
             ("user_id", user_id),
@@ -321,12 +324,53 @@ class SkillRuntime:
         return str(args[0]) if args else ""
 
     def _skill_md_path(self, skill_slug: str) -> Path:
-        skill_dir = self.skill_root / skill_slug
+         # 1. 先尝试原始 slug（保留 @），例如 @steipete/weather
+        original_dir = self.skill_root / skill_slug
         for filename in ("SKILL.md", "skill.md"):
-            candidate = skill_dir / filename
+            candidate = original_dir / filename
             if candidate.exists():
                 return candidate
-        return skill_dir / "SKILL.md"
+
+        # 2. 若失败，去掉 @ 再试，或加上 @ 再试
+        clean_slug = skill_slug.lstrip("@")
+        clean_dir = self.skill_root / clean_slug
+        for filename in ("SKILL.md", "skill.md"):
+            candidate = clean_dir / filename
+            if candidate.exists():
+                return candidate
+
+        # 2b. 若 slug 不带 @，尝试在第一段前加 @（steipete/weather -> @steipete/weather）
+        if not skill_slug.startswith("@") and "/" in clean_slug:
+            at_slug = "@" + clean_slug
+            at_dir = self.skill_root / at_slug
+            for filename in ("SKILL.md", "skill.md"):
+                candidate = at_dir / filename
+                if candidate.exists():
+                    return candidate
+        # 3. 若还是失败，取最后一段（不带 @）进行模糊匹配
+        short_slug = clean_slug.rsplit("/", 1)[-1]
+        if short_slug != clean_slug:
+            short_dir = self.skill_root / short_slug
+            for filename in ("SKILL.md", "skill.md"):
+                candidate = short_dir / filename
+                if candidate.exists():
+                    return candidate
+
+        # 4. 目录名可能以 short_slug 开头（如 weather-aditya），遍历查找
+        if self.skill_root.exists():
+            for entry in sorted(self.skill_root.iterdir()):
+                if not entry.is_dir():
+                    continue
+                name = entry.name.lower()
+                slug_lower = short_slug.lower()
+                if name == slug_lower or name.startswith(slug_lower + "-") or name.startswith(slug_lower + "_"):
+                    for filename in ("SKILL.md", "skill.md"):
+                        candidate = entry / filename
+                        if candidate.exists():
+                            return candidate
+
+        # 5. 都没找到，返回原始 clean_dir 下的 SKILL.md（用于报错提示）
+        return clean_dir / "SKILL.md"
 
     def dispatch(
         self,
@@ -391,6 +435,10 @@ class SkillRuntime:
             ["install", skill_slug, "--dir", config.CLAW_EXTERNAL_VM_SKILL_ROOT_DIR, "--force"],
             timeout=timeout,
         )
+        # 安装失败时跳过 Viking 导入
+        if "执行失败" in result:
+            return f"❌ 安装失败：{result}"
+
         add_result = self.add_skill_to_viking(skill_slug)
 
         if add_result.startswith("✅"):
@@ -420,7 +468,7 @@ class SkillRuntime:
             return "错误：技能名称不能为空"
 
         try:
-            self._openviking_rm(f"viking://agent/skills/{skill_slug}")
+            self._openviking_rm(f"viking://user/agent-service/skills/{skill_slug}")
         except Exception:
             pass
 
@@ -434,7 +482,7 @@ class SkillRuntime:
 
     def skill_list(self) -> str:
         try:
-            skills = self._openviking_ls("viking://agent/skills/")
+            skills = self._openviking_ls("viking://user/agent-service/skills/")
             if not skills:
                 return "📭 Viking 知识库中暂无任何技能"
 
@@ -444,7 +492,7 @@ class SkillRuntime:
                     name = skill.get("name", "未命名")
                     desc = skill.get("abstract", "无描述")
                 else:
-                    name = str(skill)
+                    name = str(skill).rstrip("/").rsplit("/", 1)[-1]
                     desc = ""
                 output += f"{index}. {name} - {desc}\n"
             return output.strip()
@@ -453,9 +501,10 @@ class SkillRuntime:
 
     def skill_list_simple(self) -> str:
         try:
-            names = self._openviking_ls("viking://agent/skills/", simple=True)
+            names = self._openviking_ls("viking://user/agent-service/skills/", simple=True)
             if not names:
                 return "📭 暂无技能"
+            names = [n.rstrip("/").rsplit("/", 1)[-1] if "/" in str(n) else str(n) for n in names]
             return "已安装技能：\n" + "\n".join(f"- {name}" for name in names)
         except Exception as exc:
             return f"❌ 获取失败：{exc}"
@@ -464,7 +513,7 @@ class SkillRuntime:
         if not skill_name:
             return "读取 abstract 失败，请提供技能名"
         try:
-            return self._openviking_read(f"viking://agent/skills/{skill_name}/.abstract.md") or "无简介"
+            return self._openviking_read(f"viking://user/agent-service/skills/{skill_name}/.abstract.md") or "无简介"
         except Exception:
             return f"读取 abstract 失败,请检查知识库中是否有名为{skill_name}的技能"
 
@@ -472,7 +521,7 @@ class SkillRuntime:
         if not skill_name:
             return "读取 overview 失败，请提供技能名"
         try:
-            return self._openviking_read(f"viking://agent/skills/{skill_name}/.overview.md") or "无使用说明"
+            return self._openviking_read(f"viking://user/agent-service/skills/{skill_name}/.overview.md") or "无使用说明"
         except Exception:
             return f"读取 overview 失败,请检查知识库中是否有名为{skill_name}的技能"
 
@@ -480,7 +529,7 @@ class SkillRuntime:
         if not skill_name:
             return "读取 SKILL.md 失败，请提供技能名"
         try:
-            return self._openviking_read(f"viking://agent/skills/{skill_name}/SKILL.md") or "无执行文档"
+            return self._openviking_read(f"viking://user/agent-service/skills/{skill_name}/SKILL.md") or "无执行文档"
         except Exception:
             return f"读取 SKILL.md 失败,请检查知识库中是否有名为{skill_name}的技能"
 

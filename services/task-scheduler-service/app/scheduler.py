@@ -174,9 +174,10 @@ def run_task(task: ScheduledTask):
     if task.metadata.get("timer_type") == "send_message":
         gateway_log(f"{task.slot_index}号槽正处理{user_id}的定时消息，直接推送")
         event_bus.publish(task_event(task, "task_started", waiting=waiting_count()))
+        agent_prefix = f"{task.agent_id}:" if task.agent_id else ""
         event_bus.publish(task_event(
             task, "assistant_message",
-            text=task.content,
+            text=agent_prefix + task.content,
             waiting=waiting_count(),
             metadata={"visible_to_user": "true", "final": "true"},
         ))
@@ -205,6 +206,11 @@ def run_task(task: ScheduledTask):
                 success = False
             if event_type in TERMINAL_EVENT_TYPES:
                 saw_terminal_event = True
+            # 在发送给用户前添加智能体id前缀（不存储到viking）
+            if event_type == "assistant_message" and event.get("metadata", {}).get("visible_to_user") == "true":
+                agent_id = task.agent_id or event.get("metadata", {}).get("agent_id", "")
+                if agent_id:
+                    event["text"] = agent_id + ":" + event.get("text", "")
             event_bus.publish(event)
 
     except Exception as e:

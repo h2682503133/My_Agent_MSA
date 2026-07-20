@@ -40,6 +40,7 @@ class TaskRuntime:
 
     temp_dialog_input: Any = None
     temp_dialog_output: Any = None
+    last_dialog_content: str = ""
 
     main_memory: list[str] = field(default_factory=list)
     task_memory: list[str] = field(default_factory=list)

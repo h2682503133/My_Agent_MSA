@@ -70,6 +70,10 @@ class OpenVikingServerBackend:
             kwargs["base_url"] = self.url
         elif "endpoint" in params:
             kwargs["endpoint"] = self.url
+        else:
+            # openviking >=0.4 uses *args/**kwargs; always pass url
+            kwargs["url"] = self.url
+            kwargs["api_key"] = self.api_key
 
         if self.api_key:
             for key_name in ("api_key", "root_api_key", "token", "auth_token"):
@@ -125,7 +129,6 @@ class OpenVikingServerBackend:
     def _apply_headers(self, client, user_id: str, agent_id: str) -> None:
         for attr, value in (
             ("api_key", self.api_key),
-            ("root_api_key", self.api_key),
             ("account", self.account),
             ("account_id", self.account),
             ("user_id", user_id),
@@ -455,6 +458,105 @@ class OpenVikingServerBackend:
             await self._close_client(client)
 
 
+    # ── Skill methods ──────────────────────────────────────────────
+
+    async def add_skill_document(
+        self, skill_name: str, version: str, content: str, source_path: str
+    ) -> tuple[bool, str, str]:
+        client = await self._new_client(user_id="system", agent_id="skills")
+        try:
+            add_skill = getattr(client, "add_skill", None)
+            if add_skill is None:
+                raise RuntimeError("OpenViking HTTP client has no add_skill API")
+            result = await self._maybe_await(add_skill(source_path or content, wait=True))
+            uri = result.get("uri", "") if isinstance(result, dict) else ""
+            return True, uri, ""
+        except Exception as exc:
+            return False, "", str(exc)
+        finally:
+            await self._close_client(client)
+
+    async def list_skill_docs(self) -> tuple[list[str], str]:
+        client = await self._new_client(user_id="system", agent_id="skills")
+        try:
+            list_skills = getattr(client, "list_skills", None)
+            if list_skills is None:
+                raise RuntimeError("OpenViking HTTP client has no list_skills API")
+            result = await self._maybe_await(list_skills())
+            skills = result.get("skills", []) if isinstance(result, dict) else []
+            names = []
+            for s in skills:
+                if isinstance(s, dict):
+                    names.append(s.get("name", s.get("skill_name", "")))
+                elif isinstance(s, str):
+                    names.append(s)
+            return names, ""
+        except Exception as exc:
+            return [], str(exc)
+        finally:
+            await self._close_client(client)
+
+    async def read_skill_doc(self, skill_name: str, doc_type: str) -> tuple[bool, str, str]:
+        client = await self._new_client(user_id="system", agent_id="skills")
+        try:
+            get_skill = getattr(client, "get_skill", None)
+            if get_skill is None:
+                raise RuntimeError("OpenViking HTTP client has no get_skill API")
+            skill = await self._maybe_await(get_skill(skill_name, include_content=True, include_files=True))
+            if not isinstance(skill, dict):
+                return False, "", f"unexpected skill response type: {type(skill)}"
+            if doc_type == "abstract":
+                content = skill.get("abstract", "") or ""
+            elif doc_type == "overview":
+                content = skill.get("overview", "") or ""
+            elif doc_type == "manual":
+                files = skill.get("files", [])
+                if isinstance(files, list):
+                    for f in files:
+                        if isinstance(f, dict) and f.get("name", "").upper() == "SKILL.MD":
+                            content = f.get("content", "") or ""
+                            break
+                    else:
+                        content = skill.get("content", "") or ""
+                else:
+                    content = skill.get("content", "") or ""
+            else:
+                content = skill.get("content", "") or ""
+            return True, content, ""
+        except Exception as exc:
+            return False, "", str(exc)
+        finally:
+            await self._close_client(client)
+
+    async def search_skill_docs(
+        self, query: str, skill_names: list[str], top_k: int, max_tokens: int
+    ) -> tuple[list[dict], str]:
+        client = await self._new_client(user_id="system", agent_id="skills")
+        try:
+            find_skills = getattr(client, "find_skills", None)
+            if find_skills is None:
+                raise RuntimeError("OpenViking HTTP client has no find_skills API")
+            result = await self._maybe_await(find_skills(query, limit=top_k))
+            hits_raw = result.get("hits", []) if isinstance(result, dict) else []
+            hits = []
+            for h in hits_raw:
+                if isinstance(h, dict):
+                    hits.append({
+                        "skill_name": h.get("skill_name", h.get("name", "")),
+                        "doc_id": h.get("doc_id", h.get("uri", "")),
+                        "chunk_id": h.get("chunk_id", ""),
+                        "version": h.get("version", ""),
+                        "title": h.get("title", ""),
+                        "content": h.get("content", h.get("text", "")),
+                        "token_count": int(h.get("token_count", 0) or 0),
+                        "score": float(h.get("score", 0.0) or 0.0),
+                    })
+            return hits, ""
+        except Exception as exc:
+            return [], str(exc)
+        finally:
+            await self._close_client(client)
+
 class VikingStore:
     def __init__(self):
         self.mode = "mock" if config.MOCK_VIKING else config.OPENVIKING_BACKEND
@@ -495,7 +597,7 @@ class VikingStore:
         self.mode = "file"
 
     def full_session_id(self, agent_id: str, session_id: str) -> str:
-        return f"{agent_id or 'main'}_{session_id}"
+        return session_id
 
     def _mock_context(self) -> dict[str, Any]:
         return {
@@ -575,15 +677,37 @@ class VikingStore:
         return False, "file backend disabled"
 
     def add_skill_document(self, skill_name: str, version: str, content: str, source_path: str) -> tuple[bool, str, str]:
-        return False, "", "skill docs are not wired to OpenViking server adapter yet"
+        if self.mode == "mock":
+            return True, "", ""
+        if self.mode == "server":
+            return _run_coro_sync(self.server.add_skill_document(
+                skill_name=skill_name, version=version, content=content, source_path=source_path
+            ))
+        return False, "", "file backend disabled"
 
     def list_skill_docs(self, simple: bool = True) -> tuple[list[str], str]:
+        if self.mode == "mock":
+            return [], ""
+        if self.mode == "server":
+            return _run_coro_sync(self.server.list_skill_docs())
         return [], ""
 
     def read_skill_doc(self, skill_name: str, doc_type: str) -> tuple[bool, str, str]:
-        return False, "", "skill docs are not wired to OpenViking server adapter yet"
+        if self.mode == "mock":
+            return True, "", ""
+        if self.mode == "server":
+            return _run_coro_sync(self.server.read_skill_doc(
+                skill_name=skill_name, doc_type=doc_type
+            ))
+        return False, "", "file backend disabled"
 
     def search_skill_docs(self, query: str, skill_names: list[str], top_k: int, max_tokens: int) -> tuple[list[dict[str, Any]], str]:
+        if self.mode == "mock":
+            return [], ""
+        if self.mode == "server":
+            return _run_coro_sync(self.server.search_skill_docs(
+                query=query, skill_names=skill_names, top_k=top_k, max_tokens=max_tokens
+            ))
         return [], ""
 
 

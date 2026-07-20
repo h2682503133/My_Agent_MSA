@@ -128,7 +128,7 @@ class GrpcSchedulerClient(SchedulerClient):
     @staticmethod
     def _session_id(message: FrontendMessage) -> str:
         agent_id = message.agent_id or "main"
-        return message.session_id or f"web_{message.user_id}_{agent_id}"
+        return message.session_id or f"{agent_id}_web_{message.user_id}"
 
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         import grpc

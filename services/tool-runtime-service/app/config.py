@@ -1,4 +1,22 @@
 import os
+from pathlib import Path
+
+
+def _read_secret_file(env_name: str, default: str = "") -> str:
+    """Read secret from file if env var points to a file path, else return env value."""
+    value = os.getenv(env_name, "")
+    if value and os.path.isfile(value):
+        try:
+            return Path(value).read_text().strip()
+        except Exception:
+            pass
+    file_path = os.getenv(f"{env_name}_FILE", "")
+    if file_path and os.path.isfile(file_path):
+        try:
+            return Path(file_path).read_text().strip()
+        except Exception:
+            pass
+    return value
 
 
 def env_int(name: str, default: int) -> int:
@@ -26,7 +44,7 @@ DEFAULT_TIMEOUT_SECONDS = env_int("DEFAULT_TIMEOUT_SECONDS", 30)
 SKILL_ROOT_DIR = os.getenv("SKILL_ROOT_DIR", os.path.join(WORKSPACE_DIR, "skill"))
 
 OPENVIKING_SERVER_URL = os.getenv("OPENVIKING_SERVER_URL", "http://openviking.agent.svc.cluster.local:1933")
-OPENVIKING_API_KEY = os.getenv("OPENVIKING_API_KEY", "")
+OPENVIKING_API_KEY = _read_secret_file("OPENVIKING_API_KEY", "")
 OPENVIKING_ACCOUNT = os.getenv("OPENVIKING_ACCOUNT", "my-agent")
 # OpenViking root-key access to tenant-scoped APIs requires tenant + user context.
 # Keep these defaults aligned with openviking-context-service's root-key ping style.

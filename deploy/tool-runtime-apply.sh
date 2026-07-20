@@ -2,10 +2,10 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v20}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v24}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
-OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-dev-local-openviking-key}"
+OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
 OPENVIKING_ACCOUNT="${OPENVIKING_ACCOUNT:-my-agent}"
 OPENVIKING_USER="${OPENVIKING_USER:-system}"
 OPENVIKING_AGENT="${OPENVIKING_AGENT:-skills}"
@@ -359,6 +359,8 @@ spec:
           volumeMounts:
             - name: workspace
               mountPath: /app/workspace
+            - name: system-prompts
+              mountPath: /app/system_prompts
             - name: claw-external-vm-ssh
               mountPath: /app/secrets/claw-external-vm
               readOnly: true
@@ -366,6 +368,9 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: my-agent-workspace-pvc
+        - name: system-prompts
+          persistentVolumeClaim:
+            claimName: my-agent-config-pvc
         - name: claw-external-vm-ssh
           secret:
             secretName: claw-external-vm-ssh

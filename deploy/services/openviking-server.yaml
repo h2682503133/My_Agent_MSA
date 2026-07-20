@@ -17,7 +17,7 @@ data:
       "embedding": {
         "dense": {
           "provider": "openai",
-          "api_base": "http://model-serving:8000/v1",
+          "api_base": "http://host.docker.internal:11434/v1",
           "api_key": "ollama",
           "model": "nomic-embed-text:v1.5",
           "dimension": 768
@@ -25,9 +25,10 @@ data:
       },
       "vlm": {
         "provider": "openai",
-        "api_base": "http://model-serving:8000/v1",
+        "api_base": "http://host.docker.internal:11434/v1",
         "api_key": "ollama",
-        "model": "llama3.1:8b"
+        "model": "llama3.1:8b",
+        "timeout": 180
       }
     }
 ---
@@ -50,7 +51,7 @@ spec:
     spec:
       containers:
         - name: openviking
-          image: ghcr.io/volcengine/openviking:v0.3.6
+          image: ghcr.io/volcengine/openviking:v0.4.5
           imagePullPolicy: Always
           ports:
             - containerPort: 1933

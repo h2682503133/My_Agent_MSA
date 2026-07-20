@@ -184,10 +184,12 @@ def parse_syntax(agent, task):
     # 管道/重定向/多行命令被普通工具分隔逻辑或对话/切换逻辑干扰。
     priority_tool_line, priority_tool_call = _find_priority_shell_call(full_text)
     if priority_tool_call:
-        memory = task.consume_temp_dialog_input() or "本条记录因不知名原因丢失"
-        memory += "\n调用了工具:" + priority_tool_line
         task.tool_log.append("调用了工具:" + priority_tool_line)
-        task.push_context(agent, memory)
+        stack_content = "\n".join(task.tool_log)
+        if task.last_dialog_content:
+            stack_content += "\n" + task.last_dialog_content
+            task.last_dialog_content = ""
+        task.push_context(agent, stack_content)
 
         task.set_temp_dialog_output({
             "final_reply": reply,
@@ -215,10 +217,12 @@ def parse_syntax(agent, task):
     # 然后解析工具调用。
     tool_line = _find_command_block(full_text, "工具调用", allow_multiline=False)
     if tool_line:
-        memory = task.consume_temp_dialog_input() or "本条记录因不知名原因丢失"
-        memory += "\n调用了工具:" + tool_line
         task.tool_log.append("调用了工具:" + tool_line)
-        task.push_context(agent, memory)
+        stack_content = "\n".join(task.tool_log)
+        if task.last_dialog_content:
+            stack_content += "\n" + task.last_dialog_content
+            task.last_dialog_content = ""
+        task.push_context(agent, stack_content)
 
         tool_call = _parse_tool_call(tool_line)
 

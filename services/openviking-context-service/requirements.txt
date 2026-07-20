@@ -1,6 +1,6 @@
 grpcio==1.76.0
 grpcio-tools==1.76.0
 protobuf==6.33.5
-openviking==0.3.6
+openviking==0.4.10
 # openviking 请按你的原项目环境安装。
 # 如果镜像内无法安装 openviking，可以先用 MOCK_VIKING=true 测链路。

@@ -123,8 +123,6 @@ My_Agent_MSA/
 │   ├── services/               # K8s 服务 YAML
 │   └── tool-runtime-apply.sh   # tool-runtime 外部 VM 部署
 ├── deploy-all.ps1              # 一键部署（PowerShell）
-├── deploy-all.bat              # 一键部署（双击运行）
-├── port-forward.bat            # 端口转发（kubectl port-forward）
 └── 常见问题处理.md
 ```
 

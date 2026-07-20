@@ -46,7 +46,7 @@ _consumer_task = None
 
 
 def build_session_id(user_id: str, agent_id: str = "main") -> str:
-    return f"web_{user_id}_{agent_id}"
+    return f"{agent_id}_web_{user_id}"
 
 
 def get_whitelist() -> List[str]:

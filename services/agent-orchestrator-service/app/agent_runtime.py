@@ -138,6 +138,7 @@ class AgentRuntime:
 
         if final:
             task.status = "completed"
+            task.tool_log.clear()
 
         return final_reply
 
@@ -217,19 +218,14 @@ class AgentRuntime:
             debug_log(f"[{task.user.id}] 弹回复栈，当前栈长 {len(task.agent_context)}")
             context = task.pop_context()
             task.target = context["from"]
-            request = context["input"]
             output = task.consume_temp_dialog_output() or "因不知名原因输出已丢失"
 
             if cls._is_user_object(task.target, task):
                 final_reply = cls._emit_user_message(task, emit, output, final=True)
                 break
 
-            caller_id = getattr(task.caller, "id", "unknown")
-            target_id = getattr(task.target, "id", "unknown")
-            result = [target_id, request, caller_id, output]
-
             try:
-                task.set_temp_dialog_input(result)
+                task.set_temp_dialog_input(str(output))
                 task.target.send(task, emit)
             except Exception as exc:
                 final_reply = cls._emit_raw_model_fallback(task, emit, str(output), exc)
@@ -321,27 +317,12 @@ class AgentRuntime:
         self.system_prompt = system_messages
 
     def send(self, task, emit: Callable[[TaskEventDTO], None]):
-        content = task.consume_temp_dialog_input()
-
-        if not isinstance(content, str):
-            if content is not None:
-                if content[0] == content[2]:
-                    task.tool_log.append("结果" + str(content[3]))
-                    content = f"\n{content[1]}，\n结果{content[3]}"
-                else:
-                    content = f"{content[0]}的请求：\n{content[1]},\n收到来自{content[2]}的回复：\n{content[3]}"
-                    task.main_log.append(content)
-                    if content[0] == "main":
-                        task.main_memory.append(content)
-            else:
-                content = "当你看到这条消息时，意味着出现某些问题导致输入为空了"
+        content = task.consume_temp_dialog_input() or ""
 
         current_input_messages = [
             {"role": "system", "content": "以下为本次单轮对话内容"},
-            {"role": "user", "content": f"<{getattr(task.caller, 'id', 'user')}>" + content},
+            {"role": "user", "content": f"<{getattr(task.caller, 'id', 'user')}>" + str(content)},
         ]
-
-        task.set_temp_dialog_input(content)
         chat_log(f"[{self.user_id}] {self.id}收到:\n{content}")
 
         long_context_message = [
@@ -531,6 +512,7 @@ class AgentRuntime:
             self._emit_user_message(task, emit, content, final=True)
             return
 
+        task.last_dialog_content = content or ""
         task.push_context(self, content)
         chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
         debug_log(f"[{self.user_id}] [agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
@@ -578,6 +560,7 @@ class AgentRuntime:
         else:
             output = f"工具执行失败：{result['error']}"
 
+        task.tool_log.append("结果:" + str(output))
         task.set_temp_dialog_output(output)
         chat_log(f"[{self.user_id}] {self.id} 执行工具 {tool_name}:\n结果: {output}")
         debug_log(f"[{self.user_id}] [工具结果] {self.id} {output}")

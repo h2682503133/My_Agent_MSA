@@ -119,7 +119,6 @@ label.file-item:hover { color: var(--accent); }
     <button data-tab="pods" class="active">Pod 状态</button>
     <button data-tab="config">配置管理</button>
     <button data-tab="logs">日志查看</button>
-    <button data-tab="deploy">部署管理</button>
     <button data-tab="sprompt">System Prompt</button>
     <button data-tab="session">Session 管理</button>
     <button data-tab="qrcode">二维码</button>
@@ -215,24 +214,6 @@ label.file-item:hover { color: var(--accent); }
           <button class="btn green" onclick="spSave()">保存</button>
           <button class="btn danger" onclick="spDeleteFile()">删除文件</button>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 部署管理 -->
-  <div id="tab-deploy" class="tab">
-    <h2>部署管理</h2>
-    <div class="grid2">
-      <div class="card">
-        <h3>重启服务</h3>
-        <select id="restart-select"></select>
-        <button class="btn danger" onclick="restartService()" style="margin-left:8px;">重启</button>
-      </div>
-      <div class="card">
-        <h3>生成部署脚本</h3>
-        <div class="check-group" id="deploy-checks"></div>
-        <button class="btn green" onclick="genDeployScript()" style="margin-top:8px;">生成脚本</button>
-        <pre class="logs" id="deploy-script" style="margin-top:12px;max-height:300px;"></pre>
       </div>
     </div>
   </div>
@@ -497,38 +478,6 @@ async function streamLogs() {
 
 function stopStream() {
   if (logStream) { logStream.close(); logStream = null; }
-}
-
-// ─── 部署管理 ──────────────────────────────────────────────
-const ALL_SERVICES = [
-  'dashboard-service',
-  'agent-orchestrator-service', 'task-scheduler-service', 'timer-task-service',
-  'gateway-backend-service', 'qq-llbot-service', 'model-proxy-service',
-  'openviking-context-service', 'tool-runtime-service', 'user-service', 'frontend-service'
-];
-
-async function refreshDeployTab() {
-  const data = await fetch('/api/pods').then(r => r.json());
-  const sel = document.getElementById('restart-select');
-  const names = [...new Set(data.pods.map(p => p.deployment))].filter(Boolean);
-  sel.innerHTML = names.map(n => `<option value="${n}">${n}</option>`).join('');
-
-  const checks = document.getElementById('deploy-checks');
-  checks.innerHTML = ALL_SERVICES.map(s => `
-    <label><input type="checkbox" value="${s}" checked> ${s}</label>`).join('');
-}
-
-async function restartService() {
-  const name = document.getElementById('restart-select').value;
-  if (!name) return;
-  await restartOne(name);
-}
-
-async function genDeployScript() {
-  const checked = [...document.querySelectorAll('#deploy-checks input:checked')].map(c => c.value);
-  const params = new URLSearchParams({ services: checked.join(',') });
-  const data = await fetch('/api/deploy/script?' + params).then(r => r.json());
-  document.getElementById('deploy-script').textContent = data.script;
 }
 
 // ─── System Prompt ─────────────────────────────────────────

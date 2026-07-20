@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: openviking-context-service
-          image: agent/openviking-context-service:v17
+          image: agent/openviking-context-service:v19
           imagePullPolicy: Always
           ports:
             - containerPort: 5301
@@ -27,13 +27,21 @@ spec:
             - name: OPENVIKING_SERVER_URL
               value: "http://openviking.agent.svc.cluster.local:1933"
             - name: OPENVIKING_API_KEY
-              value: "dev-local-openviking-key"
+              value: "/app/config/openviking/api_key"
             - name: OPENVIKING_ACCOUNT
               value: "my-agent"
             - name: OPENVIKING_FILE_FALLBACK
               value: "false"
             - name: MOCK_VIKING
               value: "false"
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: my-agent-config-pvc
 ---
 apiVersion: v1
 kind: Service
