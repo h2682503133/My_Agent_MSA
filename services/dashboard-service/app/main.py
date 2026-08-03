@@ -24,7 +24,7 @@ app = FastAPI(title="My_Agent Dashboard")
 CONFIG_ROOT = Path(os.environ.get("CONFIG_ROOT", "/app/config"))
 STATIC_DIR = Path(__file__).parent.parent / "static"
 NAMESPACE = os.environ.get("NAMESPACE", "agent")
-SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/session"))
+SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/user/agent-service/sessions"))
 PASSWORD_FILE = CONFIG_ROOT / "dashboard_password.json"
 
 # ─── Pydantic models ────────────────────────────────────────
@@ -361,37 +361,31 @@ async def qrcode_info():
 
 # ═══ Session 管理 ═══════════════════════════════════════════
 
-@app.get("/api/session/users")
-async def session_users():
+@app.get("/api/session/sessions")
+async def session_list():
+    """列出所有 session 文件夹"""
     if not SESSION_ROOT.exists():
-        return {"users": []}
-    users = []
+        return {"sessions": []}
+    sessions = []
     for d in sorted(SESSION_ROOT.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            agent_count = sum(1 for a in d.iterdir() if a.is_dir() and not a.name.startswith("."))
-            users.append({"name": d.name, "agent_count": agent_count})
-    return {"users": users}
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        msg_file = d / "messages.jsonl"
+        msg_count = 0
+        if msg_file.exists():
+            with open(msg_file, "r", encoding="utf-8") as f:
+                msg_count = sum(1 for _ in f)
+        has_history = (d / "history").exists()
+        sessions.append({
+            "name": d.name,
+            "msg_count": msg_count,
+            "has_history": has_history,
+        })
+    return {"sessions": sessions}
 
-@app.get("/api/session/{user_id}/agents")
-async def session_agents(user_id: str):
-    user_dir = SESSION_ROOT / user_id
-    if not user_dir.exists():
-        raise HTTPException(404, "用户不存在")
-    agents = []
-    for d in sorted(user_dir.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            msg_file = d / "messages.jsonl"
-            msg_count = 0
-            if msg_file.exists():
-                with open(msg_file, "r", encoding="utf-8") as f:
-                    msg_count = sum(1 for _ in f)
-            has_history = (d / "history").exists()
-            agents.append({"name": d.name, "msg_count": msg_count, "has_history": has_history})
-    return {"agents": agents}
-
-@app.get("/api/session/{user_id}/{agent_id}/messages")
-async def session_messages(user_id: str, agent_id: str):
-    msg_file = SESSION_ROOT / user_id / agent_id / "messages.jsonl"
+@app.get("/api/session/{name}/messages")
+async def session_messages(name: str):
+    msg_file = SESSION_ROOT / name / "messages.jsonl"
     if not msg_file.exists():
         return {"messages": [], "total": 0}
     messages = []
@@ -408,9 +402,9 @@ async def session_messages(user_id: str, agent_id: str):
                 continue
     return {"messages": messages, "total": len(messages)}
 
-@app.delete("/api/session/{user_id}/{agent_id}/messages")
-async def session_delete_messages(user_id: str, agent_id: str, body: MessageDelete):
-    msg_file = SESSION_ROOT / user_id / agent_id / "messages.jsonl"
+@app.delete("/api/session/{name}/messages")
+async def session_delete_messages(name: str, body: MessageDelete):
+    msg_file = SESSION_ROOT / name / "messages.jsonl"
     if not msg_file.exists():
         raise HTTPException(404, "messages.jsonl 不存在")
     lines_to_delete = set(body.lines)
@@ -421,13 +415,13 @@ async def session_delete_messages(user_id: str, agent_id: str, body: MessageDele
         f.writelines(kept)
     return {"ok": True, "deleted": len(lines_to_delete & set(range(len(all_lines)))), "remaining": len(kept)}
 
-@app.delete("/api/session/{user_id}/{agent_id}")
-async def session_delete_agent(user_id: str, agent_id: str):
-    agent_dir = SESSION_ROOT / user_id / agent_id
-    if not agent_dir.exists():
-        raise HTTPException(404, "智能体目录不存在")
-    shutil.rmtree(agent_dir)
-    return {"ok": True, "deleted": str(agent_dir)}
+@app.delete("/api/session/{name}")
+async def session_delete(name: str):
+    session_dir = SESSION_ROOT / name
+    if not session_dir.exists():
+        raise HTTPException(404, "Session 不存在")
+    shutil.rmtree(session_dir)
+    return {"ok": True, "deleted": str(session_dir)}
 
 
 # ─── 静态页面 ────────────────────────────────────────────────

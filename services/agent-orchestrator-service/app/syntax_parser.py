@@ -21,6 +21,11 @@ _COMMAND_LINE_RE = re.compile(
 )
 _SHELL_TOOL_NAMES = {"shell", "run-shell", "command"}
 _PRIORITY_SHELL_RE = re.compile(r"^\s*(?:[-*•]\s*)?工具调用\s*:\s*shell\s*\|\s*(.*)$")
+# 用于在文本任意位置（非行首）匹配指令关键字，处理模型先说一段话再输出指令的场景
+_INLINE_COMMAND_RE = re.compile(
+    r"(?:对话|工具调用|切换|定时任务)\s*:"
+)
+_INLINE_SHELL_RE = re.compile(r"工具调用\s*:\s*shell\s*\|\s*")
 
 
 def clean_ai_thinking(text: str) -> str:
@@ -38,6 +43,31 @@ def _normalize_text(text: str) -> str:
 
 def _is_command_line(line: str) -> bool:
     return bool(_COMMAND_LINE_RE.match(line or ""))
+
+
+def _find_command_inline(full_text: str, command_name: str) -> str | None:
+    """
+    行首匹配失败时的 fallback：在文本任意位置搜索指令关键字。
+
+    处理部分模型喜欢先说一段话再输出指令的场景，例如：
+        好的，我来帮您处理这个问题。对话:target|content
+    """
+    pattern = re.compile(rf"{re.escape(command_name)}\s*:\s*")
+    match = pattern.search(full_text)
+    if not match:
+        return None
+
+    start = match.end()
+    remaining = full_text[start:]
+
+    # 截取到下一个指令关键字或文本末尾
+    next_match = _INLINE_COMMAND_RE.search(remaining)
+    if next_match:
+        value = remaining[:next_match.start()].strip()
+    else:
+        value = remaining.strip()
+
+    return value or None
 
 
 def _find_command_block(full_text: str, command_name: str, allow_multiline: bool = False) -> str | None:
@@ -65,7 +95,8 @@ def _find_command_block(full_text: str, command_name: str, allow_multiline: bool
         value = "\n".join(value_lines).strip()
         return value or None
 
-    return None
+    # 行首匹配失败，尝试内联 fallback
+    return _find_command_inline(full_text, command_name)
 
 
 def _find_question_tail(full_text: str) -> str | None:
@@ -159,7 +190,32 @@ def _find_priority_shell_call(full_text: str) -> tuple[str, dict] | tuple[None, 
             "kwargs": {"command": command},
         }
 
-    return None, None
+    # 行首匹配失败，尝试内联 fallback
+    return _find_priority_shell_inline(full_text)
+
+
+def _find_priority_shell_inline(full_text: str):
+    """_find_priority_shell_call 的内联 fallback。处理 shell 命令出现在段落中间的场景。"""
+    match = _INLINE_SHELL_RE.search(full_text)
+    if not match:
+        return None, None
+
+    remaining = full_text[match.end():]
+    next_match = _INLINE_COMMAND_RE.search(remaining)
+    if next_match:
+        command = remaining[:next_match.start()].strip()
+    else:
+        command = remaining.strip()
+
+    if not command:
+        return None, None
+
+    tool_line = f"shell|{command}"
+    return tool_line, {
+        "tool": "shell",
+        "args": [command],
+        "kwargs": {"command": command},
+    }
 
 
 def to_timestamp(time_str: str) -> float:
@@ -235,20 +291,31 @@ def parse_syntax(agent, task):
         agent_id = switch_line.strip()
         if agent_id:
             switch_target = agent_id
-            pure_switch = full_text == f"切换:{agent_id}"
+            # 允许 preamble 文本：只要没有其他指令关键字，视为纯切换
+            has_other = bool(
+                _find_command_block(full_text, "对话")
+                or _find_command_block(full_text, "工具调用")
+                or _find_command_block(full_text, "定时任务")
+            )
+            pure_switch = not has_other
             switch_call = {"target_id": agent_id, "pure": pure_switch}
             agent.set_default_agent(agent_id)
 
-    for line in full_text.splitlines():
-        match_switch2 = re.match(r"^\s*(?:[-*•]\s*)?切换到(\w+)智能体\s*$", line)
-        if match_switch2:
-            agent_id = match_switch2.group(1).strip()
-            if agent_id:
-                switch_target = agent_id
-                pure_switch = full_text == f"切换到{agent_id}智能体"
-                switch_call = {"target_id": agent_id, "pure": pure_switch}
-                agent.set_default_agent(agent_id)
-            break
+    # 切换到xxx智能体：也支持内联在段落中
+    switch2_re = re.compile(r"切换到(\w+)智能体")
+    match_switch2 = switch2_re.search(full_text)
+    if match_switch2:
+        agent_id = match_switch2.group(1).strip()
+        if agent_id and not switch_target:
+            switch_target = agent_id
+            has_other = bool(
+                _find_command_block(full_text, "对话")
+                or _find_command_block(full_text, "工具调用")
+                or _find_command_block(full_text, "定时任务")
+            )
+            pure_switch = not has_other
+            switch_call = {"target_id": agent_id, "pure": pure_switch}
+            agent.set_default_agent(agent_id)
 
     if (
         switch_target
@@ -257,13 +324,8 @@ def parse_syntax(agent, task):
         and not tool_call
         and switch_target != getattr(agent, "id", "")
     ):
-        agent_call = {
-            "target_id": switch_target,
-            "content": getattr(task, "content", "") or full_text,
-            "from_switch": True,
-        }
-        # 纯切换是控制协议，不应作为最终用户可见回复或历史 assistant 文本。
-        reply = ""
+        # 纯切换不转交目标智能体，保持原始回复内容（reply 仍为 full_text）
+        pass
 
     # 定时任务在询问之前判断，避免同时出现时被询问分支抢走。
     timer_line = _find_command_block(full_text, "定时任务", allow_multiline=False)

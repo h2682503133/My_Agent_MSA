@@ -223,13 +223,9 @@ label.file-item:hover { color: var(--accent); }
     <h2>Session 管理 <span style="font-size:0.8rem;color:var(--dim);">(openviking 对话记录)</span></h2>
     <div class="card">
       <div class="session-toolbar">
-        <span style="color:var(--dim);">用户：</span>
-        <select id="sess-user-select" onchange="sessLoadAgents()">
-          <option value="">-- 选择用户 --</option>
-        </select>
-        <span style="color:var(--dim);">智能体：</span>
-        <select id="sess-agent-select" onchange="sessLoadMessages()">
-          <option value="">-- 选择智能体 --</option>
+        <span style="color:var(--dim);">Session：</span>
+        <select id="sess-select" onchange="sessLoadMessages()">
+          <option value="">-- 选择 Session --</option>
         </select>
         <span id="sess-info" style="color:var(--dim);font-size:0.8rem;"></span>
       </div>
@@ -581,40 +577,26 @@ async function spDeleteFile() {
 
 // ═══ Session 管理 ═════════════════════════════════════════
 
-let sessUser = '', sessAgent = '', sessMessages = [];
+let sessName = '', sessMessages = [];
 
 async function sessLoadUsers() {
-  const sel = document.getElementById('sess-user-select');
+  const sel = document.getElementById('sess-select');
   sel.innerHTML = '<option value="">-- 加载中 --</option>';
   try {
-    const data = await fetch('/api/session/users').then(r => r.json());
-    sel.innerHTML = '<option value="">-- 选择用户 --</option>' +
-      (data.users || []).map(u => `<option value="${u.name}">${u.name} (${u.agent_count}个智能体)</option>`).join('');
-  } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
-}
-
-async function sessLoadAgents() {
-  sessUser = document.getElementById('sess-user-select').value;
-  sessAgent = ''; sessMessages = [];
-  document.getElementById('sess-msg-card').style.display = 'none';
-  const sel = document.getElementById('sess-agent-select');
-  if (!sessUser) { sel.innerHTML = '<option value="">-- 选择智能体 --</option>'; return; }
-  sel.innerHTML = '<option value="">-- 加载中 --</option>';
-  try {
-    const data = await fetch('/api/session/' + sessUser + '/agents').then(r => r.json());
-    sel.innerHTML = '<option value="">-- 选择智能体 --</option>' +
-      (data.agents || []).map(a => `<option value="${a.name}">${a.name} (${a.msg_count}条, ${a.has_history?'有历史':'无历史'})</option>`).join('');
+    const data = await fetch('/api/session/sessions').then(r => r.json());
+    sel.innerHTML = '<option value="">-- 选择 Session --</option>' +
+      (data.sessions || []).map(s => `<option value="${s.name}">${s.name} (${s.msg_count}条, ${s.has_history?'有历史':'无历史'})</option>`).join('');
   } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
 }
 
 async function sessLoadMessages() {
-  sessAgent = document.getElementById('sess-agent-select').value;
+  sessName = document.getElementById('sess-select').value;
   sessMessages = [];
   document.getElementById('sess-msg-card').style.display = 'none';
-  if (!sessAgent) return;
+  if (!sessName) return;
   document.getElementById('sess-info').textContent = '加载中...';
   try {
-    const data = await fetch('/api/session/' + sessUser + '/' + sessAgent + '/messages').then(r => r.json());
+    const data = await fetch('/api/session/' + sessName + '/messages').then(r => r.json());
     sessMessages = data.messages || [];
     document.getElementById('sess-msg-count').textContent = '共 ' + sessMessages.length + ' 条';
     document.getElementById('sess-info').textContent = '';
@@ -664,7 +646,7 @@ async function sessDeleteMessages() {
   if (!lines.length) return toast('请先选择要删除的消息', false);
   if (!confirm('确定删除选中的 ' + lines.length + ' 条消息？此操作不可撤销。')) return;
   try {
-    const data = await fetch('/api/session/' + sessUser + '/' + sessAgent + '/messages', {
+    const data = await fetch('/api/session/' + sessName + '/messages', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({lines: lines})
     }).then(r => r.json());
@@ -674,11 +656,11 @@ async function sessDeleteMessages() {
 }
 
 async function sessDeleteAgent() {
-  if (!confirm('确定删除 ' + sessUser + '/' + sessAgent + ' 整个文件夹？\n\n这将删除所有消息和历史记录，不可撤销！')) return;
+  if (!confirm('确定删除 ' + sessName + ' 整个文件夹？\n\n这将删除所有消息和历史记录，不可撤销！')) return;
   try {
-    await fetch('/api/session/' + sessUser + '/' + sessAgent, {method: 'DELETE'}).then(r => r.json());
-    toast('已删除 ' + sessUser + '/' + sessAgent);
-    sessLoadAgents();
+    await fetch('/api/session/' + sessName, {method: 'DELETE'}).then(r => r.json());
+    toast('已删除 ' + sessName);
+    sessLoadUsers();
     document.getElementById('sess-msg-card').style.display = 'none';
   } catch(e) { toast('删除失败', false); }
 }

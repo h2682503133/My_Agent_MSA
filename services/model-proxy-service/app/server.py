@@ -38,13 +38,18 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
                 params=dict(request.params),
             )
 
-            # 成功日志：模型ID + 最后一条用户消息（截断80字符）
-            last_msg = messages[-1]["content"] if messages else ""
-            log(
-                f"ChatCompletion success "
-                f"model={result.get('model', '?')} "
-                f"content={last_msg[:80]}{'...' if len(last_msg) > 80 else ''}"
+            import json  # 确保已导入
+
+            # 成功日志：完整原始结构体（无截断、无重排）
+            log_msg = (
+                f"ChatCompletion model={result.get('model', 'unknown')} "
+                f"prompt={result.get('prompt_tokens', 0)} completion={result.get('completion_tokens', 0)}\n"
+                f"  INPUT (raw):\n{json.dumps(messages, indent=2, ensure_ascii=False)}\n"
+                f"  OUTPUT (raw):\n{json.dumps(result, indent=2, ensure_ascii=False)}"
             )
+
+            # 如果 result 中有 reasoning_content 且不在顶层（或想单独强调），也可保留，但 json.dumps 已经包含
+            log(log_msg)
 
             return model_proxy_pb2.ChatCompletionResponse(
                 ok=True,

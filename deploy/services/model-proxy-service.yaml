@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: model-proxy-service
-          image: agent/model-proxy-service:v5
+          image: agent/model-proxy-service:v8
           imagePullPolicy: Always
           ports:
             - containerPort: 5302
@@ -52,6 +52,6 @@ spec:
   selector:
     app: model-proxy-service
   ports:
-    - name: http
+    - name: grpc
       port: 5302
       targetPort: 5302

@@ -2,7 +2,7 @@
     // State
     // ═══════════════════════════════════════════════════════════════
     const userId = localStorage.getItem("user_id");
-    const baseSessionId = localStorage.getItem("session_id") || (userId ? `main_web_${userId}` : "");
+    const baseSessionId = localStorage.getItem("session_id") || (userId ? `web_${userId}` : "");
 
     if (!userId) { window.location.href = "/login.html"; }
 
@@ -299,7 +299,7 @@
     // Messages
     // ═══════════════════════════════════════════════════════════════
     function buildSessionId(agentId) {
-      return `${agentId}_web_${userId}`;
+      return `web_${userId}`;
     }
 
     function buildClientMessageId() {

@@ -45,8 +45,8 @@ tool_client = build_tool_client()
 _consumer_task = None
 
 
-def build_session_id(user_id: str, agent_id: str = "main") -> str:
-    return f"{agent_id}_web_{user_id}"
+def build_session_id(user_id: str) -> str:
+    return f"web_{user_id}"
 
 
 def get_whitelist() -> List[str]:
@@ -165,7 +165,7 @@ async def create_message(req: FrontendMessage):
     ensure_allowed_user(user_id)
 
     if not req.session_id:
-        req.session_id = build_session_id(user_id, agent_id)
+        req.session_id = build_session_id(user_id)
 
     req.agent_id = agent_id
     req.metadata = dict(req.metadata)
@@ -268,7 +268,7 @@ async def create_conversation(
     ensure_allowed_user(user_id)
 
     agent_id = req.agent_id.strip() or "main"
-    conv = conversation_manager.create_conversation(user_id, agent_id)
+    conv = conversation_manager.get_or_create(user_id, agent_id)
     return ConversationSummary(
         agent_id=conv.agent_id,
         user_id=conv.user_id,

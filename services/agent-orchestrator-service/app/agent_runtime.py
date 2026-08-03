@@ -119,6 +119,7 @@ class AgentRuntime:
         emit: Callable[[TaskEventDTO], None],
         text: str,
         final: bool = True,
+        agent_id: str = "",
     ) -> str:
         final_reply = "" if text is None else str(text)
 
@@ -133,6 +134,7 @@ class AgentRuntime:
             metadata={
                 "visible_to_user": "true",
                 "final": "true" if final else "false",
+                "agent_id": agent_id or getattr(task, "agent_id", "") or "main",
             },
         ))
 
@@ -161,7 +163,8 @@ class AgentRuntime:
         if exc is not None:
             debug_log(f"[{task.user.id}] [fallback_raw_model_output] {exc}")
 
-        return cls._emit_user_message(task, emit, fallback_text, final=True)
+        agent_id = getattr(getattr(task, "default_agent", None), "id", "") or getattr(task, "agent_id", "") or "main"
+        return cls._emit_user_message(task, emit, fallback_text, final=True, agent_id=agent_id)
 
     @classmethod
     def get_agent(cls, agent_id: str, session_id: str, user_id: str = "default") -> "AgentRuntime":
@@ -221,7 +224,8 @@ class AgentRuntime:
             output = task.consume_temp_dialog_output() or "因不知名原因输出已丢失"
 
             if cls._is_user_object(task.target, task):
-                final_reply = cls._emit_user_message(task, emit, output, final=True)
+                agent_id = getattr(getattr(task, "default_agent", None), "id", "") or getattr(task, "agent_id", "") or "main"
+                final_reply = cls._emit_user_message(task, emit, output, final=True, agent_id=agent_id)
                 break
 
             try:
@@ -376,7 +380,7 @@ class AgentRuntime:
             )
         except Exception as exc:
             error_text = f"【模型请求失败】{exc}"
-            self._emit_user_message(task, emit, error_text, final=True)
+            self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
             return
 
         raw_model_text = self._extract_raw_model_text(model_response)
@@ -414,7 +418,7 @@ class AgentRuntime:
                 content_for_target = agent_call["content"]
 
                 if self._is_user_agent_id(target_agent_id, task):
-                    self._emit_user_message(task, emit, content_for_target, final=True)
+                    self._emit_user_message(task, emit, content_for_target, final=True, agent_id=self.id)
                     return
 
                 task.set_temp_dialog_input(content_for_target)
@@ -426,7 +430,7 @@ class AgentRuntime:
                 # 不会跨请求持久化；不能再把本轮任务置为 pause 后等待恢复。
                 # 这里把 `询问:xxx` 作为本轮最终回复发给用户，下一轮用户回答会通过
                 # context-service 带上这轮问题继续处理。
-                self._emit_user_message(task, emit, question, final=True)
+                self._emit_user_message(task, emit, question, final=True, agent_id=self.id)
                 return
 
             elif result["timer_task"]:
@@ -445,7 +449,7 @@ class AgentRuntime:
                         task,
                         "assistant_intermediate",
                         text=reply,
-                        metadata={"visible_to_user": "true", "final": "false"},
+                        metadata={"visible_to_user": "true", "final": "false", "agent_id": self.id},
                     ))
 
                 elif task_type == "query":
@@ -471,19 +475,21 @@ class AgentRuntime:
                         task,
                         "assistant_intermediate",
                         text=reply,
-                        metadata={"visible_to_user": "true", "final": "false"},
+                        metadata={"visible_to_user": "true", "final": "false", "agent_id": self.id},
                     ))
 
                 else:
                     # submit_task / send_message
+                    timer_agent_id = timer.get("agent_id", "") or getattr(self, "id", "")
+                    timer_session_id = f"{task.channel}_{task.user.id}"
                     resp = client.create_timer_task(
                         user_id=task.user.id,
-                        session_id=task.user.session_id,
+                        session_id=timer_session_id,
                         channel_id=task.channel,
                         trigger_timestamp=timer.get("trigger_timestamp", 0),
                         content=timer.get("content", ""),
                         task_type=task_type,
-                        agent_id=timer.get("agent_id", "") or getattr(self, "id", ""),
+                        agent_id=timer_agent_id,
                     )
                     if resp["ok"]:
                         reply = f"定时任务已创建：{resp['message']}"
@@ -494,7 +500,7 @@ class AgentRuntime:
                         task,
                         "assistant_intermediate",
                         text=reply,
-                        metadata={"visible_to_user": "true", "final": "false"},
+                        metadata={"visible_to_user": "true", "final": "false", "agent_id": self.id},
                     ))
 
             else:
@@ -509,7 +515,7 @@ class AgentRuntime:
         content = task.consume_temp_dialog_input()
 
         if self._is_user_agent_id(target_agent_id, task):
-            self._emit_user_message(task, emit, content, final=True)
+            self._emit_user_message(task, emit, content, final=True, agent_id=self.id)
             return
 
         task.last_dialog_content = content or ""

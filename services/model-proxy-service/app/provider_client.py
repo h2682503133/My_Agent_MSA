@@ -138,7 +138,10 @@ class ProviderClient:
         data = response.json()
 
         if "message" in data:
-            text = data["message"].get("content", "")
+            msg = data["message"]
+            text = msg.get("content", "")
+            if not text:
+                text = msg.get("reasoning_content", "") or msg.get("thinking", "")
         elif "response" in data:
             text = data.get("response", "")
         elif "text" in data:

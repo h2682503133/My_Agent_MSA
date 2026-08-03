@@ -25,7 +25,7 @@ class MockSchedulerClient(SchedulerClient):
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         task_id = f"task-{uuid.uuid4().hex[:12]}"
         session_id = message.session_id or f"web_{message.user_id}"
-        agent_id = message.agent_id or "main"
+        agent_id = message.agent_id or "main"  # kept for metadata
 
         await self._event_queue.put(
             TaskEvent(
@@ -127,15 +127,15 @@ class GrpcSchedulerClient(SchedulerClient):
 
     @staticmethod
     def _session_id(message: FrontendMessage) -> str:
-        agent_id = message.agent_id or "main"
-        return message.session_id or f"{agent_id}_web_{message.user_id}"
+        agent_id = message.agent_id or "main"  # kept for metadata
+        return message.session_id or f"web_{message.user_id}"
 
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         import grpc
 
         scheduler_pb2, scheduler_pb2_grpc = self._import_proto_modules()
         session_id = self._session_id(message)
-        agent_id = message.agent_id or "main"
+        agent_id = message.agent_id or "main"  # kept for metadata
 
         metadata = dict(message.metadata)
         metadata.setdefault("agent_id", agent_id)

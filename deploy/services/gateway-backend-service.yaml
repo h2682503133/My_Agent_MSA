@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: gateway-backend-service
-          image: agent/gateway-backend-service:v18
+          image: agent/gateway-backend-service:v21
           imagePullPolicy: Always
           ports:
             - name: http

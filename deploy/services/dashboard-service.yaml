@@ -20,7 +20,7 @@ spec:
       serviceAccountName: dashboard-sa
       containers:
         - name: dashboard-service
-          image: docker.io/agent/dashboard-service:v8
+          image: docker.io/agent/dashboard-service:v10
           imagePullPolicy: Always
           ports:
             - name: http
@@ -31,7 +31,7 @@ spec:
             - name: NAMESPACE
               value: "agent"
             - name: SESSION_ROOT
-              value: "/app/session-data/workspace/viking/my-agent/session"
+              value: "/app/session-data/workspace/viking/my-agent/user/agent-service/sessions"
           volumeMounts:
             - name: my-agent-config
               mountPath: /app/config

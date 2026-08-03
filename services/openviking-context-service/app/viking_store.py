@@ -2,7 +2,7 @@
 OpenViking context adapter for My_Agent_MSA.
 
 Matches original My_Agent/core/Agent/Agent.py semantics:
-- full_session_id = f"{agent_id}_{session_id}", e.g. main_web_h268
+- full_session_id = f"{agent_id}_{session_id}", e.g. main_web_h268 (session_id = web_h268)
 - user_id is the real OpenViking user identity
 - use official HTTP session APIs directly:
     get_session(session_id, auto_create=True)
@@ -597,7 +597,7 @@ class VikingStore:
         self.mode = "file"
 
     def full_session_id(self, agent_id: str, session_id: str) -> str:
-        return session_id
+        return f"{agent_id}_{session_id}"
 
     def _mock_context(self) -> dict[str, Any]:
         return {

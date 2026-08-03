@@ -59,7 +59,7 @@ class OrchestratorClient:
                 stub = agent_orchestrator_pb2_grpc.AgentOrchestratorStub(channel)
                 stream = stub.ExecuteTask(
                     request,
-                    timeout=config.GRPC_DEADLINE_SECONDS,
+                    timeout=None,  # 不再设总超时，由 MAX_AGENT_STEPS + 每轮 MODEL_TIMEOUT_SECONDS 自然限长
                     metadata=metadata,
                     wait_for_ready=True,
                 )
