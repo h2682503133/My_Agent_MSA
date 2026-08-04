@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package user.v1;
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  bool ok = 1;
+  string user_id = 2;
+  string user_json = 3;
+}
+
+message UpsertUserRequest {
+  string user_id = 1;
+  string user_json = 2;
+}
+
+message UpsertUserResponse {
+  bool ok = 1;
+  string user_id = 2;
+}
+
+message DeleteUserRequest {
+  string user_id = 1;
+}
+
+message DeleteUserResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message ListUsersRequest {}
+
+message UserSummary {
+  string user_id = 1;
+  string created_at = 2;
+}
+
+message ListUsersResponse {
+  repeated UserSummary users = 1;
+}
+
+message BindChannelRequest {
+  string user_id = 1;
+  string channel = 2;
+  string channel_user_id = 3;
+  int32 priority = 4;
+}
+
+message BindChannelResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message UnbindChannelRequest {
+  string user_id = 1;
+  string channel = 2;
+}
+
+message UnbindChannelResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+service User {
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc UpsertUser(UpsertUserRequest) returns (UpsertUserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc BindChannel(BindChannelRequest) returns (BindChannelResponse);
+  rpc UnbindChannel(UnbindChannelRequest) returns (UnbindChannelResponse);
+}

@@ -7,6 +7,7 @@ import grpc
 
 from app import config
 from app.event_bus import event_bus
+from app.user_client import UserClient
 from app.orchestrator_client import OrchestratorClient
 from app.scheduled_task import DeliveryTarget, ScheduledTask
 from app.scheduler import start_scheduler, submit_task
@@ -114,6 +115,7 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
 
 
 def serve():
+    event_bus.set_user_client(UserClient())
     start_scheduler(OrchestratorClient(config.ORCHESTRATOR_TARGET))
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
