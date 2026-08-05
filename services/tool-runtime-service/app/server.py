@@ -145,9 +145,8 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             query = kwargs.get("query") or kwargs.get("keyword") or (args[0] if args else "")
             return self._web_search(query=query, timeout=timeout)
 
-        # 代码生成工具先保留占位，避免误以为 Codex CLI 已接入。
         if name == "codex":
-            return "本方法未实现"
+            return self._codex(args=args, kwargs=kwargs, root=root, timeout=timeout)
 
         # 图片 URL 工具
         if name == "get-image-url-from-local":
@@ -171,6 +170,49 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             user_workspace=root,
             timeout=timeout,
         )
+
+    def _codex(self, args: list[str], kwargs: dict[str, str], root: Path, timeout: int) -> str:
+        working_dir = kwargs.get("working_dir") or (args[0] if args else str(root))
+        requirement = kwargs.get("requirement") or (args[1] if len(args) > 1 else "")
+
+        if not requirement:
+            return "错误：请提供代码需求（codex|工作目录|需求）"
+
+        # 解析容器内工作目录
+        try:
+            work_path = self._safe_workspace_path(root, working_dir)
+        except ValueError:
+            work_path = root / working_dir
+        work_path.mkdir(parents=True, exist_ok=True)
+
+        # 映射到外部 VM 路径（与 clawhub 共用 SSH 配置）
+        vm_host = config.CLAW_EXTERNAL_VM_HOST
+        if not vm_host:
+            return "错误：外部 VM 未安装 Codex CLI，请先安装（npm install -g @openai/codex）"
+
+        vm_workspace = os.getenv("CODEX_EXTERNAL_VM_WORKSPACE", "/srv/nfs/my-agent/workspace")
+        container_workspace = str(root)
+        vm_work_path = str(work_path).replace(container_workspace, vm_workspace)
+
+        script = f'cd "{vm_work_path}" && codex -p "{requirement}"'
+        return self._codex_via_ssh(script, requirement, vm_work_path, timeout)
+
+    def _codex_via_ssh(self, script: str, requirement: str, vm_work_path: str, timeout: int) -> str:
+        try:
+            from app.skill_runtime import skill_runtime
+            check = skill_runtime._run_external_vm_shell("which codex", timeout=10)
+            if "not found" in check.lower() or check.strip() == "":
+                return "错误：外部 VM 未安装 Codex CLI，请先安装（npm install -g @openai/codex）"
+        except Exception:
+            return "错误：外部 VM 未安装 Codex CLI，请先安装（npm install -g @openai/codex）"
+
+        try:
+            output = skill_runtime._run_external_vm_shell(script, timeout=timeout or 120)
+            return f"【Codex 执行完成】\n工作目录: {vm_work_path}\n需求: {requirement}\n\n{output}"
+        except subprocess.TimeoutExpired:
+            return f"Codex 执行超时（{timeout or 120}秒）"
+        except Exception as exc:
+            return f"Codex 执行失败: {exc}"
 
     def _run_shell(self, args: list[str], kwargs: dict[str, str], root: Path, timeout: int) -> str:
         if not config.ENABLE_SHELL_TOOLS:
@@ -206,6 +248,92 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         output += f"\n[exit_code] {proc.returncode}"
         return output
 
+    # ---- fetch 响应类型识别与格式化 ----
+
+    @classmethod
+    def _format_json_response(cls, status_line: str, response) -> str:
+        try:
+            parsed = response.json()
+            import json
+            formatted = json.dumps(parsed, ensure_ascii=False, indent=2)
+            return f"{status_line}\n[JSON]\n{formatted}"
+        except Exception:
+            return f"{status_line}\n[JSON·解析失败]\n{response.text}"
+
+    @classmethod
+    def _format_html_response(cls, status_line: str, response) -> str:
+        try:
+            soup = BeautifulSoup(response.text, "html.parser")
+            # 提取页面中的图片 URL
+            img_urls = []
+            for img in soup.find_all("img"):
+                src = img.get("src") or img.get("data-src") or ""
+                if src and not src.startswith("data:"):
+                    from urllib.parse import urljoin
+                    img_urls.append(urljoin(response.url, src))
+            # 去重，最多 20 张
+            seen = set()
+            unique_imgs = []
+            for u in img_urls:
+                if u not in seen:
+                    seen.add(u)
+                    unique_imgs.append(u)
+            unique_imgs = unique_imgs[:20]
+
+            # 移除无用标签
+            for tag in soup(["script", "style", "nav", "footer", "header"]):
+                tag.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+            import re
+            text = re.sub(r"\n{3,}", "\n\n", text)
+
+            result = f"{status_line}\n[HTML→文本]\n{text}"
+            if unique_imgs:
+                result += "\n\n[页面图片]\n" + "\n".join(f"- {u}" for u in unique_imgs)
+            return result
+        except Exception:
+            return f"{status_line}\n[HTML→文本·解析失败]\n{response.text}"
+
+    @staticmethod
+    def _format_image_response(status_line: str, response) -> str:
+        content_type = response.headers.get("Content-Type", "image/unknown")
+        content_length = response.headers.get("Content-Length", "未知")
+        return f"{status_line}\n[图片] 类型: {content_type} | 大小: {content_length} bytes（图片二进制数据未在文本中返回，请使用 send-image-by-url 发送）"
+
+    @classmethod
+    def _format_text_response(cls, status_line: str, response) -> str:
+        return f"{status_line}\n[文本]\n{response.text}"
+
+    @staticmethod
+    def _format_binary_response(status_line: str, response, content_type: str) -> str:
+        content_length = response.headers.get("Content-Length", "未知")
+        return f"{status_line}\n[二进制] 类型: {content_type} | 大小: {content_length} bytes（二进制数据未在文本中返回）"
+
+    _MAX_RAW_CHARS = 8000
+
+    @classmethod
+    def _process_fetch_response(cls, response) -> str:
+        content_type = response.headers.get("Content-Type", "").lower()
+        status_line = f"[status] {response.status_code}"
+
+        # 图片/二进制始终格式化（原始字节对模型无意义）
+        if "image/" in content_type:
+            return cls._format_image_response(status_line, response)
+
+        text = response.text
+        # 未超过阈值，直接返回原始文本
+        if len(text) <= cls._MAX_RAW_CHARS:
+            return f"{status_line}\n{text}"
+
+        # 超过阈值，按类型智能格式化
+        if "application/json" in content_type:
+            return cls._format_json_response(status_line, response)
+        if "text/html" in content_type:
+            return cls._format_html_response(status_line, response)
+        if "text/" in content_type:
+            return cls._format_text_response(status_line, response)
+        return cls._format_binary_response(status_line, response, content_type)
+
     def _fetch(self, args: list[str], kwargs: dict[str, str], timeout: int) -> str:
         url = kwargs.get("url") or (args[0] if args else "")
         method = (kwargs.get("method") or (args[1] if len(args) > 1 else "GET") or "GET").upper()
@@ -237,7 +365,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                     timeout=request_timeout,
                 )
 
-            return f"[status] {response.status_code}\n{response.text}"
+            return self._process_fetch_response(response)
         except Exception as exc:
             return f"请求失败：{exc}"
 
@@ -339,7 +467,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 - file-read: kwargs.path or args[0]
 - file-write: kwargs.path + kwargs.text, or args[0] + args[1]
 - delete-file: kwargs.path or args[0], file or empty directory only
-- codex: 本方法未实现
+- codex: 工作目录|需求 (调用 Codex CLI 生成代码，需宿主机安装 @openai/codex)
 - get-image-url-from-local: local image path
 - send-image-by-url: image url
 

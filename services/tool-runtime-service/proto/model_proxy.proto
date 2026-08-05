@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package model_proxy.v1;
+
+message Message {
+  string role = 1;
+  string content = 2;
+}
+
+message ChatCompletionRequest {
+  string request_id = 1;
+  string task_id = 2;
+  string agent_id = 3;
+  string model_profile = 4;
+  repeated Message messages = 5;
+  map<string, string> params = 6;
+}
+
+message Usage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+}
+
+message ChatCompletionResponse {
+  bool ok = 1;
+  string text = 2;
+  Usage usage = 3;
+  string provider = 4;
+  string model = 5;
+  string error = 6;
+}
+
+service ModelProxy {
+  rpc ChatCompletion(ChatCompletionRequest) returns (ChatCompletionResponse);
+}

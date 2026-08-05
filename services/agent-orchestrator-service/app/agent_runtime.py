@@ -267,7 +267,7 @@ class AgentRuntime:
                     user_message=task.content,
                     assistant_message=final_reply,
                     agent_id=task.agent_id or default_agent_id,
-                    tool_summaries=task.tool_log,
+                    tool_summaries=[],
                     commit_limit=int(default_agent_config.get("commit_limit", 0) or 0),
                 )
             except Exception as exc:

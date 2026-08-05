@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: agent-orchestrator-service
-        image: agent/agent-orchestrator-service:v26
+        image: agent/agent-orchestrator-service:v27
         imagePullPolicy: Always
         ports:
         - containerPort: 5300
