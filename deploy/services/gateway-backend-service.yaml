@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: gateway-backend-service
-          image: agent/gateway-backend-service:v21
+          image: agent/gateway-backend-service:v22
           imagePullPolicy: Always
           ports:
             - name: http
@@ -33,6 +33,15 @@ spec:
               value: "web-gateway-1"
             - name: USER_WHITELIST
               value: ""
+            - name: ASSETS_DIR
+              value: "/app/assets"
+          volumeMounts:
+            - name: assets
+              mountPath: /app/assets
+      volumes:
+        - name: assets
+          persistentVolumeClaim:
+            claimName: my-agent-assets-pvc
       terminationGracePeriodSeconds: 30
 ---
 apiVersion: v1

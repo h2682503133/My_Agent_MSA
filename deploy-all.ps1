@@ -11,11 +11,11 @@ $IMAGES = @{
     "agent-orchestrator-service"   = @{ dir = "services/agent-orchestrator-service";   tag = "v16" }
     "task-scheduler-service"       = @{ dir = "services/task-scheduler-service";       tag = "v6"  }
     "timer-task-service"           = @{ dir = "services/timer-task-service";           tag = "v2"  }
-    "gateway-backend-service"      = @{ dir = "services/gateway-backend-service";      tag = "v18"  }
+    "gateway-backend-service"      = @{ dir = "services/gateway-backend-service";      tag = "v22"  }
     "qq-llbot-service"             = @{ dir = "services/qq-llbot-service";             tag = "v1"  }
     "model-proxy-service"          = @{ dir = "services/model-proxy-service";          tag = "v3"  }
     "openviking-context-service"   = @{ dir = "services/openviking-context-service";   tag = "v19" }
-    "tool-runtime-service"         = @{ dir = "services/tool-runtime-service";         tag = "v1"  }
+    "tool-runtime-service"         = @{ dir = "services/tool-runtime-service";         tag = "v26"  }
     "user-service"                 = @{ dir = "services/user-service";                 tag = "v1"  }
     "frontend-service"             = @{ dir = "services/frontend-service";             tag = "v10"  }
 }
@@ -191,6 +191,16 @@ foreach ($svc in $toDeploy) {
     }
     Write-OK "$svc 已部署"
 }
+
+# ─── 图床服务（nginx 静态文件，无需构建）─────────────────────
+
+Write-Step "部署 image-assets-service"
+kubectl apply -f deploy/services/image-assets-service.yaml
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  [FAIL] image-assets-service 部署失败" -ForegroundColor Red
+    exit 1
+}
+Write-OK "image-assets-service 已部署"
 
 # ─── 完成 ───────────────────────────────────────────────────
 

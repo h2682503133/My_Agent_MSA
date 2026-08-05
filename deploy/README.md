@@ -24,6 +24,15 @@ NFS_SERVER=172.29.219.49 NFS_ROOT=/srv/nfs/my-agent bash deploy/apply-pv.sh
 kubectl apply -f deploy/services/
 ```
 
+## 服务端口
+
+| 服务 | 端口 | 类型 | 说明 |
+|---|---|---|---|
+| gateway-backend-service | 5210 | ClusterIP | 网关 API |
+| image-assets-service | **5102** | port-forward | 图床（nginx，直连宿主机） |
+| frontend-service | 80 | ClusterIP | 网页前端（经 Istio ingress） |
+| qq-satori-adapter | 5600 | ClusterIP + Endpoints | QQ Satori 适配器 |
+
 ## 目录结构
 
 ```
@@ -38,6 +47,7 @@ deploy/
 │   ├── task-scheduler-service.yaml
 │   ├── timer-task-service.yaml
 │   ├── gateway-backend-service.yaml
+│   ├── image-assets-service.yaml     # 图床（nginx，port-forward 5102）
 │   ├── qq-llbot-service.yaml
 │   ├── qq-satori-adapter-external.yaml
 │   ├── model-proxy-service.yaml

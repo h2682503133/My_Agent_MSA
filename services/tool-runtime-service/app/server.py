@@ -242,58 +242,54 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             return f"请求失败：{exc}"
 
     def _web_search(self, query: str, timeout: int) -> str:
+        """通过 SearXNG 元搜索引擎执行网页搜索。"""
         query = (query or "").strip()
         if not query:
             return "搜索失败：关键词不能为空"
 
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/130.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Connection": "close",
-            "Upgrade-Insecure-Requests": "1",
-        }
+        searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080")
 
-        try:
+        def _do_search():
             response = requests.get(
-                "https://www.baidu.com/s",
-                params={"wd": query},
-                headers=headers,
+                f"{searxng_url}/search",
+                params={"q": query, "format": "json", "categories": "general"},
                 timeout=timeout or 15,
             )
             response.raise_for_status()
+            return response.json()
 
-            soup = BeautifulSoup(response.text, "html.parser")
+        try:
+            data = _do_search()
+
             results = []
+            for item in data.get("results", [])[:4]:
+                title = item.get("title", "无标题")
+                url = item.get("url", "无链接")
+                snippet = (item.get("content") or item.get("snippet") or "")[:160]
+                results.append(f"? {title}\n【网址】{url}\n{snippet}\n")
 
-            # 兼容百度常见结果样式。
-            for item in soup.find_all("div", class_=["result", "c-container", "result-op"]):
-                if len(results) >= 4:
-                    break
-
-                try:
-                    title_node = item.find("h3")
-                    title = title_node.get_text(strip=True) if title_node else "无标题"
-
-                    link_node = item.find("a")
-                    url = link_node["href"] if link_node and link_node.has_attr("href") else "无链接"
-
-                    content = item.get_text(" ", strip=True)[:160]
-                    results.append(f"? {title}\n【网址】{url}\n{content}\n")
-                except Exception:
-                    continue
+            # 空结果时等待 1 秒后重试一次（搜索引擎偶发限流）
+            if not results:
+                import time
+                time.sleep(1)
+                data = _do_search()
+                for item in data.get("results", [])[:4]:
+                    title = item.get("title", "无标题")
+                    url = item.get("url", "无链接")
+                    snippet = (item.get("content") or item.get("snippet") or "")[:160]
+                    results.append(f"? {title}\n【网址】{url}\n{snippet}\n")
 
             if not results:
-                return f"【百度搜索：{query}】未找到相关内容（或被百度拦截）"
+                return f"【搜索：{query}】未找到相关内容\n[搜索完成，共 0 条结果]"
 
-            return f"【百度搜索：{query}】\n" + "\n".join(results)
+            engine = data.get("engines", [])
+            engine_str = f"（聚合引擎：{', '.join(engine[:3])}）" if engine else ""
+            count = len(results)
+            return f"【搜索：{query}】{engine_str}\n" + "\n".join(results) + f"\n[搜索完成，共 {count} 条结果]"
 
         except Exception as exc:
             return f"搜索失败：{exc}"
+
 
     def _get_image_url_from_local(self, local_path: str, root: Path) -> str:
         if not local_path:
@@ -307,7 +303,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         if not source.exists() or not source.is_file():
             return f"本地文件不存在：{source}"
 
-        asset_dir = Path(os.getenv("IMAGE_ASSET_DIR", str(root / ".assets" / "images"))).resolve()
+        asset_dir = Path(os.getenv("IMAGE_ASSET_DIR", "/app/assets/images")).resolve()
         asset_dir.mkdir(parents=True, exist_ok=True)
 
         suffix = source.suffix or mimetypes.guess_extension(mimetypes.guess_type(str(source))[0] or "") or ""
@@ -315,7 +311,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         target = asset_dir / target_name
         shutil.copyfile(source, target)
 
-        base_url = os.getenv("IMAGE_BASE_URL", "").rstrip("/")
+        base_url = os.getenv("IMAGE_BASE_URL", "http://localhost:5102/assets").rstrip("/")
         if base_url:
             url = f"{base_url}/{urllib.parse.quote(target_name)}"
         else:

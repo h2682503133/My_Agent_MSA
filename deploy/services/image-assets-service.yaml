@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-assets-service
+  namespace: agent
+  labels:
+    app: image-assets-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: image-assets-service
+  template:
+    metadata:
+      labels:
+        app: image-assets-service
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: assets
+              mountPath: /usr/share/nginx/html/assets
+              subPath: images
+      volumes:
+        - name: assets
+          persistentVolumeClaim:
+            claimName: my-agent-assets-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: image-assets-service
+  namespace: agent
+  labels:
+    app: image-assets-service
+spec:
+  type: ClusterIP
+  selector:
+    app: image-assets-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

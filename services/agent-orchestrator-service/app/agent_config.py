@@ -62,6 +62,8 @@ def _is_legacy_flat_config(data: dict[str, Any]) -> bool:
 
 
 def load_agent_config(path: Path, user_id: str, agent_id: str) -> dict[str, Any]:
+    import sys
+    print(f"[load_agent_config] user_id={user_id!r} agent_id={agent_id!r}", file=sys.stderr, flush=True)
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -86,6 +88,9 @@ def load_agent_config(path: Path, user_id: str, agent_id: str) -> dict[str, Any]
     user_agent_config = user_config.get(agent_id)
 
     if default_agent_config is None and user_agent_config is None:
+        import traceback, sys
+        traceback.print_stack(file=sys.stderr)
+        print(f"[load_agent_config ERROR] user_id={user_id!r} agent_id={agent_id!r}", file=sys.stderr, flush=True)
         raise KeyError(f"未找到智能体配置：user={user_id}, agent={agent_id}")
 
     if default_agent_config is None:

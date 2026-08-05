@@ -168,6 +168,7 @@ class AgentRuntime:
 
     @classmethod
     def get_agent(cls, agent_id: str, session_id: str, user_id: str = "default") -> "AgentRuntime":
+        debug_log(f"[get_agent] calling with agent_id={agent_id!r} session_id={session_id!r} user_id={user_id!r}")
         user_id = user_id or "default"
         key = f"{user_id}_{session_id}_{agent_id}"
         if key in cls._agent_instances:
@@ -187,6 +188,8 @@ class AgentRuntime:
     @classmethod
     def first_call(cls, task):
         agent_id = task.agent_id or cls.default_agent.get(task.user.session_id, "main")
+        if not agent_id or not str(agent_id).strip():
+            agent_id = "main"
         cls.default_agent[task.user.session_id] = agent_id
         target = cls.get_agent(agent_id, task.user.session_id, task.user.id)
         task.target = target
@@ -221,6 +224,7 @@ class AgentRuntime:
             debug_log(f"[{task.user.id}] 弹回复栈，当前栈长 {len(task.agent_context)}")
             context = task.pop_context()
             task.target = context["from"]
+            stack_input = context.get("input", "")
             output = task.consume_temp_dialog_output() or "因不知名原因输出已丢失"
 
             if cls._is_user_object(task.target, task):
@@ -229,6 +233,14 @@ class AgentRuntime:
                 break
 
             try:
+                # 弹栈时把栈内容拼在前面，并在 output 前加【收到返回】标记
+                parts = []
+                if stack_input:
+                    parts.append(stack_input)
+                original_result = str(output)
+                parts.append("【收到返回】\n" + original_result)
+                output = "\n\n".join(parts)
+                task.tool_log.append("收到返回:" + original_result)
                 task.set_temp_dialog_input(str(output))
                 task.target.send(task, emit)
             except Exception as exc:
@@ -254,12 +266,43 @@ class AgentRuntime:
                     task_id=task.task_id,
                     user_message=task.content,
                     assistant_message=final_reply,
-                    agent_id=default_agent_id,
+                    agent_id=task.agent_id or default_agent_id,
                     tool_summaries=task.tool_log,
                     commit_limit=int(default_agent_config.get("commit_limit", 0) or 0),
                 )
             except Exception as exc:
                 debug_log(f"[{task.user.id}] append_turn failed: {exc}")
+
+            # 将 tool_log 总结后持久化到 tool 的上下文，供 tool agent 后续检索
+            if task.tool_log:
+                try:
+                    tool_log_text = "\n".join(task.tool_log)
+                    reader = cls.get_agent("reader", task.user.session_id, task.user.id)
+                    reader_profile = reader.config.get("model_profile") or reader.config.get("model") or "reader"
+                    summary_messages = [
+                        {"role": "system", "content": "请用一句话总结以下工具执行记录，只输出总结内容。"},
+                        {"role": "user", "content": tool_log_text},
+                    ]
+                    summary_resp = cls.model_client.chat_completion(
+                        task_id=task.task_id,
+                        agent_id="reader",
+                        model_profile=reader_profile,
+                        messages=summary_messages,
+                        params={"temperature": 0.3, "max_tokens": "256", "stream": "false"},
+                    )
+                    summary_text = summary_resp.get("text", "") or tool_log_text
+                    cls.context_client.append_turn(
+                        user_id=task.user.id,
+                        session_id=task.user.session_id,
+                        task_id=task.task_id,
+                        user_message="工具执行记录",
+                        assistant_message=summary_text,
+                        agent_id="tool",
+                        tool_summaries=[],
+                        commit_limit=0,
+                    )
+                except Exception as exc:
+                    debug_log(f"[{task.user.id}] tool_log summary append failed: {exc}")
 
         emit(cls.build_event(task, "task_completed"))
         return final_reply
@@ -291,6 +334,7 @@ class AgentRuntime:
         AgentRuntime.default_agent[self.session_id] = agent_id
 
     def load_config(self):
+        debug_log(f"[load_config] self.id={self.id!r} self.user_id={self.user_id!r}")
         if not config.AGENT_CONFIG_PATH.exists():
             raise FileNotFoundError(f"未找到智能体配置：{config.AGENT_CONFIG_PATH}")
         self.config = load_agent_config(
@@ -376,7 +420,7 @@ class AgentRuntime:
                 agent_id=self.id,
                 model_profile=model_profile,
                 messages=messages,
-                params=params,
+                params=params
             )
         except Exception as exc:
             error_text = f"【模型请求失败】{exc}"
@@ -514,12 +558,16 @@ class AgentRuntime:
     def call_agent(self, target_agent_id: str, task, emit: Callable[[TaskEventDTO], None]):
         content = task.consume_temp_dialog_input()
 
+        if not target_agent_id or not str(target_agent_id).strip():
+            debug_log(f"[{self.user_id}] call_agent ignored: empty target_agent_id from {self.id}")
+            return
+
         if self._is_user_agent_id(target_agent_id, task):
             self._emit_user_message(task, emit, content, final=True, agent_id=self.id)
             return
 
         task.last_dialog_content = content or ""
-        task.push_context(self, content)
+        task.push_context(self, "【已发送给" + target_agent_id + "】\n" + content)
         chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
         debug_log(f"[{self.user_id}] [agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
         task.target = AgentRuntime.get_agent(target_agent_id, self.session_id, task.user.id)

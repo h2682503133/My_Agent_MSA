@@ -79,7 +79,7 @@ mkdir -p "$NFS_ROOT/config/tool-runtime/config"
 mkdir -p "$NFS_ROOT/config/qq-llbot"
 
 mkdir -p "$NFS_ROOT/openviking/viking_data"
-mkdir -p "$NFS_ROOT/assets"
+mkdir -p "$NFS_ROOT/assets/images"
 mkdir -p "$NFS_ROOT/workspace"
 mkdir -p "$NFS_ROOT/timer-tasks"
 mkdir -p "$NFS_ROOT/user-data"

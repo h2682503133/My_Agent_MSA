@@ -51,7 +51,7 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
         log(
             "ExecuteTask received "
             f"task_id={request.task_id} user_id={request.user_id} "
-            f"session_id={request.session_id} channel={request.channel}"
+            f"session_id={request.session_id} channel={request.channel} agent_id={request.agent_id}"
         )
 
         task = TaskRuntime.from_execute_request(request)

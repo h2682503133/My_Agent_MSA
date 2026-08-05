@@ -241,10 +241,13 @@ def parse_syntax(agent, task):
     priority_tool_line, priority_tool_call = _find_priority_shell_call(full_text)
     if priority_tool_call:
         task.tool_log.append("调用了工具:" + priority_tool_line)
-        stack_content = "\n".join(task.tool_log)
+        stack_parts = []
+        if task.tool_log:
+            stack_parts.append("【本轮已执行的工具】\n" + "\n".join(task.tool_log))
         if task.last_dialog_content:
-            stack_content += "\n" + task.last_dialog_content
+            task.tool_log.append("收到请求:" + task.last_dialog_content)
             task.last_dialog_content = ""
+        stack_content = "\n".join(stack_parts) if stack_parts else ""
         task.push_context(agent, stack_content)
 
         task.set_temp_dialog_output({
@@ -274,10 +277,13 @@ def parse_syntax(agent, task):
     tool_line = _find_command_block(full_text, "工具调用", allow_multiline=False)
     if tool_line:
         task.tool_log.append("调用了工具:" + tool_line)
-        stack_content = "\n".join(task.tool_log)
+        stack_parts = []
+        if task.tool_log:
+            stack_parts.append("【本轮已执行的工具】\n" + "\n".join(task.tool_log))
         if task.last_dialog_content:
-            stack_content += "\n" + task.last_dialog_content
+            task.tool_log.append("收到请求:" + task.last_dialog_content)
             task.last_dialog_content = ""
+        stack_content = "\n".join(stack_parts) if stack_parts else ""
         task.push_context(agent, stack_content)
 
         tool_call = _parse_tool_call(tool_line)

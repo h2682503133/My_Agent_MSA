@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v24}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v28}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -16,8 +16,15 @@ CLAW_EXTERNAL_VM_USER="${CLAW_EXTERNAL_VM_USER:-$(id -un)}"
 CLAW_EXTERNAL_VM_SKILL_ROOT_DIR="${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR:-/srv/nfs/my-agent/workspace/skill}"
 CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING="${CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING:-false}"
 
-MY_AGENT_SSH_KEY_FILE="${MY_AGENT_SSH_KEY_FILE:-$HOME/.ssh/my_agent_tool_runtime_ed25519}"
-MY_AGENT_CLAWHUB_WRAPPER="${MY_AGENT_CLAWHUB_WRAPPER:-$HOME/.local/bin/my-agent-clawhub}"
+# 处理 sudo 场景：保存真实用户信息，避免 root 环境下找不到 nvm/ssh key
+REAL_USER="${SUDO_USER:-$(id -un)}"
+REAL_HOME="$(eval echo ~"$REAL_USER")"
+
+MY_AGENT_SSH_KEY_FILE="${MY_AGENT_SSH_KEY_FILE:-$REAL_HOME/.ssh/my_agent_tool_runtime_ed25519}"
+MY_AGENT_CLAWHUB_WRAPPER="${MY_AGENT_CLAWHUB_WRAPPER:-$REAL_HOME/.local/bin/my-agent-clawhub}"
+
+# 图床外部 URL：通过 host.docker.internal 解析宿主机 IP
+export IMAGE_BASE_URL="http://localhost:5102/assets"
 
 sudo_cmd() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -57,23 +64,32 @@ detect_clawhub_real_bin() {
     echo "${CLAW_REAL_CLAWHUB_BIN}"
     return
   fi
+  # 优先用真实用户的 PATH 查找（sudo 下 command -v 找不到 nvm 里的命令）
+  if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v clawhub >/dev/null 2>&1; then
+    sudo -u "$REAL_USER" command -v clawhub
+    return
+  fi
   if command -v clawhub >/dev/null 2>&1; then
     command -v clawhub
     return
   fi
-  if [ -d "$HOME/.nvm/versions/node" ]; then
-    find "$HOME/.nvm/versions/node" -path "*/bin/clawhub" -type f -perm -u+x 2>/dev/null | sort -V | tail -n 1
+  if [ -d "$REAL_HOME/.nvm/versions/node" ]; then
+    find "$REAL_HOME/.nvm/versions/node" -path "*/bin/clawhub" -type f -perm -u+x 2>/dev/null | sort -V | tail -n 1
     return
   fi
 }
 
 detect_node_bin() {
+  if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v node >/dev/null 2>&1; then
+    sudo -u "$REAL_USER" command -v node
+    return
+  fi
   if command -v node >/dev/null 2>&1; then
     command -v node
     return
   fi
-  if [ -d "$HOME/.nvm/versions/node" ]; then
-    find "$HOME/.nvm/versions/node" -path "*/bin/node" -type f -perm -u+x 2>/dev/null | sort -V | tail -n 1
+  if [ -d "$REAL_HOME/.nvm/versions/node" ]; then
+    find "$REAL_HOME/.nvm/versions/node" -path "*/bin/node" -type f -perm -u+x 2>/dev/null | sort -V | tail -n 1
     return
   fi
 }
@@ -167,8 +183,8 @@ ensure_sshd_running() {
 ensure_ssh_key_authorized() {
   echo "检查 My_Agent 专用 SSH key..."
 
-  mkdir -p "$HOME/.ssh"
-  chmod 700 "$HOME/.ssh"
+  mkdir -p "$REAL_HOME/.ssh"
+  chmod 700 "$REAL_HOME/.ssh"
 
   if [ ! -f "$MY_AGENT_SSH_KEY_FILE" ]; then
     echo "生成 SSH key: $MY_AGENT_SSH_KEY_FILE"
@@ -179,14 +195,14 @@ ensure_ssh_key_authorized() {
     ssh-keygen -y -f "$MY_AGENT_SSH_KEY_FILE" > "${MY_AGENT_SSH_KEY_FILE}.pub"
   fi
 
-  touch "$HOME/.ssh/authorized_keys"
+  touch "$REAL_HOME/.ssh/authorized_keys"
 
-  if ! grep -qxF "$(cat "${MY_AGENT_SSH_KEY_FILE}.pub")" "$HOME/.ssh/authorized_keys"; then
+  if ! grep -qxF "$(cat "${MY_AGENT_SSH_KEY_FILE}.pub")" "$REAL_HOME/.ssh/authorized_keys"; then
     echo "写入 authorized_keys"
-    cat "${MY_AGENT_SSH_KEY_FILE}.pub" >> "$HOME/.ssh/authorized_keys"
+    cat "${MY_AGENT_SSH_KEY_FILE}.pub" >> "$REAL_HOME/.ssh/authorized_keys"
   fi
 
-  chmod 600 "$HOME/.ssh/authorized_keys"
+  chmod 600 "$REAL_HOME/.ssh/authorized_keys"
   chmod 600 "$MY_AGENT_SSH_KEY_FILE"
   chmod 644 "${MY_AGENT_SSH_KEY_FILE}.pub"
 }
@@ -211,21 +227,32 @@ ensure_skill_root_dir() {
 verify_local_ssh_login() {
   echo "验证本机 SSH 登录..."
 
-  ssh \
-    -i "$MY_AGENT_SSH_KEY_FILE" \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -p "$CLAW_EXTERNAL_VM_PORT" \
-    "${CLAW_EXTERNAL_VM_USER}@127.0.0.1" \
-    "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V" >/tmp/my_agent_ssh_check.log 2>&1 || {
-      echo "SSH 登录或 clawhub 检测失败"
-      echo "详细输出："
-      cat /tmp/my_agent_ssh_check.log
-      echo
-      echo "请确认当前用户 ${CLAW_EXTERNAL_VM_USER} 可以本机 SSH 登录，并且 ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} 可以执行"
-      exit 1
-    }
+  local ssh_log
+  ssh_log="$(mktemp)" || ssh_log="/tmp/my_agent_ssh_check_$$.log"
 
+  # 以真实用户身份执行 SSH 测试（避免 root 的 known_hosts 干扰）
+  if [ "$(id -un)" != "$REAL_USER" ]; then
+    sudo -u "$REAL_USER" ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V" >"$ssh_log" 2>&1
+  else
+    ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V" >"$ssh_log" 2>&1
+  fi
+
+  local ssh_rc=$?
+  if [ $ssh_rc -ne 0 ]; then
+    echo "SSH 登录或 clawhub 检测失败（退出码: $ssh_rc）"
+    echo "详细输出："
+    cat "$ssh_log"
+    rm -f "$ssh_log"
+    echo
+    echo "常见原因："
+    echo "  1. sshd 未启动：sudo service ssh start"
+    echo "  2. 密钥未授权：确保 ${MY_AGENT_SSH_KEY_FILE}.pub 在 ${REAL_HOME}/.ssh/authorized_keys 中"
+    echo "  3. 防火墙阻止：检查端口 ${CLAW_EXTERNAL_VM_PORT}"
+    echo "  4. PasswordAuthentication 未关闭导致密钥认证失败"
+    exit 1
+  fi
+
+  rm -f "$ssh_log"
   echo "本机 SSH 登录验证通过"
 }
 
@@ -292,6 +319,32 @@ main() {
     CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING
 
   cat <<'YAML' | envsubst | kubectl apply -f -
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: searxng-config
+  namespace: ${NAMESPACE}
+data:
+  settings.yml: |
+    use_default_settings: true
+    search:
+      formats:
+        - html
+        - json
+    server:
+      secret_key: "my-agent-searxng-internal-key"
+      bind_address: "0.0.0.0"
+      limiter: false
+      image_proxy: false
+    ui:
+      static_use_hash: true
+  limiter.yml: |
+    botdetection:
+      ip_limit:
+        filter_link_token: false
+        link_token: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -314,7 +367,7 @@ spec:
       containers:
         - name: tool-runtime-service
           image: ${TOOL_RUNTIME_IMAGE}
-          imagePullPolicy: Never
+          imagePullPolicy: Always
           ports:
             - name: grpc
               containerPort: 5303
@@ -353,8 +406,14 @@ spec:
               value: "${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR}"
             - name: CLAW_EXTERNAL_VM_CLAWHUB_BIN
               value: "${CLAW_EXTERNAL_VM_CLAWHUB_BIN}"
+            - name: SEARXNG_URL
+              value: "http://localhost:8080"
             - name: CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING
               value: "${CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING}"
+            - name: IMAGE_ASSET_DIR
+              value: "/app/assets/images"
+            - name: IMAGE_BASE_URL
+              value: "${IMAGE_BASE_URL}"
 
           volumeMounts:
             - name: workspace
@@ -364,6 +423,21 @@ spec:
             - name: claw-external-vm-ssh
               mountPath: /app/secrets/claw-external-vm
               readOnly: true
+            - name: assets
+              mountPath: /app/assets
+        - name: searxng
+          image: searxng/searxng:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: searxng-config
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+            - name: searxng-config
+              mountPath: /etc/searxng/limiter.yml
+              subPath: limiter.yml
       volumes:
         - name: workspace
           persistentVolumeClaim:
@@ -371,10 +445,16 @@ spec:
         - name: system-prompts
           persistentVolumeClaim:
             claimName: my-agent-config-pvc
+        - name: assets
+          persistentVolumeClaim:
+            claimName: my-agent-assets-pvc
         - name: claw-external-vm-ssh
           secret:
             secretName: claw-external-vm-ssh
             defaultMode: 0400
+        - name: searxng-config
+          configMap:
+            name: searxng-config
 ---
 apiVersion: v1
 kind: Service

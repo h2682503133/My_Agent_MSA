@@ -527,6 +527,37 @@ async def raw_workspace_file(
     from fastapi.responses import Response
     return Response(content=content.encode("utf-8"), media_type=media_type)
 
+@app.get("/api/assets/{filename:path}")
+async def serve_asset(filename: str):
+    """Serve shared assets (images etc.) from the assets PVC."""
+    import os as _os
+    assets_root = _os.getenv("ASSETS_DIR", "/app/assets")
+    filepath = Path(assets_root) / filename
+
+    try:
+        filepath.resolve().relative_to(Path(assets_root).resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="path traversal denied")
+
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(status_code=404, detail="asset not found")
+
+    ext = filepath.suffix.lower()
+    mime_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".bmp": "image/bmp",
+        ".ico": "image/x-icon",
+    }
+    media_type = mime_map.get(ext, "application/octet-stream")
+
+    from fastapi.responses import FileResponse
+    return FileResponse(str(filepath), media_type=media_type)
+
 
 @app.post("/api/workspace/files/write")
 async def write_workspace_file(
