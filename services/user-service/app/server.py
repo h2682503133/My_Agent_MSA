@@ -75,6 +75,17 @@ class UserService(user_pb2_grpc.UserServicer):
             message=result,
         )
 
+    def SetOpenVikingKey(self, request, context):
+        ok = user_store.set_openviking_key(request.user_id, request.api_key)
+        return user_pb2.SetOpenVikingKeyResponse(ok=ok)
+
+    def GetOpenVikingKey(self, request, context):
+        key = user_store.get_openviking_key(request.user_id)
+        return user_pb2.GetOpenVikingKeyResponse(
+            ok=key is not None,
+            api_key=key or "",
+        )
+
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))

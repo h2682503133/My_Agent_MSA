@@ -222,10 +222,13 @@ class AgentRuntime:
                 return final_reply
 
             debug_log(f"[{task.user.id}] 弹回复栈，当前栈长 {len(task.agent_context)}")
+            returning_agent_id = getattr(task.target, 'id', '')
             context = task.pop_context()
             task.target = context["from"]
             stack_input = context.get("input", "")
             output = task.consume_temp_dialog_output() or "因不知名原因输出已丢失"
+            if task.target is not None and hasattr(task.target, 'id') and task.target.id == "main":
+                task.main_memory.append(f"←{returning_agent_id}: {str(output)}")
 
             if cls._is_user_object(task.target, task):
                 agent_id = getattr(getattr(task, "default_agent", None), "id", "") or getattr(task, "agent_id", "") or "main"
@@ -394,10 +397,12 @@ class AgentRuntime:
                 task_memory += "\n" + item
             task_memory_messages = [{"role": "system", "content": task_memory}]
 
-        user_input_messages = [
-            {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
-            {"role": "user", "content": f"<{task.user.id}>" + task.content},
-        ]
+        user_input_messages = []
+        if self.id == "main":
+            user_input_messages = [
+                {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
+                {"role": "user", "content": f"<{task.user.id}>" + task.content},
+            ]
 
         messages = (
             long_context_message
@@ -568,6 +573,8 @@ class AgentRuntime:
 
         task.last_dialog_content = content or ""
         task.push_context(self, "【已发送给" + target_agent_id + "】\n" + content)
+        if self.id == "main":
+            task.main_memory.append(f"→{target_agent_id}: {content}")
         chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
         debug_log(f"[{self.user_id}] [agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
         task.target = AgentRuntime.get_agent(target_agent_id, self.session_id, task.user.id)

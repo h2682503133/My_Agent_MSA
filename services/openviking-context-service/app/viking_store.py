@@ -13,8 +13,11 @@ Matches original My_Agent/core/Agent/Agent.py semantics:
 
 import asyncio
 import inspect
+import json as _json
 import re
 import threading
+import urllib.request
+import urllib.error
 from typing import Any
 
 from app import config
@@ -46,23 +49,160 @@ def _run_coro_sync(coro):
 
 
 class OpenVikingServerBackend:
-    def __init__(self, url: str, api_key: str = "", account: str = ""):
+    def __init__(self, url: str, api_key: str = "", account: str = "", account_mode: str = "fixed", root_api_key: str = ""):
         self.url = (url or "").rstrip("/")
         self.api_key = api_key or ""
+        self.root_api_key = root_api_key or ""
         self.account = account or "my-agent"
+        self.account_mode = account_mode or "fixed"
+        self._user_api_keys: dict[str, str] = {}  # user_id -> per-user API key cache
+    def _resolve_account(self, user_id: str) -> str:
+        """所有用户共用同一个 OpenViking Account，靠 per-user API key 隔离。"""
+        return self.account
+
+    def _http_request(self, method: str, path: str, api_key: str, body: dict | None = None) -> dict:
+        """同步 HTTP 请求 OpenViking REST API。"""
+        url = f"{self.url}{path}"
+        data = _json.dumps(body).encode("utf-8") if body else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("X-API-Key", api_key)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body_text = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            raise RuntimeError(f"OpenViking HTTP {e.code}: {body_text}")
+
+    def _ensure_openviking_user(self, user_id: str) -> str:
+        """确保 OpenViking 中存在该用户，返回其 per-user API key。
+        
+        用 root_api_key 在 account 下创建用户，返回 user_key。
+        如果用户已存在（409），尝试从缓存返回。
+        """
+        if not self.root_api_key:
+            raise RuntimeError(
+                "OPENVIKING_ROOT_API_KEY is required to create users. "
+                "Set it via env or secret file."
+            )
+
+        account = self._resolve_account(user_id)
+        debug_log(f"[user-create] creating OpenViking user {user_id} in account {account}")
+        try:
+            result = self._http_request(
+                "POST",
+                f"/api/v1/admin/accounts/{account}/users",
+                self.root_api_key,
+                {"user_id": user_id, "role": "user"},
+            )
+        except RuntimeError as e:
+            error_msg = str(e)
+            if "409" in error_msg or "already exists" in error_msg.lower():
+                stored = self._fetch_key_from_user_service(user_id)
+                if stored:
+                    self._user_api_keys[user_id] = stored
+                    log(f"[user-create] user {user_id} exists, using stored key")
+                    return stored
+                log(f"[user-create] user {user_id} exists, deleting and recreating")
+                self._http_request("DELETE", f"/api/v1/admin/accounts/{account}/users/{user_id}", self.root_api_key)
+                result = self._http_request(
+                    "POST", f"/api/v1/admin/accounts/{account}/users", self.root_api_key,
+                    {"user_id": user_id, "role": "user"},
+                )
+            else:
+                raise
+
+        user_key = (result.get("result", {}) or {}).get("user_key", "") or result.get("user_key", "") or result.get("api_key", "") or ""
+        if user_key:
+            self._user_api_keys[user_id] = user_key
+            self._store_key_to_user_service(user_id, user_key)
+            log(f"[user-create] OpenViking user {user_id} created, key cached")
+        else:
+            log(f"[user-create] OpenViking user {user_id} created but no key in response: {result}")
+
+        return user_key
+
+    def _fetch_key_from_user_service(self, user_id: str) -> str | None:
+        """从 user-service HTTP 端点获取已存储的 API key。"""
+        user_svc_url = getattr(config, "USER_SERVICE_URL", "")
+        if not user_svc_url:
+            return None
+        try:
+            import urllib.request as _ur
+            url = f"{user_svc_url}/openviking_key/{user_id}"
+            req = _ur.Request(url, method="GET")
+            with _ur.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+                if data.get("ok") and data.get("api_key"):
+                    return data["api_key"]
+        except Exception:
+            pass
+        return None
+
+    def _store_key_to_user_service(self, user_id: str, api_key: str) -> None:
+        """将 API key 存储到 user-service。"""
+        user_svc_url = getattr(config, "USER_SERVICE_URL", "")
+        if not user_svc_url:
+            return
+        try:
+            import urllib.request as _ur
+            url = f"{user_svc_url}/openviking_key/{user_id}"
+            body = _json.dumps({"api_key": api_key}).encode("utf-8")
+            req = _ur.Request(url, data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            _ur.urlopen(req, timeout=5)
+        except Exception:
+            pass
+
+    def _resolve_user_token(self, user_id: str) -> str:
+        """获取 per-user token（用于 X-OpenViking-User-Key header）。"""
+        if user_id == "system":
+            return ""
+        cached = self._user_api_keys.get(user_id)
+        if cached:
+            return cached
+        if self.root_api_key:
+            try:
+                return self._ensure_openviking_user(user_id)
+            except Exception as exc:
+                log(f"[user-create] failed to create user {user_id}: {exc}")
+        return ""
+
+    def _resolve_api_key(self, user_id: str) -> str:
+        """API Key：system → agent-service key（技能文档等系统操作），其他 → per-user key。"""
+        if user_id == "system":
+            return self.api_key or self.root_api_key
+
+        cached = self._user_api_keys.get(user_id)
+        if cached:
+            return cached
+        if self.root_api_key:
+            try:
+                key = self._ensure_openviking_user(user_id)
+                if key:
+                    return key
+            except Exception as exc:
+                log(f"[user-create] failed to create user {user_id}: {exc}")
+        return self.api_key
+
 
     async def _maybe_await(self, value):
         if inspect.isawaitable(value):
             return await value
         return value
 
-    def _client_kwargs(self, client_cls, user_id: str, agent_id: str) -> dict[str, Any]:
+    def _client_kwargs(self, client_cls, user_id: str, agent_id: str, api_key: str = "") -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
+        resolved_key = api_key or self.api_key
 
         try:
             params = inspect.signature(client_cls).parameters
         except Exception:
             params = {}
+
+        has_var_keyword = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
 
         if "url" in params:
             kwargs["url"] = self.url
@@ -73,31 +213,30 @@ class OpenVikingServerBackend:
         else:
             # openviking >=0.4 uses *args/**kwargs; always pass url
             kwargs["url"] = self.url
-            kwargs["api_key"] = self.api_key
+            kwargs["api_key"] = resolved_key
 
-        if self.api_key:
+        if resolved_key:
             for key_name in ("api_key", "root_api_key", "token", "auth_token"):
                 if key_name in params:
-                    kwargs[key_name] = self.api_key
+                    kwargs[key_name] = resolved_key
                     break
 
-        if self.account:
-            if "account" in params:
-                kwargs["account"] = self.account
-            elif "account_id" in params:
-                kwargs["account_id"] = self.account
+        account = self._resolve_account(user_id)
+        if account:
+            kwargs["account"] = account
+            kwargs["account_id"] = account
 
         if user_id:
-            if "user_id" in params:
-                kwargs["user_id"] = user_id
-            elif "user" in params:
-                kwargs["user"] = user_id
+            kwargs["user_id"] = user_id
+            kwargs["user"] = user_id
 
         if agent_id:
-            if "agent_id" in params:
-                kwargs["agent_id"] = agent_id
-            elif "agent" in params:
-                kwargs["agent"] = agent_id
+            kwargs["agent_id"] = agent_id
+            kwargs["agent"] = agent_id
+
+        if not has_var_keyword:
+            # 只传构造函数接受的参数，避免 TypeError 导致 key/身份丢失
+            kwargs = {key: value for key, value in kwargs.items() if key in params}
 
         return kwargs
 
@@ -111,30 +250,39 @@ class OpenVikingServerBackend:
         if client_cls is None:
             raise RuntimeError("openviking.AsyncHTTPClient is not available")
 
+        resolved_key = self._resolve_api_key(user_id)
+        user_token = self._resolve_user_token(user_id)
+        debug_log(f"[client] user_id={user_id} key={resolved_key[:30]}... token={user_token[:30] if user_token else 'NONE'}...")
         try:
-            client = client_cls(**self._client_kwargs(client_cls, user_id=user_id, agent_id=agent_id))
+            client = client_cls(**self._client_kwargs(client_cls, user_id=user_id, agent_id=agent_id, api_key=resolved_key))
         except TypeError:
             client = client_cls(self.url)
 
-        self._apply_headers(client, user_id=user_id, agent_id=agent_id)
+        self._apply_headers(client, user_id=user_id, agent_id=agent_id, api_key=resolved_key, user_token=user_token)
 
         initialize = getattr(client, "initialize", None)
         if initialize is not None:
             await self._maybe_await(initialize())
 
         # initialize() creates _http; patch it too for root-key mode.
-        self._apply_headers(client, user_id=user_id, agent_id=agent_id)
+        self._apply_headers(client, user_id=user_id, agent_id=agent_id, api_key=resolved_key, user_token=user_token)
         return client
 
-    def _apply_headers(self, client, user_id: str, agent_id: str) -> None:
+    def _apply_headers(self, client, user_id: str, agent_id: str, api_key: str = "", user_token: str = "") -> None:
+        account = self._resolve_account(user_id)
+        resolved_key = api_key or self.api_key
         for attr, value in (
-            ("api_key", self.api_key),
-            ("account", self.account),
-            ("account_id", self.account),
+            ("api_key", resolved_key),
+            ("_api_key", resolved_key),
+            ("account", account),
+            ("account_id", account),
+            ("_account", account),
             ("user_id", user_id),
             ("user", user_id),
+            ("_user_id", user_id),
             ("agent_id", agent_id),
             ("agent", agent_id),
+            ("_actor_peer_id", agent_id),
         ):
             if value and hasattr(client, attr):
                 try:
@@ -143,12 +291,12 @@ class OpenVikingServerBackend:
                     pass
 
         extra_headers = {}
-        if self.api_key:
-            extra_headers["X-API-Key"] = self.api_key
-            extra_headers["Authorization"] = f"Bearer {self.api_key}"
-            extra_headers["X-OpenViking-API-Key"] = self.api_key
-        if self.account:
-            extra_headers["X-OpenViking-Account"] = self.account
+        if resolved_key:
+            extra_headers["X-API-Key"] = resolved_key
+            extra_headers["Authorization"] = f"Bearer {resolved_key}"
+            extra_headers["X-OpenViking-API-Key"] = resolved_key
+        if account:
+            extra_headers["X-OpenViking-Account"] = account
         if user_id:
             extra_headers["X-OpenViking-User"] = user_id
         if agent_id:
@@ -167,7 +315,7 @@ class OpenVikingServerBackend:
                 continue
             try:
                 for key, value in extra_headers.items():
-                    headers.setdefault(key, value)
+                    headers[key] = value
             except Exception:
                 pass
 
@@ -303,6 +451,7 @@ class OpenVikingServerBackend:
         max_messages: int,
         max_tokens: int,
         commit_limit: int,
+        top_k: int = 8,
     ) -> dict[str, Any]:
         client = await self._new_client(user_id=user_id, agent_id=agent_id)
         try:
@@ -327,6 +476,31 @@ class OpenVikingServerBackend:
                 ctx or {},
                 max_messages or config.DEFAULT_MAX_MESSAGES,
             )
+
+            # Semantic search for query-relevant memories
+            if query and top_k > 0:
+                try:
+                    search_result = await self._maybe_await(client.search(
+                        query=query,
+                        session_id=full_session_id,
+                        limit=top_k,
+                    ))
+                    if isinstance(search_result, dict):
+                        seen_contents = {m.get("content", "") for m in memories}
+                        for hit in search_result.get("memories", []) or []:
+                            if isinstance(hit, dict):
+                                content = str(hit.get("content", "") or hit.get("text", "") or "").strip()
+                                if content and content not in seen_contents:
+                                    seen_contents.add(content)
+                                    memories.append({
+                                        "memory_id": hit.get("id", "") or hit.get("memory_id", ""),
+                                        "content": content,
+                                        "score": float(hit.get("score", 0.0) or 0.0),
+                                        "token_count": int(hit.get("token_count", 0) or 0),
+                                    })
+                except Exception as exc:
+                    debug_log(f"semantic search failed (non-fatal): {exc}")
+
             return {
                 "session_summary": session_summary,
                 "memories": memories,
@@ -579,6 +753,8 @@ class VikingStore:
                 config.OPENVIKING_SERVER_URL,
                 config.OPENVIKING_API_KEY,
                 config.OPENVIKING_ACCOUNT,
+                config.OPENVIKING_ACCOUNT_MODE,
+                config.OPENVIKING_ROOT_API_KEY,
             )
             try:
                 _run_coro_sync(self.server.ping(user_id="system", agent_id="system"))
@@ -618,6 +794,7 @@ class VikingStore:
         max_messages: int,
         max_tokens: int,
         commit_limit: int,
+        top_k: int = 8,
     ) -> dict[str, Any]:
         full_id = self.full_session_id(agent_id, session_id)
 
@@ -634,6 +811,7 @@ class VikingStore:
                     max_messages=max_messages,
                     max_tokens=max_tokens,
                     commit_limit=commit_limit,
+                    top_k=top_k,
                 ))
             except Exception as exc:
                 debug_log(f"server search_context failed: {exc}")

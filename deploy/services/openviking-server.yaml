@@ -1,37 +1,3 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: openviking-config
-  namespace: agent
-data:
-  ov.conf: |
-    {
-      "server": {
-        "host": "0.0.0.0",
-        "port": 1933,
-        "root_api_key": "dev-local-openviking-key"
-      },
-      "storage": {
-        "workspace": "/data/openviking/workspace"
-      },
-      "embedding": {
-        "dense": {
-          "provider": "openai",
-          "api_base": "http://host.docker.internal:11434/v1",
-          "api_key": "ollama",
-          "model": "nomic-embed-text:v1.5",
-          "dimension": 768
-        }
-      },
-      "vlm": {
-        "provider": "openai",
-        "api_base": "http://host.docker.internal:11434/v1",
-        "api_key": "ollama",
-        "model": "llama3.1:8b",
-        "timeout": 180
-      }
-    }
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,36 +13,71 @@ spec:
       labels:
         app: openviking
       annotations:
-        sidecar.istio.io/inject: "false"
+        sidecar.istio.io/inject: 'false'
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: ["desktop-worker"]
       containers:
-        - name: openviking
-          image: ghcr.io/volcengine/openviking:v0.4.5
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 1933
-          env:
-            - name: OPENVIKING_CONFIG_FILE
-              value: "/etc/openviking/ov.conf"
-          volumeMounts:
-            - name: config
-              mountPath: /etc/openviking
-              readOnly: true
-            - name: data
-              mountPath: /data/openviking
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 1933
-            initialDelaySeconds: 20
-            periodSeconds: 20
-      volumes:
+      - name: openviking
+        image: ghcr.io/volcengine/openviking:v0.4.10
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 1933
+        env:
+        - name: OPENVIKING_CONFIG_FILE
+          value: /etc/openviking/ov.conf
+        volumeMounts:
         - name: config
-          configMap:
-            name: openviking-config
+          mountPath: /etc/openviking/ov.conf
+          subPath: openviking/ov.conf
+          readOnly: true
         - name: data
-          persistentVolumeClaim:
-            claimName: my-agent-openviking-pvc
+          mountPath: /data/openviking
+        - name: store-local
+          mountPath: /data/openviking/workspace/vectordb/context/store
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 1933
+          initialDelaySeconds: 20
+          periodSeconds: 20
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - 'python3 -c "
+
+          import re
+
+          path = ''/app/.venv/lib/python3.13/site-packages/openviking/storage/vectordb/collection/local_collection.py''
+
+          with open(path) as f: c = f.read()
+
+          c = c.replace(''id=self.index_manage_job_id,'', ''id=self.index_manage_job_id,
+          misfire_grace_time=300,'')
+
+          with open(path, ''w'') as f: f.write(c)
+
+          print(''misfire_grace_time patched'')
+
+          " && exec openviking-server'
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: my-agent-config-pvc
+      - name: data
+        persistentVolumeClaim:
+          claimName: my-agent-openviking-pvc
+      - name: store-local
+        hostPath:
+          path: /var/lib/openviking/store
+          type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
@@ -87,7 +88,7 @@ spec:
   selector:
     app: openviking
   ports:
-    - name: http
-      port: 1933
-      targetPort: 1933
+  - name: http
+    port: 1933
+    targetPort: 1933
   type: ClusterIP

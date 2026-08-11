@@ -106,5 +106,23 @@ class UserStore:
         user_log(f"用户 {user_id} 解绑渠道 {channel}")
         return "ok"
 
+    def set_openviking_key(self, user_id: str, api_key: str) -> bool:
+        """存储用户的 OpenViking per-user API key。"""
+        data = self._load(user_id)
+        if data is None:
+            data = {"user_id": user_id, "channels": {}, "created_at": datetime.now().isoformat()}
+        data["openviking_api_key"] = api_key
+        self._save(user_id, data)
+        user_log(f"用户 {user_id} OpenViking key 已存储")
+        return True
+
+    def get_openviking_key(self, user_id: str) -> str | None:
+        """获取用户的 OpenViking per-user API key。"""
+        data = self._load(user_id)
+        if data is None:
+            return None
+        return data.get("openviking_api_key")
+
+
 
 user_store = UserStore()

@@ -90,6 +90,32 @@ class UserClient:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    async def set_openviking_key(self, user_id: str, api_key: str) -> dict:
+        self._ensure_imports()
+        try:
+            async with grpc.aio.insecure_channel(self.target) as ch:
+                stub = user_pb2_grpc.UserStub(ch)
+                req = user_pb2.SetOpenVikingKeyRequest(
+                    user_id=user_id,
+                    api_key=api_key,
+                )
+                resp = await stub.SetOpenVikingKey(req, timeout=5)
+                return {"ok": resp.ok}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    async def get_openviking_key(self, user_id: str) -> dict:
+        self._ensure_imports()
+        try:
+            async with grpc.aio.insecure_channel(self.target) as ch:
+                stub = user_pb2_grpc.UserStub(ch)
+                req = user_pb2.GetOpenVikingKeyRequest(user_id=user_id)
+                resp = await stub.GetOpenVikingKey(req, timeout=5)
+                return {"ok": resp.ok, "api_key": resp.api_key}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+
 
 def build_user_client() -> UserClient:
     return UserClient()

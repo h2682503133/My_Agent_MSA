@@ -29,6 +29,7 @@ class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServ
             max_messages=request.max_messages,
             max_tokens=request.max_tokens,
             commit_limit=request.commit_limit,
+            top_k=request.top_k,
         )
         return openviking_context_pb2.SearchContextResponse(
             session_summary=result["session_summary"],

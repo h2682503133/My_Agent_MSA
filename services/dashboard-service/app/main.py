@@ -8,6 +8,8 @@ import os
 import subprocess
 import shutil
 import asyncio
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -24,7 +26,10 @@ app = FastAPI(title="My_Agent Dashboard")
 CONFIG_ROOT = Path(os.environ.get("CONFIG_ROOT", "/app/config"))
 STATIC_DIR = Path(__file__).parent.parent / "static"
 NAMESPACE = os.environ.get("NAMESPACE", "agent")
-SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/user/agent-service/sessions"))
+SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/user"))
+OPENVIKING_SERVER_URL = os.environ.get("OPENVIKING_SERVER_URL", "http://openviking.agent.svc.cluster.local:1933")
+USER_SERVICE_URL = os.environ.get("USER_SERVICE_URL", "http://user-service.agent.svc.cluster.local:5204")
+OPENVIKING_API_KEY_FILE = Path(os.environ.get("OPENVIKING_API_KEY", "/app/config/openviking/api_key"))
 PASSWORD_FILE = CONFIG_ROOT / "dashboard_password.json"
 
 # ─── Pydantic models ────────────────────────────────────────
@@ -359,15 +364,45 @@ async def qrcode_info():
     return {"exists": exists, "updated_at": updated_at}
 
 
-# ═══ Session 管理 ═══════════════════════════════════════════
+# ═══ Session 管理（按 openviking 用户隔离）═══════════════════
+
+def _user_root() -> Path:
+    """openviking 用户根目录；兼容旧配置 SESSION_ROOT 指向某个用户的 sessions 目录。"""
+    root = SESSION_ROOT
+    if root.name == "sessions":
+        root = root.parent.parent
+    return root
+
+def _user_sessions_dir(user_id: str) -> Path:
+    return _user_root() / user_id / "sessions"
+
+@app.get("/api/session/users")
+async def session_users():
+    """列出所有 openviking 用户（含各自 session 数量）"""
+    root = _user_root()
+    if not root.exists():
+        return {"users": []}
+    users = []
+    for d in sorted(root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        sessions_dir = d / "sessions"
+        count = 0
+        if sessions_dir.is_dir():
+            count = sum(1 for s in sessions_dir.iterdir() if s.is_dir() and not s.name.startswith("."))
+        users.append({"user_id": d.name, "session_count": count})
+    return {"users": users}
 
 @app.get("/api/session/sessions")
-async def session_list():
-    """列出所有 session 文件夹"""
-    if not SESSION_ROOT.exists():
-        return {"sessions": []}
+async def session_list(user: str = Query("")):
+    """列出指定用户的所有 session 文件夹"""
+    if not user:
+        raise HTTPException(400, "缺少 user 参数")
+    sessions_root = _user_sessions_dir(user)
+    if not sessions_root.exists():
+        return {"user": user, "sessions": []}
     sessions = []
-    for d in sorted(SESSION_ROOT.iterdir()):
+    for d in sorted(sessions_root.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
         msg_file = d / "messages.jsonl"
@@ -381,11 +416,11 @@ async def session_list():
             "msg_count": msg_count,
             "has_history": has_history,
         })
-    return {"sessions": sessions}
+    return {"user": user, "sessions": sessions}
 
-@app.get("/api/session/{name}/messages")
-async def session_messages(name: str):
-    msg_file = SESSION_ROOT / name / "messages.jsonl"
+@app.get("/api/session/{user}/{name}/messages")
+async def session_messages(user: str, name: str):
+    msg_file = _user_sessions_dir(user) / name / "messages.jsonl"
     if not msg_file.exists():
         return {"messages": [], "total": 0}
     messages = []
@@ -402,9 +437,9 @@ async def session_messages(name: str):
                 continue
     return {"messages": messages, "total": len(messages)}
 
-@app.delete("/api/session/{name}/messages")
-async def session_delete_messages(name: str, body: MessageDelete):
-    msg_file = SESSION_ROOT / name / "messages.jsonl"
+@app.delete("/api/session/{user}/{name}/messages")
+async def session_delete_messages(user: str, name: str, body: MessageDelete):
+    msg_file = _user_sessions_dir(user) / name / "messages.jsonl"
     if not msg_file.exists():
         raise HTTPException(404, "messages.jsonl 不存在")
     lines_to_delete = set(body.lines)
@@ -415,13 +450,71 @@ async def session_delete_messages(name: str, body: MessageDelete):
         f.writelines(kept)
     return {"ok": True, "deleted": len(lines_to_delete & set(range(len(all_lines)))), "remaining": len(kept)}
 
-@app.delete("/api/session/{name}")
-async def session_delete(name: str):
-    session_dir = SESSION_ROOT / name
+@app.delete("/api/session/{user}/{name}")
+async def session_delete(user: str, name: str):
+    session_dir = _user_sessions_dir(user) / name
     if not session_dir.exists():
         raise HTTPException(404, "Session 不存在")
     shutil.rmtree(session_dir)
     return {"ok": True, "deleted": str(session_dir)}
+
+
+# ═══ 长期记忆查询（独立功能，使用 OpenViking 真实语义搜索）═══
+
+def _openviking_user_key(user_id: str) -> str:
+    """获取用户的 OpenViking per-user key：优先 user-service，回退 agent-service key。"""
+    try:
+        req = urllib.request.Request(f"{USER_SERVICE_URL}/openviking_key/{user_id}", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("ok") and data.get("api_key"):
+                return data["api_key"]
+    except Exception:
+        pass
+    if OPENVIKING_API_KEY_FILE.exists():
+        return OPENVIKING_API_KEY_FILE.read_text(encoding="utf-8").strip()
+    return ""
+
+@app.get("/api/memory/search")
+async def memory_search(user: str = Query(""), query: str = Query(""), limit: int = Query(20)):
+    """调用 OpenViking /api/v1/search/find 做长期记忆语义搜索（用户级，与 session 无关）。"""
+    if not user:
+        raise HTTPException(400, "缺少 user 参数")
+    if not query.strip():
+        return {"hits": [], "total": 0}
+    api_key = _openviking_user_key(user)
+    if not api_key:
+        raise HTTPException(400, f"无法获取用户 {user} 的 OpenViking key")
+    body = json.dumps({
+        "query": query,
+        "target_uri": f"viking://user/{user}",
+        "limit": max(1, min(limit, 100)),
+        "context_type": "memory",
+    }).encode("utf-8")
+    req = urllib.request.Request(f"{OPENVIKING_SERVER_URL}/api/v1/search/find", data=body, method="POST")
+    req.add_header("X-API-Key", api_key)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:200]
+        raise HTTPException(502, f"OpenViking 搜索失败 HTTP {e.code}: {detail}")
+    except Exception as e:
+        raise HTTPException(502, f"OpenViking 搜索失败: {e}")
+    result = data.get("result", {}) or {}
+    memories = result.get("memories", []) or []
+    hits = []
+    for m in memories:
+        if not isinstance(m, dict):
+            continue
+        hits.append({
+            "content": m.get("content", ""),
+            "score": m.get("score", 0.0),
+            "uri": m.get("uri", ""),
+            "session": m.get("session_id", ""),
+        })
+    return {"hits": hits, "total": result.get("total", len(hits))}
 
 
 # ─── 静态页面 ────────────────────────────────────────────────

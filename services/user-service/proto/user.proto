@@ -64,6 +64,25 @@ message UnbindChannelResponse {
   string message = 2;
 }
 
+
+message SetOpenVikingKeyRequest {
+  string user_id = 1;
+  string api_key = 2;
+}
+
+message SetOpenVikingKeyResponse {
+  bool ok = 1;
+}
+
+message GetOpenVikingKeyRequest {
+  string user_id = 1;
+}
+
+message GetOpenVikingKeyResponse {
+  bool ok = 1;
+  string api_key = 2;
+}
+
 service User {
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   rpc UpsertUser(UpsertUserRequest) returns (UpsertUserResponse);
@@ -71,4 +90,6 @@ service User {
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   rpc BindChannel(BindChannelRequest) returns (BindChannelResponse);
   rpc UnbindChannel(UnbindChannelRequest) returns (UnbindChannelResponse);
+  rpc SetOpenVikingKey(SetOpenVikingKeyRequest) returns (SetOpenVikingKeyResponse);
+  rpc GetOpenVikingKey(GetOpenVikingKeyRequest) returns (GetOpenVikingKeyResponse);
 }

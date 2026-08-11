@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any
 
 import requests
@@ -162,8 +163,10 @@ class ProviderClient:
     def _request(self, method: str, url: str, headers: dict[str, str], body: dict[str, Any]) -> requests.Response:
         last_exc = None
 
-        # 对齐原 Agent.py：500 错误重试 1 次
-        for attempt in range(2):
+        # 失败后重试 2 次（共 3 次尝试），间隔 3 秒
+        max_attempts = 3
+        retry_delay = 3
+        for attempt in range(max_attempts):
             try:
                 if method == "GET":
                     response = requests.get(
@@ -184,12 +187,15 @@ class ProviderClient:
                     response.raise_for_status()
                     return response
 
-                debug_log(f"model provider returned {response.status_code}, retry {attempt + 1}")
+                debug_log(f"model provider returned {response.status_code}, attempt {attempt + 1}/{max_attempts}")
                 last_exc = RuntimeError(f"{response.status_code} {response.text}")
 
             except Exception as exc:
                 last_exc = exc
-                debug_log(f"model request exception, retry {attempt + 1}: {exc}")
+                debug_log(f"model request exception, attempt {attempt + 1}/{max_attempts}: {exc}")
+
+            if attempt < max_attempts - 1:
+                time.sleep(retry_delay)
 
         raise RuntimeError(str(last_exc) if last_exc else "model request failed")
 

@@ -223,6 +223,10 @@ label.file-item:hover { color: var(--accent); }
     <h2>Session 管理 <span style="font-size:0.8rem;color:var(--dim);">(openviking 对话记录)</span></h2>
     <div class="card">
       <div class="session-toolbar">
+        <span style="color:var(--dim);">用户：</span>
+        <select id="sess-user-select" onchange="sessLoadSessions()">
+          <option value="">-- 选择用户 --</option>
+        </select>
         <span style="color:var(--dim);">Session：</span>
         <select id="sess-select" onchange="sessLoadMessages()">
           <option value="">-- 选择 Session --</option>
@@ -243,6 +247,25 @@ label.file-item:hover { color: var(--accent); }
         <table>
           <thead><tr><th style="width:40px;">选</th><th style="width:60px;">行号</th><th style="width:80px;">角色</th><th>内容预览</th><th style="width:160px;">时间</th></tr></thead>
           <tbody id="sess-msg-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="session-toolbar">
+        <span style="color:var(--dim);">长期记忆查询（OpenViking 语义搜索）：</span>
+        <select id="mem-user-select">
+          <option value="">-- 选择用户 --</option>
+        </select>
+        <input id="mem-query" type="text" placeholder="输入问题/关键词，搜索该用户的长期记忆"
+               style="flex:1;min-width:220px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);"
+               onkeydown="if(event.key==='Enter')memSearch();">
+        <button class="btn" onclick="memSearch()">搜索</button>
+        <span id="mem-info" style="color:var(--dim);font-size:0.8rem;"></span>
+      </div>
+      <div style="max-height:420px;overflow-y:auto;">
+        <table>
+          <thead><tr><th style="width:70px;">相似度</th><th style="width:180px;">位置</th><th>记忆内容</th></tr></thead>
+          <tbody id="mem-tbody"></tbody>
         </table>
       </div>
     </div>
@@ -577,13 +600,39 @@ async function spDeleteFile() {
 
 // ═══ Session 管理 ═════════════════════════════════════════
 
-let sessName = '', sessMessages = [];
+let sessUser = '', sessName = '', sessMessages = [];
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 async function sessLoadUsers() {
-  const sel = document.getElementById('sess-select');
+  const sel = document.getElementById('sess-user-select');
   sel.innerHTML = '<option value="">-- 加载中 --</option>';
   try {
-    const data = await fetch('/api/session/sessions').then(r => r.json());
+    const data = await fetch('/api/session/users').then(r => r.json());
+    sel.innerHTML = '<option value="">-- 选择用户 --</option>' +
+      (data.users || []).map(u => `<option value="${u.user_id}">${escapeHtml(u.user_id)} (${u.session_count}个session)</option>`).join('');
+    sessUser = sel.value;
+    sessLoadSessions();
+  } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
+  memLoadUsers();
+}
+
+async function sessLoadSessions() {
+  sessUser = document.getElementById('sess-user-select').value;
+  sessName = '';
+  sessMessages = [];
+  document.getElementById('sess-msg-card').style.display = 'none';
+  document.getElementById('sess-info').textContent = '';
+  const sel = document.getElementById('sess-select');
+  sel.innerHTML = '<option value="">-- 选择 Session --</option>';
+  if (!sessUser) return;
+  sel.innerHTML = '<option value="">-- 加载中 --</option>';
+  try {
+    const data = await fetch('/api/session/sessions?user=' + encodeURIComponent(sessUser)).then(r => r.json());
     sel.innerHTML = '<option value="">-- 选择 Session --</option>' +
       (data.sessions || []).map(s => `<option value="${s.name}">${s.name} (${s.msg_count}条, ${s.has_history?'有历史':'无历史'})</option>`).join('');
   } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
@@ -596,7 +645,7 @@ async function sessLoadMessages() {
   if (!sessName) return;
   document.getElementById('sess-info').textContent = '加载中...';
   try {
-    const data = await fetch('/api/session/' + sessName + '/messages').then(r => r.json());
+    const data = await fetch('/api/session/' + encodeURIComponent(sessUser) + '/' + encodeURIComponent(sessName) + '/messages').then(r => r.json());
     sessMessages = data.messages || [];
     document.getElementById('sess-msg-count').textContent = '共 ' + sessMessages.length + ' 条';
     document.getElementById('sess-info').textContent = '';
@@ -646,7 +695,7 @@ async function sessDeleteMessages() {
   if (!lines.length) return toast('请先选择要删除的消息', false);
   if (!confirm('确定删除选中的 ' + lines.length + ' 条消息？此操作不可撤销。')) return;
   try {
-    const data = await fetch('/api/session/' + sessName + '/messages', {
+    const data = await fetch('/api/session/' + encodeURIComponent(sessUser) + '/' + encodeURIComponent(sessName) + '/messages', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({lines: lines})
     }).then(r => r.json());
@@ -658,11 +707,42 @@ async function sessDeleteMessages() {
 async function sessDeleteAgent() {
   if (!confirm('确定删除 ' + sessName + ' 整个文件夹？\n\n这将删除所有消息和历史记录，不可撤销！')) return;
   try {
-    await fetch('/api/session/' + sessName, {method: 'DELETE'}).then(r => r.json());
-    toast('已删除 ' + sessName);
-    sessLoadUsers();
+    await fetch('/api/session/' + encodeURIComponent(sessUser) + '/' + encodeURIComponent(sessName), {method: 'DELETE'}).then(r => r.json());
+    toast('已删除 ' + sessUser + '/' + sessName);
+    sessLoadSessions();
     document.getElementById('sess-msg-card').style.display = 'none';
   } catch(e) { toast('删除失败', false); }
+}
+
+async function memLoadUsers() {
+  const sel = document.getElementById('mem-user-select');
+  try {
+    const data = await fetch('/api/session/users').then(r => r.json());
+    sel.innerHTML = '<option value="">-- 选择用户 --</option>' +
+      (data.users || []).map(u => `<option value="${u.user_id}">${escapeHtml(u.user_id)}</option>`).join('');
+  } catch(e) { sel.innerHTML = '<option value="">-- 选择用户 --</option>'; }
+}
+
+async function memSearch() {
+  const user = document.getElementById('mem-user-select').value;
+  const q = document.getElementById('mem-query').value.trim();
+  const tbody = document.getElementById('mem-tbody');
+  const info = document.getElementById('mem-info');
+  if (!user) { info.textContent = '请先选择用户'; return; }
+  if (!q) { info.textContent = '请输入问题/关键词'; return; }
+  info.textContent = '搜索中...';
+  try {
+    const data = await fetch('/api/memory/search?user=' + encodeURIComponent(user)
+      + '&query=' + encodeURIComponent(q) + '&limit=20').then(r => r.json());
+    const hits = data.hits || [];
+    info.textContent = '共 ' + hits.length + ' 条记忆匹配';
+    if (!hits.length) { tbody.innerHTML = '<tr><td colspan="3" style="color:var(--dim);">无匹配记忆</td></tr>'; return; }
+    tbody.innerHTML = hits.map(h => `<tr>
+      <td style="font-size:0.8rem;">${(h.score * 100).toFixed(1)}%</td>
+      <td style="font-size:0.8rem;color:var(--dim);">${escapeHtml(h.uri || h.session || '-')}</td>
+      <td class="msg-preview" style="white-space:pre-wrap;">${escapeHtml(h.content)}</td>
+    </tr>`).join('');
+  } catch(e) { info.textContent = '搜索失败'; toast('搜索失败', false); }
 }
 
 

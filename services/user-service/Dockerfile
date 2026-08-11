@@ -26,9 +26,11 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/service:/service/app/generated
 ENV USER_GRPC_HOST=0.0.0.0
 ENV USER_GRPC_PORT=5104
+ENV USER_HTTP_PORT=5204
 ENV USER_DATA_DIR=/data/users
 
 ENV TZ=Asia/Shanghai
 
 EXPOSE 5104
+EXPOSE 5204
 CMD ["python", "-m", "app.main"]

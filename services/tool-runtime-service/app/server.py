@@ -194,14 +194,14 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         container_workspace = str(root)
         vm_work_path = str(work_path).replace(container_workspace, vm_workspace)
 
-        script = f'cd "{vm_work_path}" && codex -p "{requirement}"'
+        script = f'cd "{vm_work_path}" && {config.CODEX_BIN_PATH} -p "{requirement}"'
         return self._codex_via_ssh(script, requirement, vm_work_path, timeout)
 
     def _codex_via_ssh(self, script: str, requirement: str, vm_work_path: str, timeout: int) -> str:
         try:
             from app.skill_runtime import skill_runtime
-            check = skill_runtime._run_external_vm_shell("which codex", timeout=10)
-            if "not found" in check.lower() or check.strip() == "":
+            check = skill_runtime._run_external_vm_shell("command -v " + config.CODEX_BIN_PATH, timeout=10)
+            if "[exit_code] 0" not in check:
                 return "错误：外部 VM 未安装 Codex CLI，请先安装（npm install -g @openai/codex）"
         except Exception:
             return "错误：外部 VM 未安装 Codex CLI，请先安装（npm install -g @openai/codex）"
@@ -316,8 +316,8 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         content_type = response.headers.get("Content-Type", "").lower()
         status_line = f"[status] {response.status_code}"
 
-        # 图片/二进制始终格式化（原始字节对模型无意义）
-        if "image/" in content_type:
+        # 图片（非 SVG）始终格式化（二进制对模型无意义；SVG 是文本，按普通文本处理）
+        if content_type.startswith("image/") and "svg" not in content_type:
             return cls._format_image_response(status_line, response)
 
         text = response.text

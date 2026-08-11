@@ -14,7 +14,7 @@ $IMAGES = @{
     "gateway-backend-service"      = @{ dir = "services/gateway-backend-service";      tag = "v22"  }
     "qq-llbot-service"             = @{ dir = "services/qq-llbot-service";             tag = "v1"  }
     "model-proxy-service"          = @{ dir = "services/model-proxy-service";          tag = "v3"  }
-    "openviking-context-service"   = @{ dir = "services/openviking-context-service";   tag = "v19" }
+    "openviking-context-service"   = @{ dir = "services/openviking-context-service";   tag = "v20" }
     "tool-runtime-service"         = @{ dir = "services/tool-runtime-service";         tag = "v26"  }
     "user-service"                 = @{ dir = "services/user-service";                 tag = "v1"  }
     "frontend-service"             = @{ dir = "services/frontend-service";             tag = "v10"  }

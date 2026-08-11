@@ -20,7 +20,7 @@ spec:
       serviceAccountName: dashboard-sa
       containers:
         - name: dashboard-service
-          image: docker.io/agent/dashboard-service:v10
+          image: docker.io/agent/dashboard-service:v11
           imagePullPolicy: Always
           ports:
             - name: http
@@ -31,7 +31,13 @@ spec:
             - name: NAMESPACE
               value: "agent"
             - name: SESSION_ROOT
-              value: "/app/session-data/workspace/viking/my-agent/user/agent-service/sessions"
+              value: "/app/session-data/workspace/viking/my-agent/user"
+            - name: OPENVIKING_SERVER_URL
+              value: "http://openviking.agent.svc.cluster.local:1933"
+            - name: USER_SERVICE_URL
+              value: "http://user-service.agent.svc.cluster.local:5204"
+            - name: OPENVIKING_API_KEY
+              value: "/app/config/openviking/api_key"
           volumeMounts:
             - name: my-agent-config
               mountPath: /app/config

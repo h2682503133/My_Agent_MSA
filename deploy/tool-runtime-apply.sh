@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v28}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v30}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -79,6 +79,26 @@ detect_clawhub_real_bin() {
   fi
 }
 
+detect_codex_real_bin() {
+  if [ -n "${CODEX_REAL_BIN:-}" ] && [ -x "${CODEX_REAL_BIN}" ]; then
+    echo "${CODEX_REAL_BIN}"
+    return
+  fi
+  # 优先用真实用户的 PATH 查找（sudo 下 command -v 找不到 nvm 里的命令）
+  if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v codex >/dev/null 2>&1; then
+    sudo -u "$REAL_USER" command -v codex
+    return
+  fi
+  if command -v codex >/dev/null 2>&1; then
+    command -v codex
+    return
+  fi
+  if [ -d "$REAL_HOME/.nvm/versions/node" ]; then
+    find "$REAL_HOME/.nvm/versions/node" -path "*/bin/codex" -type f -perm -u+x 2>/dev/null | sort -V | tail -n 1
+    return
+  fi
+}
+
 detect_node_bin() {
   if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v node >/dev/null 2>&1; then
     sudo -u "$REAL_USER" command -v node
@@ -133,6 +153,51 @@ EOF
 
   echo "clawhub 包装器: $CLAW_EXTERNAL_VM_CLAWHUB_BIN"
   echo "真实 clawhub: $real_clawhub"
+  echo "node: $node_bin"
+}
+
+
+MY_AGENT_CODEX_WRAPPER="${MY_AGENT_CODEX_WRAPPER:-$REAL_HOME/.local/bin/my-agent-codex}"
+
+ensure_codex_wrapper() {
+  echo "检查 codex 远程执行包装器..."
+
+  local real_codex
+  local node_bin
+  local wrapper_dir
+
+  real_codex="$(detect_codex_real_bin || true)"
+  node_bin="$(detect_node_bin || true)"
+
+  if [ -z "$real_codex" ] || [ ! -x "$real_codex" ]; then
+    echo "未找到可执行的 codex"
+    echo "请先在当前 WSL / VM 安装 codex，并确认 command -v codex 有输出"
+    exit 1
+  fi
+
+  if [ -z "$node_bin" ] || [ ! -x "$node_bin" ]; then
+    echo "未找到可执行的 node"
+    echo "codex 是 Node 脚本，远程 SSH 执行时必须能找到 node"
+    exit 1
+  fi
+
+  wrapper_dir="$(dirname "$MY_AGENT_CODEX_WRAPPER")"
+  mkdir -p "$wrapper_dir"
+
+  cat > "$MY_AGENT_CODEX_WRAPPER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec "${node_bin}" "${real_codex}" "$@"
+EOF
+
+  chmod +x "$MY_AGENT_CODEX_WRAPPER"
+
+  CODEX_BIN_PATH="$MY_AGENT_CODEX_WRAPPER"
+  export CODEX_BIN_PATH
+
+  echo "codex 包装器: $CODEX_BIN_PATH"
+  echo "真实 codex: $real_codex"
   echo "node: $node_bin"
 }
 
@@ -232,14 +297,14 @@ verify_local_ssh_login() {
 
   # 以真实用户身份执行 SSH 测试（避免 root 的 known_hosts 干扰）
   if [ "$(id -un)" != "$REAL_USER" ]; then
-    sudo -u "$REAL_USER" ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V" >"$ssh_log" 2>&1
+    sudo -u "$REAL_USER" ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V && ${CODEX_BIN_PATH} --version" >"$ssh_log" 2>&1
   else
-    ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V" >"$ssh_log" 2>&1
+    ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V && ${CODEX_BIN_PATH} --version" >"$ssh_log" 2>&1
   fi
 
   local ssh_rc=$?
   if [ $ssh_rc -ne 0 ]; then
-    echo "SSH 登录或 clawhub 检测失败（退出码: $ssh_rc）"
+    echo "SSH 登录或 clawhub/codex 检测失败（退出码: $ssh_rc）"
     echo "详细输出："
     cat "$ssh_log"
     rm -f "$ssh_log"
@@ -276,6 +341,7 @@ main() {
   ensure_ssh_key_authorized
   ensure_skill_root_dir
   ensure_clawhub_wrapper
+  ensure_codex_wrapper
   verify_local_ssh_login
 
   echo
@@ -294,6 +360,7 @@ main() {
   echo "  CLAW_EXTERNAL_VM_SSH_KEY_FILE: ${MY_AGENT_SSH_KEY_FILE}"
   echo "  CLAW_EXTERNAL_VM_SKILL_ROOT_DIR: ${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR}"
   echo "  CLAW_EXTERNAL_VM_CLAWHUB_BIN: ${CLAW_EXTERNAL_VM_CLAWHUB_BIN}"
+  echo "  CODEX_BIN_PATH: ${CODEX_BIN_PATH}"
   echo
 
   kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
@@ -316,6 +383,7 @@ main() {
     CLAW_EXTERNAL_VM_PORT \
     CLAW_EXTERNAL_VM_SKILL_ROOT_DIR \
     CLAW_EXTERNAL_VM_CLAWHUB_BIN \
+    CODEX_BIN_PATH 
     CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING
 
   cat <<'YAML' | envsubst | kubectl apply -f -
@@ -406,6 +474,8 @@ spec:
               value: "${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR}"
             - name: CLAW_EXTERNAL_VM_CLAWHUB_BIN
               value: "${CLAW_EXTERNAL_VM_CLAWHUB_BIN}"
+            - name: CODEX_BIN_PATH
+              value: "${CODEX_BIN_PATH}"
             - name: SEARXNG_URL
               value: "http://localhost:8080"
             - name: CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING
@@ -478,6 +548,7 @@ YAML
   echo
   echo "验证 Pod 到当前 WSL / VM 的 clawhub："
   echo "kubectl -n ${NAMESPACE} exec deploy/tool-runtime-service -- ssh -i /app/secrets/claw-external-vm/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${CLAW_EXTERNAL_VM_PORT} ${CLAW_EXTERNAL_VM_USER}@${CLAW_EXTERNAL_VM_HOST} '${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V'"
+  echo "kubectl -n ${NAMESPACE} exec deploy/tool-runtime-service -- ssh -i /app/secrets/claw-external-vm/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${CLAW_EXTERNAL_VM_PORT} ${CLAW_EXTERNAL_VM_USER}@${CLAW_EXTERNAL_VM_HOST} '${CODEX_BIN_PATH} --version'"
   echo
   echo "验证 OpenViking 环境变量："
   echo "kubectl -n ${NAMESPACE} exec deploy/tool-runtime-service -- sh -lc 'echo account=\$OPENVIKING_ACCOUNT user=\$OPENVIKING_USER agent=\$OPENVIKING_AGENT; test -n \"\$OPENVIKING_API_KEY\" && echo OPENVIKING_API_KEY is set'"
