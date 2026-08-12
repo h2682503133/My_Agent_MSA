@@ -20,7 +20,8 @@
 - file-write|文件路径|内容 - 写入文件
 - codex|工作目录|需求 - 生成代码
 - get-image-url-from-local|文件路径 - 获取本地图片 URL
-- send-image-by-url|url - 通过图片 URL 向用户发送图片
+- send-image-by-url|url - 通过图片 URL 向用户发送图片（执行到该工具时立即推送，无需等最终回复）
+- send-message|文本 - 执行过程中立即向用户推送一条文本消息
 
 ## 技能管理工具
 - clawhub-search|关键词 - 搜索可下载技能；关键词只能使用英文

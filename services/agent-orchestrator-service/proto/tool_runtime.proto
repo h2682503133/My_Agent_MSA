@@ -18,14 +18,20 @@ message Artifact {
   string asset_url = 3;
 }
 
-message ExecuteToolResponse {
-  bool ok = 1;
-  string output = 2;
-  repeated Artifact artifacts = 3;
-  string logs = 4;
-  string error = 5;
+// 工具执行过程中由 tool-runtime 推送给调用方的事件流：
+//  - message: 执行过程中向用户推送的文本消息（即时送达）
+//  - image:   执行过程中向用户推送的图片（即时送达）
+//  - done:    工具执行结束，携带最终 output/artifacts（最后一个事件）
+message ExecuteToolEvent {
+  string event_type = 1;
+  string text = 2;
+  Artifact artifact = 3;
+  string output = 4;
+  repeated Artifact artifacts = 5;
+  string logs = 6;
+  string error = 7;
 }
 
 service ToolRuntime {
-  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+  rpc ExecuteTool(ExecuteToolRequest) returns (stream ExecuteToolEvent);
 }

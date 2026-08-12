@@ -47,3 +47,6 @@ SATORI_PORT = int(_env("SATORI_PORT", str(_satori.get("port", 5600))))
 SATORI_TOKEN = _env("SATORI_TOKEN", _satori.get("token", ""))
 
 SUBSCRIBER_ID = _env("SUBSCRIBER_ID", _cfg.get("subscriber_id", "qq-llbot-1"))
+
+# 群聊消息是否必须 @ 机器人才下发（私聊不受影响）
+GROUP_AT_REQUIRED = _env("GROUP_AT_REQUIRED", _cfg.get("group_at_required", "true")).lower() == "true"

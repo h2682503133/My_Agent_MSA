@@ -7,17 +7,17 @@ $ErrorActionPreference = "Stop"
 
 # ─── 镜像版本配置 ───────────────────────────────────────────
 $IMAGES = @{
-    "dashboard-service"            = @{ dir = "services/dashboard-service";            tag = "v8"  }
-    "agent-orchestrator-service"   = @{ dir = "services/agent-orchestrator-service";   tag = "v16" }
-    "task-scheduler-service"       = @{ dir = "services/task-scheduler-service";       tag = "v6"  }
+    "dashboard-service"            = @{ dir = "services/dashboard-service";            tag = "v11" }
+    "agent-orchestrator-service"   = @{ dir = "services/agent-orchestrator-service";   tag = "v34" }
+    "task-scheduler-service"       = @{ dir = "services/task-scheduler-service";       tag = "v9"  }
     "timer-task-service"           = @{ dir = "services/timer-task-service";           tag = "v2"  }
-    "gateway-backend-service"      = @{ dir = "services/gateway-backend-service";      tag = "v22"  }
-    "qq-llbot-service"             = @{ dir = "services/qq-llbot-service";             tag = "v1"  }
-    "model-proxy-service"          = @{ dir = "services/model-proxy-service";          tag = "v3"  }
-    "openviking-context-service"   = @{ dir = "services/openviking-context-service";   tag = "v20" }
-    "tool-runtime-service"         = @{ dir = "services/tool-runtime-service";         tag = "v26"  }
-    "user-service"                 = @{ dir = "services/user-service";                 tag = "v1"  }
-    "frontend-service"             = @{ dir = "services/frontend-service";             tag = "v10"  }
+    "gateway-backend-service"      = @{ dir = "services/gateway-backend-service";      tag = "v24" }
+    "qq-llbot-service"             = @{ dir = "services/qq-llbot-service";             tag = "v2"  }
+    "model-proxy-service"          = @{ dir = "services/model-proxy-service";          tag = "v9"  }
+    "openviking-context-service"   = @{ dir = "services/openviking-context-service";   tag = "v24" }
+    "tool-runtime-service"         = @{ dir = "services/tool-runtime-service";         tag = "v33"  }
+    "user-service"                 = @{ dir = "services/user-service";                 tag = "v5"  }
+    "frontend-service"             = @{ dir = "services/frontend-service";             tag = "v11" }
 }
 
 # 服务名 → YAML 文件映射

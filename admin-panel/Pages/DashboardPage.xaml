@@ -47,7 +47,7 @@
                     <TextBlock FontSize="13" Foreground="#999"
                                HorizontalAlignment="Center" Margin="0,4,0,0">
                         <Run Text="目标地址："/>
-                        <Run Text="http://localhost:5601" FontFamily="Consolas"/>
+                        <Run Text="http://localhost:5700" FontFamily="Consolas"/>
                     </TextBlock>
                 </StackPanel>
             </Border>

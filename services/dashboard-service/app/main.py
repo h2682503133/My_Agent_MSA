@@ -530,7 +530,7 @@ async def dashboard():
 # ─── 入口 ────────────────────────────────────────────────────
 
 def main():
-    uvicorn.run("app.main:app", host="0.0.0.0", port=5601, reload=False)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=5700, reload=False)
 
 if __name__ == "__main__":
     main()

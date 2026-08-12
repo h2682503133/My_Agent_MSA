@@ -37,7 +37,7 @@ user-service:5104 (用户信息)
 | model-proxy-service | 5302 | gRPC | 统一模型调用适配 |
 | tool-runtime-service | 5303 | gRPC | 工具执行、skill、workspace |
 | user-service | 5104 | gRPC | 用户信息与多渠道绑定 |
-| dashboard-service | 5601 | HTTP | 管理控制面板（FastAPI + Web UI） |
+| dashboard-service | 5700 | HTTP | 管理控制面板（FastAPI + Web UI） |
 
 ## 核心功能
 
@@ -134,10 +134,10 @@ My_Agent_MSA/
 
 | 页面 | 功能 |
 |------|------|
-| 🔌 端口转发 | 一键启停 dashboard(5601)、gateway(5210)、istio(8080) |
+| 🔌 端口转发 | 一键启停 dashboard(5700)、gateway(5210)、istio(8080) |
 | 🚀 一键部署 | 从 `deploy-all.ps1` 解析服务列表，多选构建镜像并部署 |
 | 🤖 LLBot | 启动本地 `llbot.exe`，实时日志 + 二维码同步推送 |
-| 📊 Dashboard | WebView2 内嵌 `http://localhost:5601`，直接访问管理后台 |
+| 📊 Dashboard | WebView2 内嵌 `http://localhost:5700`，直接访问管理后台 |
 
 ### 编译与运行
 
@@ -206,8 +206,8 @@ kubectl -n istio-system port-forward svc/istio-ingressgateway 8080:80
 http://localhost:8080/login.html
 
 # Dashboard 管理面板
-kubectl -n agent port-forward svc/dashboard-service 5601:5601
-http://localhost:5601
+kubectl -n agent port-forward svc/dashboard-service 5700:5700
+http://localhost:5700
 
 # QQ 渠道：确保 LLBot Satori 适配器已部署并配置 SATORI_HOST/SATORI_TOKEN
 ```

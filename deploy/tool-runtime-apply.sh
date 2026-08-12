@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v30}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v33}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -188,7 +188,7 @@ ensure_codex_wrapper() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-exec "${node_bin}" "${real_codex}" "$@"
+exec "${node_bin}" "${real_codex}" "\$@"
 EOF
 
   chmod +x "$MY_AGENT_CODEX_WRAPPER"
@@ -383,7 +383,7 @@ main() {
     CLAW_EXTERNAL_VM_PORT \
     CLAW_EXTERNAL_VM_SKILL_ROOT_DIR \
     CLAW_EXTERNAL_VM_CLAWHUB_BIN \
-    CODEX_BIN_PATH 
+    CODEX_BIN_PATH \
     CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING
 
   cat <<'YAML' | envsubst | kubectl apply -f -

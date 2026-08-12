@@ -168,7 +168,7 @@ public class LlBotService
         _qrWatcher?.Dispose();
     }
 
-    public async Task PushQrCodeToDashboard(string dashboardUrl = "http://localhost:5601")
+    public async Task PushQrCodeToDashboard(string dashboardUrl = "http://localhost:5700")
     {
         var qrPath = QrCodePath;
         if (!File.Exists(qrPath))

@@ -18,19 +18,21 @@ async def main():
     scheduler = SchedulerClient(config.SCHEDULER_TARGET)
 
     # ── QQ 消息 ─→ scheduler ──────────────────────────────
-    async def on_qq_message(user_id: str, content: str):
+    async def on_qq_message(user_id: str, content: str, session_id: str):
         result = await scheduler.create_task(
             user_id=user_id,
             content=content,
             channel="qq",
+            session_id=session_id,
         )
         if result["ok"]:
             print(
-                f"[qq-llbot] 任务已提交 user={user_id} task_id={result['task_id']}",
+                f"[qq-llbot] 任务已提交 user={user_id} session={session_id} "
+                f"task_id={result['task_id']}",
                 flush=True,
             )
         else:
-            await bridge.send(user_id, f"提交失败：{result['error']}")
+            await bridge.send(session_id, f"提交失败：{result['error']}")
 
     bridge.on_qq_message(on_qq_message)
     bridge.setup_listener()
@@ -42,14 +44,26 @@ async def main():
             channels=["qq"],
         ):
             event_type = event.get("type", "")
+            # 群聊/私聊都按会话路由，私聊时 session_id 即 qq_{user_id}
             user_id = event.get("user_id", "")
+            session_id = event.get("session_id", "") or f"qq_{user_id}"
             text = event.get("text", "")
             images = event.get("images", [])
             metadata = event.get("metadata", {})
 
-            # 只推送用户可见的 assistant_message
+            # 推送用户可见的 assistant_message
             if event_type == "assistant_message" and metadata.get("visible_to_user") == "true":
-                await bridge.send(user_id, text=text, images=images)
+                await bridge.send(session_id, text=text, images=images)
+            # 任务失败/超时/取消等终态也要提示用户，避免静默无响应
+            elif event_type in {
+                "task_failed",
+                "task_timeout",
+                "task_cancelled",
+                "task_error",
+                "task_finished_with_error",
+            }:
+                message = text or event.get("error") or "任务失败"
+                await bridge.send(session_id, text=f"任务失败：{message}", images=[])
 
     # ── 并行启动 ──────────────────────────────────────────
     await asyncio.gather(

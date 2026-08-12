@@ -20,6 +20,14 @@
 - `delete_file`
 - `run_shell`：默认关闭，需要 `ENABLE_SHELL_TOOLS=true`
 
+### Codex（代码生成）
+
+- 调用格式：`codex|工作目录|需求`（或 `codex` + `working_dir`/`requirement` 参数）。
+- 通过 SSH 在外部 VM 上执行 `codex exec -C <工作目录> --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check <需求>`。
+- 需要环境变量：`CLAW_EXTERNAL_VM_HOST`、`CLAW_EXTERNAL_VM_USER`、`CLAW_EXTERNAL_VM_PORT`、`CLAW_EXTERNAL_VM_SSH_KEY`；VM 上需安装 `@openai/codex` 并完成登录。
+- `CODEX_BIN_PATH` 可指定 codex 可执行文件（默认 `codex`）；部署脚本会生成 `/home/<user>/.local/bin/my-agent-codex` 包装器以绕过 SSH 非交互 shell 的 PATH 问题。
+- `CODEX_EXTERNAL_VM_WORKSPACE` 表示容器工作区在 VM 上的挂载根路径（默认 `/srv/nfs/my-agent/workspace`）。
+
 ## 构建镜像
 
 ```bash

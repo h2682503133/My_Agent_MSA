@@ -20,6 +20,6 @@ ENV PYTHONUNBUFFERED=1
 ENV CONFIG_ROOT=/app/config
 ENV NAMESPACE=agent
 
-EXPOSE 5600
+EXPOSE 5700
 
 CMD ["python", "-m", "app.main"]

@@ -67,6 +67,13 @@ class ToolRuntimeClient:
         user_id: str = "default",
         session_id: str = "",
     ):
+        """流式执行工具。
+
+        逐个 yield 事件 dict：
+          - {"event_type": "message", "text": ...}     执行过程中的即时文本
+          - {"event_type": "image", "text": ..., "artifact": {...}} 执行过程中的即时图片
+          - {"event_type": "done", "output": ..., "artifacts": [...], "error": ...} 最终结果
+        """
         if tool_runtime_pb2 is None:
             raise RuntimeError("tool_runtime protobuf is not generated")
 
@@ -86,28 +93,40 @@ class ToolRuntimeClient:
                 workspace_dir=workspace_dir,
                 timeout_seconds=config.TOOL_TIMEOUT_SECONDS,
             )
-            response = self._get_stub().ExecuteTool(
+            stream = self._get_stub().ExecuteTool(
                 request,
                 timeout=config.TOOL_TIMEOUT_SECONDS + 10,
             )
-            return {
-                "ok": response.ok,
-                "output": response.output,
-                "artifacts": [
-                    {
-                        "type": artifact.type,
-                        "local_path": artifact.local_path,
-                        "asset_url": artifact.asset_url,
+            for event in stream:
+                artifact = None
+                if event.HasField("artifact"):
+                    artifact = {
+                        "type": event.artifact.type,
+                        "local_path": event.artifact.local_path,
+                        "asset_url": event.artifact.asset_url,
                     }
-                    for artifact in response.artifacts
-                ],
-                "logs": response.logs,
-                "error": response.error,
-            }
+                yield {
+                    "event_type": event.event_type or "done",
+                    "text": event.text,
+                    "artifact": artifact,
+                    "output": event.output,
+                    "artifacts": [
+                        {
+                            "type": a.type,
+                            "local_path": a.local_path,
+                            "asset_url": a.asset_url,
+                        }
+                        for a in event.artifacts
+                    ],
+                    "logs": event.logs,
+                    "error": event.error,
+                }
         except Exception as exc:
             debug_log(f"ExecuteTool failed: {exc}")
-            return {
-                "ok": False,
+            yield {
+                "event_type": "done",
+                "text": "",
+                "artifact": None,
                 "output": "",
                 "artifacts": [],
                 "logs": "",

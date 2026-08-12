@@ -11,7 +11,7 @@ public partial class PortForwardPage : Page
     private readonly KubectlService _kubectl;
     public ObservableCollection<PortForwardItem> Items { get; } = new()
     {
-        new() { ServiceName = "dashboard-service",  ServiceTarget = "dashboard-service",  LocalPort = 5601, RemotePort = 5601 },
+        new() { ServiceName = "dashboard-service",  ServiceTarget = "dashboard-service",  LocalPort = 5700, RemotePort = 5700 },
         new() { ServiceName = "gateway-backend",    ServiceTarget = "gateway-backend-service", LocalPort = 5210, RemotePort = 5210 },
         new() { ServiceName = "image-assets",       ServiceTarget = "image-assets-service", LocalPort = 5102, RemotePort = 80 },
         new() { ServiceName = "istio-ingressgateway", ServiceTarget = "istio-ingressgateway", LocalPort = 8080, RemotePort = 80, Namespace = "istio-system" },

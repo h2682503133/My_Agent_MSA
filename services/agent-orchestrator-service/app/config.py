@@ -26,7 +26,7 @@ TIMER_TASK_TARGET = os.getenv(
     "timer-task-service.agent.svc.cluster.local:5103",
 )
 
-MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "20"))
+MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "30"))
 TOOL_TIMEOUT_SECONDS = int(os.getenv("TOOL_TIMEOUT_SECONDS", "120"))
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "300"))
 CONTEXT_TIMEOUT_SECONDS = int(os.getenv("CONTEXT_TIMEOUT_SECONDS", "30"))

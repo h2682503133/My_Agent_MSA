@@ -9,7 +9,7 @@ Windows 桌面管理控制面板，用于 My_Agent_MSA 微服务集群的日常�
 | 🔌 端口转发 | 一键启停 `dashboard`、`gateway`、`istio` 三个端口转发 |
 | 🚀 一键部署 | 从 `deploy-all.ps1` 自动解析服务列表，多选后构建镜像并部署到 K8s |
 | 🤖 LLBot | 启动本地 `llbot.exe`，实时日志查看，二维码同步推送至 Dashboard |
-| 📊 Dashboard | WebView2 内嵌 `http://localhost:5601`，直接访问管理后台 |
+| 📊 Dashboard | WebView2 内嵌 `http://localhost:5700`，直接访问管理后台 |
 
 ## 环境要求
 

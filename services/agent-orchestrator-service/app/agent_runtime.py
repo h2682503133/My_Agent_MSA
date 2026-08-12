@@ -140,9 +140,42 @@ class AgentRuntime:
 
         if final:
             task.status = "completed"
-            task.tool_log.clear()
 
         return final_reply
+
+    @classmethod
+    def _persist_tool_summary(cls, task) -> None:
+        """将 tool_log 总结后持久化到 tool 的上下文，供 tool agent 后续检索。"""
+        if not task.tool_log:
+            return
+        try:
+            tool_log_text = "\n".join(task.tool_log)
+            reader = cls.get_agent("reader", task.user.session_id, task.user.id)
+            reader_profile = reader.config.get("model_profile") or reader.config.get("model") or "reader"
+            summary_messages = [
+                {"role": "system", "content": "请用一句话总结以下工具执行记录，只输出总结内容。"},
+                {"role": "user", "content": tool_log_text},
+            ]
+            summary_resp = cls.model_client.chat_completion(
+                task_id=task.task_id,
+                agent_id="reader",
+                model_profile=reader_profile,
+                messages=summary_messages,
+                params={"temperature": 0.3, "max_tokens": "256", "stream": "false"},
+            )
+            summary_text = summary_resp.get("text", "") or tool_log_text
+            cls.context_client.append_turn(
+                user_id=task.user.id,
+                session_id=task.user.session_id,
+                task_id=task.task_id,
+                user_message="工具执行记录",
+                assistant_message=summary_text,
+                agent_id="tool",
+                tool_summaries=[],
+                commit_limit=0,
+            )
+        except Exception as exc:
+            debug_log(f"[{task.user.id}] tool_log summary append failed: {exc}")
 
     @classmethod
     def _emit_raw_model_fallback(
@@ -276,36 +309,8 @@ class AgentRuntime:
             except Exception as exc:
                 debug_log(f"[{task.user.id}] append_turn failed: {exc}")
 
-            # 将 tool_log 总结后持久化到 tool 的上下文，供 tool agent 后续检索
-            if task.tool_log:
-                try:
-                    tool_log_text = "\n".join(task.tool_log)
-                    reader = cls.get_agent("reader", task.user.session_id, task.user.id)
-                    reader_profile = reader.config.get("model_profile") or reader.config.get("model") or "reader"
-                    summary_messages = [
-                        {"role": "system", "content": "请用一句话总结以下工具执行记录，只输出总结内容。"},
-                        {"role": "user", "content": tool_log_text},
-                    ]
-                    summary_resp = cls.model_client.chat_completion(
-                        task_id=task.task_id,
-                        agent_id="reader",
-                        model_profile=reader_profile,
-                        messages=summary_messages,
-                        params={"temperature": 0.3, "max_tokens": "256", "stream": "false"},
-                    )
-                    summary_text = summary_resp.get("text", "") or tool_log_text
-                    cls.context_client.append_turn(
-                        user_id=task.user.id,
-                        session_id=task.user.session_id,
-                        task_id=task.task_id,
-                        user_message="工具执行记录",
-                        assistant_message=summary_text,
-                        agent_id="tool",
-                        tool_summaries=[],
-                        commit_limit=0,
-                    )
-                except Exception as exc:
-                    debug_log(f"[{task.user.id}] tool_log summary append failed: {exc}")
+            cls._persist_tool_summary(task)
+            task.tool_log.clear()
 
         emit(cls.build_event(task, "task_completed"))
         return final_reply
@@ -605,7 +610,7 @@ class AgentRuntime:
         #   /app/workspace/users/<user_id>
         # 而不是：
         #   /app/workspace/tasks/<task_id>
-        result = self.tool_client.execute_tool(
+        tool_events = self.tool_client.execute_tool(
             task_id=task.task_id,
             tool_name=tool_name,
             args=args,
@@ -613,15 +618,69 @@ class AgentRuntime:
             session_id=task.user.session_id,
         )
 
-        if result["ok"]:
-            output = result["output"]
-            for artifact in result.get("artifacts", []):
-                if artifact.get("asset_url"):
-                    task.send_images.append(artifact["asset_url"])
-        else:
-            output = f"工具执行失败：{result['error']}"
+        output = ""
+        error = ""
+        saw_done = False
+
+        for event in tool_events:
+            event_type = event.get("event_type", "")
+
+            # 执行过程中的即时推送：立即转发给用户（不等待模型最终回复）。
+            # agent_id 优先用请求传入的 task.agent_id（前端订阅的就是这个 agent，
+            # 否则 sse_hub 会按订阅 agent 过滤掉这条事件，用户收不到）；
+            # QQ 等渠道不传 agent_id，回退到会话默认 agent，再回退 main。
+            push_agent_id = (
+                task.agent_id
+                or getattr(getattr(task, "default_agent", None), "id", "")
+                or "main"
+            )
+            if event_type == "message":
+                emit(self.build_event(
+                    task,
+                    "assistant_message",
+                    text=event.get("text", ""),
+                    metadata={
+                        "visible_to_user": "true",
+                        "final": "false",
+                        "agent_id": push_agent_id,
+                    },
+                ))
+                continue
+
+            if event_type == "image":
+                artifact = event.get("artifact") or {}
+                asset_url = artifact.get("asset_url", "")
+                emit(self.build_event(
+                    task,
+                    "assistant_message",
+                    text=event.get("text", ""),
+                    images=[asset_url] if asset_url else [],
+                    metadata={
+                        "visible_to_user": "true",
+                        "final": "false",
+                        "agent_id": push_agent_id,
+                    },
+                ))
+                continue
+
+            if event_type == "done":
+                saw_done = True
+                output = event.get("output", "")
+                error = event.get("error", "")
+                for artifact in event.get("artifacts", []):
+                    if artifact.get("asset_url"):
+                        task.send_images.append(artifact["asset_url"])
+
+        if not saw_done:
+            error = error or "tool-runtime 未返回最终结果"
+
+        if error:
+            output = f"工具执行失败：{error}"
+
+        if not output and not error:
+            output = "（工具无输出）"
 
         task.tool_log.append("结果:" + str(output))
         task.set_temp_dialog_output(output)
-        chat_log(f"[{self.user_id}] {self.id} 执行工具 {tool_name}:\n结果: {output}")
-        debug_log(f"[{self.user_id}] [工具结果] {self.id} {output}")
+        chat_log(f"[{task.user.id}] {self.id} 执行工具 {tool_name}:\n结果: {output}")
+        debug_log(f"[{task.user.id}] [工具结果] {self.id} {output}")

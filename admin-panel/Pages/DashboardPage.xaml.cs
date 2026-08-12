@@ -10,7 +10,7 @@ namespace MyAgentAdminPanel.Pages;
 
 public partial class DashboardPage : Page
 {
-    private const string DashboardUrl = "http://localhost:5601";
+    private const string DashboardUrl = "http://localhost:5700";
 
     public DashboardPage()
     {

@@ -1,6 +1,7 @@
 {
   "scheduler_target": "task-scheduler-service.agent.svc.cluster.local:5100",
   "subscriber_id": "qq-llbot-1",
+  "group_at_required": true,
   "satori": {
     "host": "host.docker.internal",
     "port": 5600,

@@ -52,13 +52,17 @@ class ToolClient:
                     timeout_seconds=timeout,
                     workspace_dir=workspace_dir or "",
                 )
-                resp = await stub.ExecuteTool(req)
-                return {
-                    "ok": resp.ok,
-                    "output": resp.output,
-                    "error": resp.error,
-                    "logs": resp.logs,
-                }
+                # ExecuteTool 是 server-streaming：执行过程中的 message/image
+                # 事件对 gateway 直接调用无意义，只取最后的 done 事件。
+                async for event in stub.ExecuteTool(req):
+                    if event.event_type == "done":
+                        return {
+                            "ok": not bool(event.error),
+                            "output": event.output,
+                            "error": event.error,
+                            "logs": event.logs,
+                        }
+                return {"ok": False, "output": "", "error": "tool-runtime 未返回最终结果", "logs": ""}
         except Exception as exc:
             return {"ok": False, "output": "", "error": str(exc), "logs": ""}
 
