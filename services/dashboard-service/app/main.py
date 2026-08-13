@@ -31,6 +31,15 @@ OPENVIKING_SERVER_URL = os.environ.get("OPENVIKING_SERVER_URL", "http://openviki
 USER_SERVICE_URL = os.environ.get("USER_SERVICE_URL", "http://user-service.agent.svc.cluster.local:5204")
 OPENVIKING_API_KEY_FILE = Path(os.environ.get("OPENVIKING_API_KEY", "/app/config/openviking/api_key"))
 PASSWORD_FILE = CONFIG_ROOT / "dashboard_password.json"
+# 杂项设置落盘位置：orchestrator 挂载 subPath=orchestrator/config，
+# 该文件在 orchestrator 容器内即 /app/config/system_settings.json
+MISC_SETTINGS_PATH = CONFIG_ROOT / "orchestrator" / "config" / "system_settings.json"
+DEFAULT_MISC_SETTINGS = {
+    "image_receive_enabled": True,
+    "main_read_identity": True,
+    "shell_restriction_enabled": False,
+    "shell_allowed_users": [],
+}
 
 # ─── Pydantic models ────────────────────────────────────────
 
@@ -53,6 +62,12 @@ class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
 
+class MiscSettingsUpdate(BaseModel):
+    image_receive_enabled: bool | None = None
+    main_read_identity: bool | None = None
+    shell_restriction_enabled: bool | None = None
+    shell_allowed_users: list[str] | None = None
+
 
 # ─── 密码管理 ────────────────────────────────────────────────
 
@@ -70,6 +85,36 @@ def _save_password(password: str):
     """保存密码到 PV config"""
     PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
     PASSWORD_FILE.write_text(json.dumps({"password": password}))
+
+
+# ─── 杂项设置 ────────────────────────────────────────────────
+
+def _load_misc_settings() -> dict:
+    data = {}
+    if MISC_SETTINGS_PATH.exists():
+        try:
+            loaded = json.loads(MISC_SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            pass
+    merged = dict(DEFAULT_MISC_SETTINGS)
+    merged.update(data)
+    return merged
+
+@app.get("/api/misc/settings")
+async def get_misc_settings():
+    return _load_misc_settings()
+
+@app.put("/api/misc/settings")
+async def update_misc_settings(body: MiscSettingsUpdate):
+    data = _load_misc_settings()
+    payload = body.model_dump(exclude_none=True)
+    for key, value in payload.items():
+        data[key] = value
+    MISC_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MISC_SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, **data}
 
 @app.post("/api/auth/login")
 async def login(body: LoginRequest):

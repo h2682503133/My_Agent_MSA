@@ -18,6 +18,7 @@ message CreateTaskRequest {
   DeliveryTarget delivery_target = 6;
   map<string, string> metadata = 7;
   string agent_id = 8;
+  repeated string images = 9;
 }
 
 message CreateTaskResponse {

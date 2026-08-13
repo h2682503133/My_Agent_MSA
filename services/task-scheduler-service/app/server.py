@@ -65,6 +65,7 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
                 delivery_target=delivery_target,
                 metadata=metadata,
                 agent_id=agent_id,
+                images=list(request.images or []),
             )
 
             result = submit_task(task)
@@ -118,7 +119,15 @@ def serve():
     event_bus.set_user_client(UserClient())
     start_scheduler(OrchestratorClient(config.ORCHESTRATOR_TARGET))
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
+    # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+    max_msg_bytes = 128 * 1024 * 1024
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=32),
+        options=[
+            ("grpc.max_send_message_length", max_msg_bytes),
+            ("grpc.max_receive_message_length", max_msg_bytes),
+        ],
+    )
     task_scheduler_pb2_grpc.add_TaskSchedulerServicer_to_server(TaskSchedulerService(), server)
     listen_addr = f"{config.SCHEDULER_HOST}:{config.SCHEDULER_PORT}"
     server.add_insecure_port(listen_addr)

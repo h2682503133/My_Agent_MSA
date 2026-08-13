@@ -45,6 +45,7 @@ class OrchestratorClient:
             created_at=task.created_at_iso,
             agent_id=task.agent_id,
             metadata=task.to_execute_metadata(),
+            images=list(task.images or []),
         )
 
         metadata = (
@@ -55,11 +56,70 @@ class OrchestratorClient:
         )
 
         try:
-            with grpc.insecure_channel(self.target) as channel:
+            # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+            max_msg_bytes = 128 * 1024 * 1024
+            with grpc.insecure_channel(
+                self.target,
+                options=[
+                    ("grpc.max_send_message_length", max_msg_bytes),
+                    ("grpc.max_receive_message_length", max_msg_bytes),
+                ],
+            ) as channel:
                 stub = agent_orchestrator_pb2_grpc.AgentOrchestratorStub(channel)
                 stream = stub.ExecuteTask(
                     request,
                     timeout=None,  # 不再设总超时，由 MAX_AGENT_STEPS + 每轮 MODEL_TIMEOUT_SECONDS 自然限长
+                    metadata=metadata,
+                    wait_for_ready=True,
+                )
+                for event in stream:
+                    yield self._event_to_dict(task, event)
+        except Exception as e:
+            yield self._error_event(task, f"agent-orchestrator-service 调用失败: {e}")
+
+    def resume_task(self, task: ScheduledTask, content: str) -> Iterator[dict]:
+        """
+        scheduler -> orchestrator: gRPC streaming ResumeTask，恢复询问挂起的任务。
+
+        content 是用户对「询问:xxx」的回复；超时场景下是系统替用户构造的回复。
+        """
+        if agent_orchestrator_pb2 is None or agent_orchestrator_pb2_grpc is None:
+            yield self._error_event(task, "gRPC generated files not found. Run bash scripts/gen_proto.sh first.")
+            return
+
+        request = agent_orchestrator_pb2.ResumeTaskRequest(
+            task_id=task.task_id,
+            user_id=task.user_id,
+            session_id=task.session_id,
+            channel=task.channel,
+            content=content,
+            created_at=task.created_at_iso,
+            agent_id=task.agent_id,
+            metadata=task.to_execute_metadata(),
+            images=list(task.images or []),
+        )
+
+        metadata = (
+            ("x-task-id", task.task_id),
+            ("x-user-id", task.user_id),
+            ("x-session-id", task.session_id),
+            ("x-channel", task.channel),
+        )
+
+        try:
+            # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+            max_msg_bytes = 128 * 1024 * 1024
+            with grpc.insecure_channel(
+                self.target,
+                options=[
+                    ("grpc.max_send_message_length", max_msg_bytes),
+                    ("grpc.max_receive_message_length", max_msg_bytes),
+                ],
+            ) as channel:
+                stub = agent_orchestrator_pb2_grpc.AgentOrchestratorStub(channel)
+                stream = stub.ResumeTask(
+                    request,
+                    timeout=None,
                     metadata=metadata,
                     wait_for_ready=True,
                 )

@@ -49,6 +49,7 @@ class ScheduledTask:
     delivery_target: DeliveryTarget = field(default_factory=DeliveryTarget)
     metadata: dict[str, str] = field(default_factory=dict)
     agent_id: str = ""
+    images: list[str] = field(default_factory=list)
 
     # Scheduling-only state. These fields replace the tiny subset of the old
     # Task object that scheduler.py actually needs.
@@ -106,6 +107,7 @@ class ScheduledTask:
             "client_message_id": self.client_message_id,
             "delivery_target": self.delivery_target.to_dict(),
             "metadata": dict(self.metadata),
+            "images": list(self.images),
             "status": self.status,
             "waiting": self.waiting,
             "retry_count": self.retry_count,

@@ -50,6 +50,18 @@ label.file-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; 
 label.file-item:hover { color: var(--accent); }
 .check-group { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
 .check-group label { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer; }
+/* 开关 */
+.switch-row { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.switch-row:last-child { border-bottom: none; }
+.switch-info { flex: 1; }
+.switch-info .sw-title { font-size: 0.95rem; }
+.switch-info .sw-desc { font-size: 0.8rem; color: var(--dim); margin-top: 4px; }
+.switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider { position: absolute; inset: 0; background: var(--border); border-radius: 24px; cursor: pointer; transition: 0.2s; }
+.switch .slider::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: 0.2s; }
+.switch input:checked + .slider { background: var(--green); }
+.switch input:checked + .slider::before { transform: translateX(20px); }
 .toast { position: fixed; top: 16px; right: 16px; padding: 10px 20px; border-radius: 6px; font-size: 0.85rem; z-index: 999; animation: fadeIn 0.3s; }
 .toast.ok { background: rgba(76,175,80,0.9); color: #fff; }
 .toast.err { background: rgba(244,67,54,0.9); color: #fff; }
@@ -122,6 +134,7 @@ label.file-item:hover { color: var(--accent); }
     <button data-tab="sprompt">System Prompt</button>
     <button data-tab="session">Session 管理</button>
     <button data-tab="qrcode">二维码</button>
+    <button data-tab="misc">杂项</button>
   </nav>
   <div class="header-right">
     <span id="status" style="font-size:0.8rem;color:var(--dim);"></span>
@@ -285,6 +298,53 @@ label.file-item:hover { color: var(--accent); }
       <p id="qrcode-time" style="margin-top:16px;color:var(--dim);font-size:0.85rem;"></p>
     </div>
   </div>
+
+  <!-- 杂项 -->
+  <div id="tab-misc" class="tab">
+    <h2>杂项设置</h2>
+    <div class="card">
+      <div class="switch-row">
+        <div class="switch-info">
+          <div class="sw-title">接收图像</div>
+          <div class="sw-desc">开启后，网页与 QQ 发给 main 的图片会以多模态输入传给模型；关闭后图片会被忽略。</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="misc-image-receive" onchange="saveMiscSettings()">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="switch-row">
+        <div class="switch-info">
+          <div class="sw-title">main 读取 IDENTITY.md</div>
+          <div class="sw-desc">开启后 main 的系统提示词正常加载 IDENTITY.md；关闭则拦截该文件，仅不加载，不会删除文件。</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="misc-main-identity" onchange="saveMiscSettings()">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="switch-row">
+        <div class="switch-info">
+          <div class="sw-title">shell 权限限制</div>
+          <div class="sw-desc">开启后仅下方白名单中的 user_id 可以使用 shell 工具；关闭则不做限制（所有用户可用）。</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="misc-shell-restrict" onchange="saveMiscSettings()">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="switch-row" style="align-items:flex-start;">
+        <div class="switch-info">
+          <div class="sw-title">允许使用 shell 的 user_id</div>
+          <div class="sw-desc">逗号或换行分隔多个 user_id；仅在上方「shell 权限限制」开启时生效。</div>
+          <textarea id="misc-shell-users" rows="4" placeholder="例如：&#10;h268&#10;dujiawei" style="margin-top:10px;min-height:70px;height:70px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-size:0.85rem;"></textarea>
+          <div style="margin-top:8px;">
+            <button class="btn green" onclick="saveShellUsers()">保存白名单</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -362,6 +422,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     if (btn.dataset.tab === 'session') sessLoadUsers();
     if (btn.dataset.tab === 'sprompt') spRefresh();
     if (btn.dataset.tab === 'qrcode') refreshQrcode();
+    if (btn.dataset.tab === 'misc') loadMiscSettings();
   });
 });
 
@@ -759,6 +820,70 @@ function refreshQrcode() {
       el.textContent = '';
     }
   }).catch(() => {});
+}
+
+
+// ═══ 杂项设置 ═══════════════════════════════════════════════
+
+async function loadMiscSettings() {
+  const imgCb = document.getElementById('misc-image-receive');
+  const idCb = document.getElementById('misc-main-identity');
+  const shCb = document.getElementById('misc-shell-restrict');
+  const usersEl = document.getElementById('misc-shell-users');
+  try {
+    const data = await fetch('/api/misc/settings').then(r => r.json()) || {};
+    imgCb.checked = !!(data.image_receive_enabled !== false);
+    idCb.checked = !!(data.main_read_identity !== false);
+    shCb.checked = !!data.shell_restriction_enabled;
+    usersEl.value = (data.shell_allowed_users || []).join('\n');
+    usersEl.disabled = !shCb.checked;
+  } catch(e) {
+    imgCb.checked = true;
+    idCb.checked = true;
+    shCb.checked = false;
+    usersEl.disabled = true;
+  }
+}
+
+function collectMiscSettings() {
+  return {
+    image_receive_enabled: document.getElementById('misc-image-receive').checked,
+    main_read_identity: document.getElementById('misc-main-identity').checked,
+    shell_restriction_enabled: document.getElementById('misc-shell-restrict').checked,
+    shell_allowed_users: document.getElementById('misc-shell-users').value.split(/[\n,，]+/).map(s => s.trim()).filter(Boolean),
+  };
+}
+
+async function saveMiscSettings() {
+  const shCb = document.getElementById('misc-shell-restrict');
+  document.getElementById('misc-shell-users').disabled = !shCb.checked;
+  try {
+    const r = await fetch('/api/misc/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectMiscSettings()),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('杂项设置已保存');
+  } catch(e) {
+    toast('保存失败: ' + e, false);
+    loadMiscSettings();
+  }
+}
+
+async function saveShellUsers() {
+  const users = document.getElementById('misc-shell-users').value.split(/[\n,，]+/).map(s => s.trim()).filter(Boolean);
+  try {
+    const r = await fetch('/api/misc/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shell_allowed_users: users }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('shell 白名单已保存');
+  } catch(e) {
+    toast('保存失败: ' + e, false);
+  }
 }
 
 

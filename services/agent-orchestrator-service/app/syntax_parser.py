@@ -28,6 +28,9 @@ _INLINE_COMMAND_RE = re.compile(
     r"(?:对话|工具调用|切换|定时任务)\s*:"
 )
 _INLINE_SHELL_RE = re.compile(r"工具调用\s*:\s*shell\s*\|\s*")
+# 询问指令：必须是独立关键字，前面不能是汉字/字母/数字，
+# 避免「请询问:」「我询问:」「想询问:」这类自然语言被误判为询问指令。
+_QUESTION_CMD_RE = re.compile(r"(?<![一-龥A-Za-z0-9])询问\s*:\s*(.*)$", re.S)
 
 
 def clean_ai_thinking(text: str) -> str:
@@ -105,14 +108,14 @@ def _find_question_tail(full_text: str) -> str | None:
     """
     兼容 `询问:xxx` 的原始宽松写法。
 
-    和其他协议不同，`询问:` 允许出现在文本任意位置；一旦最后轮到
-    询问逻辑，就把 `询问:` 之后的全部内容直接作为要发给用户的问题。
+    和其他协议不同，`询问:` 允许出现在段落中间（前面是标点/空白）；
+    但「询问:」必须是独立指令关键字，前面不能是汉字/字母/数字，
+    避免「请询问:」「我询问:」等自然语言被误判为询问指令。
     """
-    marker = "询问:"
-    index = full_text.find(marker)
-    if index < 0:
+    match = _QUESTION_CMD_RE.search(full_text)
+    if not match:
         return None
-    return full_text[index + len(marker):].strip()
+    return match.group(1).strip()
 
 
 def _parse_tool_call(tool_line: str) -> dict | None:

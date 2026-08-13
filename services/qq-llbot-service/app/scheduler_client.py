@@ -31,11 +31,20 @@ class SchedulerClient:
         session_id: str = "",
         agent_id: str = "",
         client_message_id: str = "",
+        images: list[str] | None = None,
     ) -> dict:
         session_id = session_id or f"{channel}_{user_id}"
 
         try:
-            async with grpc.aio.insecure_channel(self.target) as chan:
+            # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+            max_msg_bytes = 128 * 1024 * 1024
+            async with grpc.aio.insecure_channel(
+                self.target,
+                options=[
+                    ("grpc.max_send_message_length", max_msg_bytes),
+                    ("grpc.max_receive_message_length", max_msg_bytes),
+                ],
+            ) as chan:
                 stub = task_scheduler_pb2_grpc.TaskSchedulerStub(chan)
                 req = task_scheduler_pb2.CreateTaskRequest(
                     user_id=user_id,
@@ -43,6 +52,7 @@ class SchedulerClient:
                     channel=channel,
                     content=content,
                     client_message_id=client_message_id,
+                    images=list(images or []),
                     agent_id=agent_id,
                     delivery_target=task_scheduler_pb2.DeliveryTarget(
                         channel=channel,

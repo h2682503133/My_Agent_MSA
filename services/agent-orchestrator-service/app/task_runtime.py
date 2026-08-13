@@ -27,6 +27,7 @@ class TaskRuntime:
     created_at: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
     agent_id: str = ""
+    images: list[str] = field(default_factory=list)
 
     status: str = "running"
     default_agent: Any = None
@@ -40,6 +41,7 @@ class TaskRuntime:
 
     temp_dialog_input: Any = None
     temp_dialog_output: Any = None
+    temp_dialog_images: list[str] = field(default_factory=list)
     last_dialog_content: str = ""
 
     main_memory: list[str] = field(default_factory=list)
@@ -68,6 +70,7 @@ class TaskRuntime:
             created_at=request.created_at,
             metadata=dict(request.metadata),
             agent_id=request.agent_id or "",
+            images=list(request.images or []),
         )
 
     def push_context(self, from_obj, input_text: str) -> None:
@@ -95,4 +98,12 @@ class TaskRuntime:
     def consume_temp_dialog_output(self):
         value = self.temp_dialog_output
         self.temp_dialog_output = None
+        return value
+
+    def set_temp_dialog_images(self, images) -> None:
+        self.temp_dialog_images = list(images or [])
+
+    def consume_temp_dialog_images(self):
+        value = self.temp_dialog_images
+        self.temp_dialog_images = []
         return value

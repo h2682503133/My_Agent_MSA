@@ -24,13 +24,7 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
     def ChatCompletion(self, request, context):
         try:
             profile = profile_store.get_profile(request.model_profile)
-            messages = [
-                {
-                    "role": msg.role,
-                    "content": msg.content,
-                }
-                for msg in request.messages
-            ]
+            messages = [self._to_provider_message(msg) for msg in request.messages]
 
             result = provider_client.chat_completion(
                 profile=profile,
@@ -78,9 +72,39 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
                 error=str(exc),
             )
 
+    @staticmethod
+    def _to_provider_message(msg) -> dict:
+        """单条消息转为 provider 消息体。
+
+        无图片时保持纯文本 {role, content}；
+        带图片时构建 OpenAI 多模态 content 数组：
+        [{"type": "text", "text": ...}, {"type": "image_url", "image_url": {"url": ...}}]
+        """
+        base = {"role": msg.role}
+        images = list(msg.images or [])
+        if not images:
+            base["content"] = msg.content
+            return base
+
+        content: list[dict] = [{"type": "text", "text": msg.content or ""}]
+        for url in images:
+            if not url:
+                continue
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        base["content"] = content
+        return base
+
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
+    # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB，纯字节数限制）
+    max_msg_bytes = 128 * 1024 * 1024
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=32),
+        options=[
+            ("grpc.max_send_message_length", max_msg_bytes),
+            ("grpc.max_receive_message_length", max_msg_bytes),
+        ],
+    )
     model_proxy_pb2_grpc.add_ModelProxyServicer_to_server(
         ModelProxyService(),
         server,

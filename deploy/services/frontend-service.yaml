@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: frontend-service
-          image: agent/frontend-service:v11
+          image: agent/frontend-service:v13
           imagePullPolicy: Always
           ports:
             - name: http

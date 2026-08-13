@@ -25,7 +25,15 @@ class ModelProxyClient:
 
     def _get_stub(self):
         if self._stub is None:
-            channel = grpc.insecure_channel(config.MODEL_PROXY_TARGET)
+            # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+            max_msg_bytes = 128 * 1024 * 1024
+            channel = grpc.insecure_channel(
+                config.MODEL_PROXY_TARGET,
+                options=[
+                    ("grpc.max_send_message_length", max_msg_bytes),
+                    ("grpc.max_receive_message_length", max_msg_bytes),
+                ],
+            )
             self._stub = model_proxy_pb2_grpc.ModelProxyStub(channel)
         return self._stub
 
@@ -43,6 +51,7 @@ class ModelProxyClient:
                     model_proxy_pb2.Message(
                         role=m.get("role", "user"),
                         content=m.get("content", ""),
+                        images=m.get("images") or [],
                     )
                     for m in messages
                 ],

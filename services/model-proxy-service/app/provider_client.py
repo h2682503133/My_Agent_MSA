@@ -131,7 +131,7 @@ class ProviderClient:
         body = self._merge_params(profile, params)
         body.update({
             "model": model,
-            "messages": messages,
+            "messages": [self._to_ollama_message(m) for m in messages],
         })
 
         headers = self._base_headers(profile)
@@ -159,6 +159,33 @@ class ProviderClient:
             "model": model,
             "error": "",
         }
+
+    @staticmethod
+    def _to_ollama_message(msg: dict[str, Any]) -> dict[str, Any]:
+        """OpenAI 多模态 content 数组 -> Ollama 的 {content, images} 消息格式。"""
+        content = msg.get("content")
+        if not isinstance(content, list):
+            return msg
+
+        text_parts = []
+        images: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                text_parts.append(str(part.get("text") or ""))
+            elif part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                if url:
+                    if url.startswith("data:") and ";base64," in url:
+                        images.append(url.split(";base64,", 1)[1])
+                    else:
+                        images.append(url)
+
+        out = {"role": msg.get("role", "user"), "content": "".join(text_parts)}
+        if images:
+            out["images"] = images
+        return out
 
     def _request(self, method: str, url: str, headers: dict[str, str], body: dict[str, Any]) -> requests.Response:
         last_exc = None

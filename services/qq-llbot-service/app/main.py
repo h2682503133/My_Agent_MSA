@@ -18,12 +18,16 @@ async def main():
     scheduler = SchedulerClient(config.SCHEDULER_TARGET)
 
     # ── QQ 消息 ─→ scheduler ──────────────────────────────
-    async def on_qq_message(user_id: str, content: str, session_id: str):
+    async def on_qq_message(user_id: str, content: str, session_id: str, image_urls: list[str]):
+        images = [img for img in await bridge.resolve_images(image_urls) if img]
+        if not content and images:
+            content = "[图片]"
         result = await scheduler.create_task(
             user_id=user_id,
             content=content,
             channel="qq",
             session_id=session_id,
+            images=images,
         )
         if result["ok"]:
             print(
@@ -54,6 +58,9 @@ async def main():
             # 推送用户可见的 assistant_message
             if event_type == "assistant_message" and metadata.get("visible_to_user") == "true":
                 await bridge.send(session_id, text=text, images=images)
+            # 询问挂起：把「询问：xxx」推给用户等待回复
+            elif event_type == "task_waiting_user":
+                await bridge.send(session_id, text=text or "出现某些问题，询问无法发送，请重新发送", images=[])
             # 任务失败/超时/取消等终态也要提示用户，避免静默无响应
             elif event_type in {
                 "task_failed",

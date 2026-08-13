@@ -12,11 +12,15 @@
     let currentAgentId = null;       // currently selected agent_id
     let eventSource = null;
     let logAutoRefreshTimer = null;
+    let pendingImages = [];          // 待发送图片的 data URL 列表
 
     // DOM refs
     const chatBox = document.getElementById("chat-box");
     const input = document.getElementById("message-input");
     const sendBtn = document.getElementById("send-btn");
+    const attachBtn = document.getElementById("attach-btn");
+    const imageInput = document.getElementById("image-input");
+    const imgPreviewList = document.getElementById("img-preview-list");
     const convList = document.getElementById("conv-list");
     const userBadge = document.getElementById("user-badge");
     const queueStatus = document.getElementById("queue-status");
@@ -49,6 +53,62 @@
       }
     });
     loadUserProfile();
+
+    // ═══════════════════════════════════════════════════════════════
+    // 图片发送（选择 / 粘贴 / 预览）
+    // ═══════════════════════════════════════════════════════════════
+    attachBtn.addEventListener("click", () => imageInput.click());
+    imageInput.addEventListener("change", () => {
+      addPendingImageFiles(imageInput.files);
+      imageInput.value = "";
+    });
+
+    document.addEventListener("paste", (e) => {
+      const items = (e.clipboardData && e.clipboardData.items) || [];
+      const files = [];
+      for (const item of items) {
+        if (item.type && item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length > 0) addPendingImageFiles(files);
+    });
+
+    function addPendingImageFiles(files) {
+      for (const file of files) {
+        if (!file.type || !file.type.startsWith("image/")) continue;
+        const reader = new FileReader();
+        reader.onload = () => {
+          pendingImages.push(reader.result);
+          renderImagePreview();
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    function renderImagePreview() {
+      imgPreviewList.innerHTML = "";
+      pendingImages.forEach((url, idx) => {
+        const box = document.createElement("div");
+        box.className = "img-preview";
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "待发送图片";
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "img-preview-remove";
+        rm.textContent = "✕";
+        rm.title = "移除";
+        rm.onclick = () => {
+          pendingImages.splice(idx, 1);
+          renderImagePreview();
+        };
+        box.appendChild(img);
+        box.appendChild(rm);
+        imgPreviewList.appendChild(box);
+      });
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // Conversations
@@ -312,9 +372,11 @@
         addSystemMessage("请先选择一个对话或创建新对话");
         return;
       }
-      if (!text) return;
+      if (!text && pendingImages.length === 0) return;
 
-      addMsg("user", text);
+      const images = pendingImages.slice();
+      addMsg("user", text, images);
+      const content = text || (images.length ? "[图片]" : "");
       input.value = "";
       sendBtn.disabled = true;
 
@@ -326,7 +388,8 @@
           body: JSON.stringify({
             user_id: userId,
             session_id: sessionId,
-            content: text,
+            content,
+            images,
             agent_id: currentAgentId,
             client_message_id: buildClientMessageId(),
           }),
@@ -341,8 +404,10 @@
         if (data.ok === false) throw new Error(data.error || "发送失败");
         if (data.task_id) addSystemMessage(`任务已创建：${data.task_id}`);
         if (typeof data.waiting === "number") queueStatus.textContent = `排队：${data.waiting}`;
+        pendingImages = [];
+        renderImagePreview();
       } catch (err) {
-        addMsg("agent", `消息发送失败：${err.message || err}`);
+        addMsg("agent", `消息发送失败：${err.message || err}${images.length ? "（图片未发送）" : ""}`);
       } finally {
         sendBtn.disabled = false;
         input.focus();
@@ -634,21 +699,14 @@
       const isImg = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(filePath);
 
       if (isImg) {
-        // Image preview via raw endpoint
-        const url = `/api/workspace/files/raw?user_id=${encodeURIComponent(userId)}&path=${encodeURIComponent(filePath)}`;
+        // 图片暂不支持预览
         const preview = document.getElementById("ws-preview");
         preview.innerHTML = `
           <div class="preview-toolbar">
             <span class="path-label">${escHtml(filePath)}</span>
           </div>
-          <div class="preview-image">
-            <div>
-              <img src="${url}" alt="${escHtml(fileName)}" onerror="this.parentElement.innerHTML='<span style=color:#c62828>图片加载失败</span>'" />
-              <div class="size-hint">点击图片在新标签页打开</div>
-            </div>
-          </div>
+          <div class="preview-content" style="color:#888;">图片文件暂不支持预览</div>
         `;
-        preview.querySelector("img").onclick = () => window.open(url, "_blank");
       } else {
         // Text preview with encoding selector
         const encoding = (document.getElementById("preview-encoding") || {}).value || "utf-8";

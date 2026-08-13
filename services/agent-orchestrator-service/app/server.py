@@ -49,14 +49,9 @@ def dto_to_pb(event):
 
 
 class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServicer):
-    def ExecuteTask(self, request, context):
-        log(
-            "ExecuteTask received "
-            f"task_id={request.task_id} user_id={request.user_id} "
-            f"session_id={request.session_id} channel={request.channel} agent_id={request.agent_id}"
-        )
-
-        task = TaskRuntime.from_execute_request(request)
+    def _stream_task_events(self, task, run_fn, context):
+        """后台线程执行任务，主线程边收边 yield：工具执行过程中的即时事件
+        （图片/消息）可以立刻流式转发给下游，而不是攒到任务结束才发送。"""
         events_q: queue.Queue = queue.Queue()
 
         def emit(event):
@@ -64,11 +59,11 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
 
         def run():
             try:
-                AgentRuntime.process_task(task, emit)
+                run_fn(task, emit)
             except Exception as exc:
                 from app.events import TaskEventDTO, DeliveryTarget, new_event_id
 
-                log(f"[{task.user.id}] ExecuteTask failed: {exc}")
+                log(f"[{task.user.id}] task run failed: {exc}")
                 emit(TaskEventDTO(
                     event_id=new_event_id(),
                     task_id=task.task_id,
@@ -89,8 +84,6 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
             finally:
                 events_q.put(None)
 
-        # 后台线程执行任务，主线程边收边 yield：工具执行过程中的即时事件
-        # （图片/消息）可以立刻流式转发给下游，而不是攒到任务结束才发送。
         threading.Thread(target=run, daemon=True).start()
 
         while True:
@@ -104,9 +97,66 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
                 break
             yield dto_to_pb(event)
 
+    def ExecuteTask(self, request, context):
+        log(
+            "ExecuteTask received "
+            f"task_id={request.task_id} user_id={request.user_id} "
+            f"session_id={request.session_id} channel={request.channel} agent_id={request.agent_id}"
+        )
+
+        task = TaskRuntime.from_execute_request(request)
+        yield from self._stream_task_events(task, AgentRuntime.process_task, context)
+
+    def ResumeTask(self, request, context):
+        log(
+            "ResumeTask received "
+            f"task_id={request.task_id} user_id={request.user_id} "
+            f"session_id={request.session_id} channel={request.channel} agent_id={request.agent_id}"
+        )
+
+        task = AgentRuntime.pop_pending_task(request.task_id)
+        if task is None:
+            # 挂起状态丢失（如 orchestrator 重启）：回退为普通新任务处理
+            log(f"[{request.user_id}] pending task {request.task_id} not found, fallback to ExecuteTask")
+            exec_request = agent_orchestrator_pb2.ExecuteTaskRequest(
+                task_id=request.task_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                channel=request.channel,
+                content=request.content,
+                created_at=request.created_at,
+                metadata=dict(request.metadata),
+                agent_id=request.agent_id,
+                images=list(request.images or []),
+            )
+            yield from self.ExecuteTask(exec_request, context)
+            return
+
+        # 恢复时用回复消息的 metadata（client_message_id）更新，保证最终回复的 reply_to 正确
+        if request.metadata:
+            task.metadata.update({k: v for k, v in request.metadata.items()})
+
+        def run(task, emit):
+            AgentRuntime.resume_task(
+                task,
+                request.content,
+                emit,
+                images=list(request.images or []),
+            )
+
+        yield from self._stream_task_events(task, run, context)
+
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))
+    # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+    max_msg_bytes = 128 * 1024 * 1024
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=16),
+        options=[
+            ("grpc.max_send_message_length", max_msg_bytes),
+            ("grpc.max_receive_message_length", max_msg_bytes),
+        ],
+    )
     agent_orchestrator_pb2_grpc.add_AgentOrchestratorServicer_to_server(
         AgentOrchestratorService(),
         server,

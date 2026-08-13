@@ -5,6 +5,7 @@ package model_proxy.v1;
 message Message {
   string role = 1;
   string content = 2;
+  repeated string images = 3;
 }
 
 message ChatCompletionRequest {

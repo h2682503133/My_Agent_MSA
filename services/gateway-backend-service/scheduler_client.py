@@ -141,7 +141,15 @@ class GrpcSchedulerClient(SchedulerClient):
         metadata.setdefault("agent_id", agent_id)
 
         try:
-            async with grpc.aio.insecure_channel(self.target) as channel:
+            # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+            max_msg_bytes = 128 * 1024 * 1024
+            async with grpc.aio.insecure_channel(
+                self.target,
+                options=[
+                    ("grpc.max_send_message_length", max_msg_bytes),
+                    ("grpc.max_receive_message_length", max_msg_bytes),
+                ],
+            ) as channel:
                 stub = scheduler_pb2_grpc.TaskSchedulerStub(channel)
 
                 req = scheduler_pb2.CreateTaskRequest(
@@ -150,6 +158,7 @@ class GrpcSchedulerClient(SchedulerClient):
                     channel="web",
                     content=message.content,
                     client_message_id=message.client_message_id or "",
+                    images=list(message.images or []),
                     delivery_target=scheduler_pb2.DeliveryTarget(
                         channel="web",
                         user_id=message.user_id,

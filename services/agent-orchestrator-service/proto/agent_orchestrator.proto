@@ -11,6 +11,19 @@ message ExecuteTaskRequest {
   string created_at = 6;
   map<string, string> metadata = 7;
   string agent_id = 8;
+  repeated string images = 9;
+}
+
+message ResumeTaskRequest {
+  string task_id = 1;
+  string user_id = 2;
+  string session_id = 3;
+  string channel = 4;
+  string content = 5;
+  string created_at = 6;
+  map<string, string> metadata = 7;
+  string agent_id = 8;
+  repeated string images = 9;
 }
 
 message DeliveryTarget {
@@ -37,4 +50,5 @@ message TaskEvent {
 
 service AgentOrchestrator {
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream TaskEvent);
+  rpc ResumeTask(ResumeTaskRequest) returns (stream TaskEvent);
 }

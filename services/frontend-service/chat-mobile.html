@@ -50,6 +50,11 @@
       </section>
 
       <footer class="input-row">
+        <div class="input-toolbar">
+          <button type="button" class="attach-btn" id="attach-btn" title="发送图片">🖼</button>
+          <input type="file" id="image-input" accept="image/*" multiple hidden />
+          <div class="img-preview-list" id="img-preview-list"></div>
+        </div>
         <textarea id="message-input" placeholder="输入消息…" disabled></textarea>
         <button id="send-btn" class="send-btn" onclick="sendMessage()" disabled>发送</button>
       </footer>

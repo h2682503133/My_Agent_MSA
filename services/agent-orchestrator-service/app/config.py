@@ -37,3 +37,8 @@ MOCK_DOWNSTREAM = False
 AGENT_CONFIG_PATH = Path(os.getenv("AGENT_CONFIG_PATH", str(BASE_DIR / "config" / "agent_list.json")))
 SYSTEM_PROMPT_DIR = Path(os.getenv("SYSTEM_PROMPT_DIR", str(BASE_DIR / "system_prompt")))
 WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", str(BASE_DIR / "workspace")))
+
+# 系统杂项设置（dashboard 写入）：当前仅 image_receive_enabled 图像接收开关
+SYSTEM_SETTINGS_PATH = Path(
+    os.getenv("SYSTEM_SETTINGS_PATH", str(BASE_DIR / "config" / "system_settings.json"))
+)

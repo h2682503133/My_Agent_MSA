@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Callable
@@ -34,8 +36,16 @@ class AgentRuntime:
     """
 
     MAX_INSTANCES = 20
+    # tool-runtime 中执行 shell 的工具名（运行任意命令）
+    SHELL_TOOL_NAMES = {"run-shell", "shell", "command"}
     _agent_instances: OrderedDict[str, "AgentRuntime"] = OrderedDict()
     default_agent: dict[str, str] = {}
+
+    # 挂起任务注册表：task_id -> TaskRuntime
+    # 只存在 orchestrator 进程内存里，供 ResumeTask 恢复时取回。
+    # 挂起任务不删除：超过 1 小时由 scheduler 用系统消息替用户回复来恢复。
+    PENDING_TASKS: dict[str, "TaskRuntime"] = {}
+    PENDING_LOCK = threading.Lock()
 
     context_client = ContextClient()
     model_client = ModelProxyClient()
@@ -47,6 +57,7 @@ class AgentRuntime:
         self.user_id = user_id or "default"
         self.config = {}
         self.system_prompt: list[dict[str, str]] = []
+        self._identity_system_indexes: list[int] = []
         self.load_config()
         self.build_system_prompt()
 
@@ -200,6 +211,95 @@ class AgentRuntime:
         return cls._emit_user_message(task, emit, fallback_text, final=True, agent_id=agent_id)
 
     @classmethod
+    def suspend_task(cls, task, emit: Callable[[TaskEventDTO], None], question: str, agent_id: str = "") -> None:
+        """询问:xxx -> 挂起任务，等待用户回复后恢复。"""
+        with cls.PENDING_LOCK:
+            cls.PENDING_TASKS[task.task_id] = task
+        emit(cls.build_event(
+            task,
+            "task_waiting_user",
+            text="询问：" + question,
+            metadata={
+                "visible_to_user": "true",
+                "final": "false",
+                "suspend": "true",
+                "agent_id": agent_id or getattr(task, "agent_id", "") or "main",
+            },
+        ))
+
+    @classmethod
+    def pop_pending_task(cls, task_id: str):
+        """从挂起注册表取回任务；找不到返回 None（调用方回退为普通新任务）。"""
+        with cls.PENDING_LOCK:
+            return cls.PENDING_TASKS.pop(task_id, None)
+
+    @classmethod
+    def resume_task(
+        cls,
+        task,
+        reply: str,
+        emit: Callable[[TaskEventDTO], None],
+        images: list[str] | None = None,
+    ) -> str:
+        """
+        恢复挂起任务：与对话流程一致，把用户回复弹栈拼接后继续主循环。
+
+        挂起时压栈的是 {from: 询问方, input: "【已发送给用户】\\n询问：xxx"}；
+        恢复时弹出该上下文，把回复内容（用户回复或系统超时提示）作为
+        「收到返回」拼在后面，交给询问方继续 send，再走 _continue_task 主循环。
+        """
+        task.status = "running"
+        context = task.pop_context()
+        stack_input = (context or {}).get("input", "")
+
+        parts = []
+        if stack_input:
+            parts.append(stack_input)
+        parts.append("【收到返回】\n" + str(reply))
+        task.set_temp_dialog_input("\n\n".join(parts))
+        if images:
+            task.set_temp_dialog_images(images)
+
+        asking_agent = task.target
+        if asking_agent is not None and hasattr(asking_agent, "send"):
+            asking_agent.send(task, emit)
+
+        return cls._continue_task(task, emit)
+
+    @classmethod
+    def _load_system_settings(cls) -> dict:
+        """读取 dashboard「杂项」写入的 system_settings.json，失败返回空字典。"""
+        try:
+            path = config.SYSTEM_SETTINGS_PATH
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {}
+
+    @classmethod
+    def _image_receive_enabled(cls) -> bool:
+        """图像接收开关，默认开启。"""
+        return bool(cls._load_system_settings().get("image_receive_enabled", True))
+
+    @classmethod
+    def _identity_read_enabled(cls) -> bool:
+        """main 是否读取 IDENTITY.md，默认开启。"""
+        return bool(cls._load_system_settings().get("main_read_identity", True))
+
+    @classmethod
+    def _shell_allowed(cls, user_id: str) -> bool:
+        """shell 白名单校验：未开启限制时所有用户可用。"""
+        data = cls._load_system_settings()
+        if not bool(data.get("shell_restriction_enabled", False)):
+            return True
+        allowed = data.get("shell_allowed_users") or []
+        allowed_set = {str(u).strip() for u in allowed if str(u).strip()}
+        return str(user_id) in allowed_set
+
+    @classmethod
     def get_agent(cls, agent_id: str, session_id: str, user_id: str = "default") -> "AgentRuntime":
         debug_log(f"[get_agent] calling with agent_id={agent_id!r} session_id={session_id!r} user_id={user_id!r}")
         user_id = user_id or "default"
@@ -245,6 +345,12 @@ class AgentRuntime:
                 raw_output = task.consume_temp_dialog_output() or task.send_text or ""
                 return cls._emit_raw_model_fallback(task, emit, str(raw_output), exc)
 
+        return cls._continue_task(task, emit)
+
+    @classmethod
+    def _continue_task(cls, task, emit: Callable[[TaskEventDTO], None]) -> str:
+        """主循环 + 收尾：process_task 和 resume_task 都会走到这里。"""
+        final_reply = ""
         steps = 0
         while len(task.agent_context) > 0 and task.status == "running":
             steps += 1
@@ -284,6 +390,10 @@ class AgentRuntime:
                 break
 
             final_reply = str(output)
+
+        if task.status == "suspended":
+            # 询问挂起：task_waiting_user 事件已发，不补终态事件，等用户回复后恢复。
+            return ""
 
         if task.status == "running":
             task.status = "completed"
@@ -356,6 +466,7 @@ class AgentRuntime:
         global_setting = config.SYSTEM_PROMPT_DIR / "GLOBAL_SETTING.md"
 
         system_messages = []
+        identity_indexes: list[int] = []
 
         if global_setting.exists():
             content = global_setting.read_text(encoding="utf-8").strip()
@@ -369,16 +480,39 @@ class AgentRuntime:
             content = file_path.read_text(encoding="utf-8").strip()
             if content:
                 system_messages.append({"role": "system", "content": content})
+                # 记录 main 的 IDENTITY.md 位置，供杂项开关在调用模型前拦截
+                if self.id == "main" and filename.lower() == "identity.md":
+                    identity_indexes.append(len(system_messages) - 1)
 
         self.system_prompt = system_messages
+        self._identity_system_indexes = identity_indexes
+
+    def _effective_system_prompt(self) -> list[dict[str, str]]:
+        """按杂项开关过滤系统提示词：main 关闭 IDENTITY.md 时跳过对应消息。"""
+        if self.id != "main" or not self._identity_system_indexes:
+            return self.system_prompt
+        if self._identity_read_enabled():
+            return self.system_prompt
+        blocked = set(self._identity_system_indexes)
+        return [m for i, m in enumerate(self.system_prompt) if i not in blocked]
 
     def send(self, task, emit: Callable[[TaskEventDTO], None]):
         content = task.consume_temp_dialog_input() or ""
+        dialog_images = task.consume_temp_dialog_images() or []
+        image_receive_enabled = self._image_receive_enabled()
 
         current_input_messages = [
             {"role": "system", "content": "以下为本次单轮对话内容"},
             {"role": "user", "content": f"<{getattr(task.caller, 'id', 'user')}>" + str(content)},
         ]
+        if dialog_images:
+            if self.id == "main" and image_receive_enabled:
+                current_input_messages[1]["images"] = dialog_images
+            elif self.id == "main":
+                current_input_messages[1]["content"] += (
+                    f"\n\n（用户本次回复中附带了 {len(dialog_images)} 张图片，"
+                    "但系统当前未开启图片接收，图片已被忽略。）"
+                )
         chat_log(f"[{self.user_id}] {self.id}收到:\n{content}")
 
         long_context_message = [
@@ -393,7 +527,7 @@ class AgentRuntime:
             commit_limit=int(self.config.get("commit_limit", 0) or 0),
         )
 
-        system_prompt_messages = self.system_prompt
+        system_prompt_messages = self._effective_system_prompt()
 
         task_memory_messages = []
         if self.id == "main":
@@ -404,15 +538,31 @@ class AgentRuntime:
 
         user_input_messages = []
         if self.id == "main":
-            user_input_messages = [
-                {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
-                {"role": "user", "content": f"<{task.user.id}>" + task.content},
-            ]
+            task_images = list(task.images or [])
+            user_content = f"<{task.user.id}>" + task.content
+            if task_images and image_receive_enabled:
+                user_input_messages = [
+                    {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
+                    {"role": "user", "content": user_content, "images": task_images},
+                ]
+            elif task_images:
+                user_input_messages = [
+                    {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
+                    {"role": "user", "content": user_content + (
+                        f"\n\n（用户本次发送了 {len(task_images)} 张图片，"
+                        "但系统当前未开启图片接收，图片已被忽略。）"
+                    )},
+                ]
+            else:
+                user_input_messages = [
+                    {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
+                    {"role": "user", "content": user_content},
+                ]
 
         messages = (
-            long_context_message
+            system_prompt_messages
+            + long_context_message
             + task_memory_messages
-            + system_prompt_messages
             + user_input_messages
             + current_input_messages
         )
@@ -479,12 +629,30 @@ class AgentRuntime:
                 self.call_agent(target_agent_id, task, emit)
 
             elif result["question"]:
-                question = (result["question"] or "").strip() or "请补充必要信息后我再继续。"
-                # 微服务版每个 ExecuteTask 都是独立请求，TaskRuntime 的 agent_context
-                # 不会跨请求持久化；不能再把本轮任务置为 pause 后等待恢复。
-                # 这里把 `询问:xxx` 作为本轮最终回复发给用户，下一轮用户回答会通过
-                # context-service 带上这轮问题继续处理。
-                self._emit_user_message(task, emit, question, final=True, agent_id=self.id)
+                question = (result["question"] or "").strip()
+                if not question:
+                    # 询问内容为空：无法挂起，把错误提示推回模型重新生成询问。
+                    # 连续多次仍为空则放弃，避免死循环。
+                    retry = getattr(task, "question_retry", 0)
+                    if retry >= 2:
+                        self._emit_user_message(
+                            task, emit,
+                            "出现某些问题，询问无法发送，请重新发送",
+                            final=True,
+                            agent_id=self.id,
+                        )
+                        return
+                    task.question_retry = retry + 1
+                    task.set_temp_dialog_input("【系统提示】出现某些问题，询问无法发送，请重新发送")
+                    task.set_temp_dialog_output("")
+                    self.send(task, emit)
+                    return
+                # 挂起等待用户回复：与对话流程类似，把询问内容压栈；
+                # 用户回复（或超时后系统替用户回复）会通过 ResumeTask 弹栈拼接继续。
+                task.push_context(self, "【已发送给用户】\n询问：" + question)
+                task.set_temp_dialog_output("")
+                task.status = "suspended"
+                AgentRuntime.suspend_task(task, emit, question, agent_id=self.id)
                 return
 
             elif result["timer_task"]:
@@ -596,6 +764,20 @@ class AgentRuntime:
         tool_name = tool_call["tool"]
         args = tool_call["args"]
         debug_log(f"[{self.user_id}] [工具执行] {self.id} → {tool_name} {args}")
+
+        # shell 白名单拦截：dashboard「杂项」可配置哪些 user_id 能用 shell
+        if tool_name in self.SHELL_TOOL_NAMES and not self._shell_allowed(task.user.id):
+            block_msg = f"工具 {tool_name} 被拦截：当前用户没有使用 shell 工具的权限。"
+            debug_log(f"[{task.user.id}] [shell拦截] {tool_name} 被拦截，用户未在白名单内")
+            emit(self.build_event(
+                task,
+                "assistant_intermediate",
+                text=block_msg,
+                metadata={"visible_to_user": "false", "final": "false"},
+            ))
+            task.tool_log.append("结果:" + block_msg)
+            task.set_temp_dialog_output(block_msg)
+            return
 
         emit(self.build_event(
             task,

@@ -24,6 +24,7 @@ class FrontendMessage(BaseModel):
     client_message_id: Optional[str] = None
     metadata: Dict[str, str] = Field(default_factory=dict)
     agent_id: Optional[str] = None
+    images: List[str] = Field(default_factory=list)
 
 
 class CreateTaskResult(BaseModel):

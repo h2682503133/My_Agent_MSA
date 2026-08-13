@@ -182,7 +182,12 @@ async def create_message(req: FrontendMessage):
     conversation_manager.add_message(
         user_id=user_id,
         agent_id=agent_id,
-        msg={"role": "user", "content": content, "task_id": result.task_id},
+        msg={
+            "role": "user",
+            "content": content,
+            "task_id": result.task_id,
+            "images": list(req.images or []),
+        },
     )
 
     return result.model_dump()
@@ -486,11 +491,7 @@ async def raw_workspace_file(
     user_id: str = Query(..., min_length=1),
     path: str = Query(..., min_length=1),
 ):
-    """返回原始文件内容（用于图片等二进制预览）。
-
-    当前通过 tool-runtime 的 file-read 获取文本内容。
-    完整二进制支持需要 tool-runtime 暴露 HTTP 文件服务或挂载共享 PV。
-    """
+    """返回原始文件内容（用于图片等二进制预览）。"""
     ensure_allowed_user(user_id)
 
     result = await tool_client.file_read(path=_clean_path(path), workspace_dir=_user_workspace(user_id))

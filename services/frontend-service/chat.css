@@ -186,10 +186,52 @@
     }
     .input-row {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
       padding: 10px 20px;
       background: #fff;
       border-top: 1px solid #ddd;
+    }
+    .input-toolbar {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .attach-btn {
+      background: none;
+      border: none;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 6px;
+    }
+    .attach-btn:hover { background: #f0f0f0; }
+    .img-preview-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .img-preview { position: relative; }
+    .img-preview img {
+      width: 56px;
+      height: 56px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      background: #fafafa;
+    }
+    .img-preview-remove {
+      position: absolute;
+      top: -7px;
+      right: -7px;
+      width: 18px;
+      height: 18px;
+      line-height: 16px;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: #c62828;
+      color: #fff;
+      font-size: 11px;
+      cursor: pointer;
     }
     #message-input {
       flex: 1;
