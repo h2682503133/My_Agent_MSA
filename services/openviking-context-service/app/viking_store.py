@@ -395,6 +395,13 @@ class OpenVikingServerBackend:
                 content = str(getattr(msg, "content", "") or getattr(msg, "text", ""))
         return role, self._clean_content(content)
 
+    def _hit_to_content(self, hit: dict[str, Any]) -> str:
+        for key in ("abstract", "overview", "content", "text"):
+            value = str(hit.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
     def _messages_from_context(
         self,
         ctx: dict[str, Any],
@@ -480,24 +487,34 @@ class OpenVikingServerBackend:
             # Semantic search for query-relevant memories
             if query and top_k > 0:
                 try:
-                    search_result = await self._maybe_await(client.search(
-                        query=query,
-                        session_id=full_session_id,
-                        limit=top_k,
-                    ))
-                    if isinstance(search_result, dict):
-                        seen_contents = {m.get("content", "") for m in memories}
-                        for hit in search_result.get("memories", []) or []:
-                            if isinstance(hit, dict):
-                                content = str(hit.get("content", "") or hit.get("text", "") or "").strip()
-                                if content and content not in seen_contents:
-                                    seen_contents.add(content)
-                                    memories.append({
-                                        "memory_id": hit.get("id", "") or hit.get("memory_id", ""),
-                                        "content": content,
-                                        "score": float(hit.get("score", 0.0) or 0.0),
-                                        "token_count": int(hit.get("token_count", 0) or 0),
-                                    })
+                    hits: list[dict[str, Any]] = []
+                    find_method = getattr(client, "find", None)
+                    if find_method is not None:
+                        find_result = await self._maybe_await(find_method(query=query, limit=top_k))
+                        if isinstance(find_result, dict):
+                            hits = list(find_result.get("memories", []) or [])
+                    if not hits:
+                        search_result = await self._maybe_await(client.search(
+                            query=query,
+                            session_id=full_session_id,
+                            limit=top_k,
+                        ))
+                        if isinstance(search_result, dict):
+                            hits = list(search_result.get("memories", []) or [])
+
+                    seen_contents = {m.get("content", "") for m in memories}
+                    for hit in hits:
+                        if not isinstance(hit, dict):
+                            continue
+                        content = self._hit_to_content(hit)
+                        if content and content not in seen_contents:
+                            seen_contents.add(content)
+                            memories.append({
+                                "memory_id": hit.get("id", "") or hit.get("memory_id", "") or hit.get("uri", ""),
+                                "content": content,
+                                "score": float(hit.get("score", 0.0) or 0.0),
+                                "token_count": int(hit.get("token_count", 0) or 0),
+                            })
                 except Exception as exc:
                     debug_log(f"semantic search failed (non-fatal): {exc}")
 

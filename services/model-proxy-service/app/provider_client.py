@@ -98,13 +98,19 @@ class ProviderClient:
         response = self._request(method, api_url, headers, body)
         data = response.json()
 
-        text = ""
-        if "choices" in data:
-            text = data["choices"][0]["message"]["content"]
-        elif "text" in data:
-            text = data["text"]
-        else:
-            text = str(data)
+        text, finish_reason, tool_text = self._parse_openai_compatible(data)
+
+        # content 为空且没有工具调用时，原样重发一次。
+        # content_filter 是安全拦截，重发大概率仍被拦截，直接返回提示。
+        if not text and not tool_text and finish_reason != "content_filter":
+            response = self._request(method, api_url, headers, body)
+            data = response.json()
+            text, finish_reason, tool_text = self._parse_openai_compatible(data)
+
+        if tool_text and not text:
+            text = tool_text
+        elif not text and finish_reason == "content_filter":
+            text = "【模型输出被安全策略拦截，请调整措辞后重试】"
 
         usage = data.get("usage", {})
 
@@ -117,6 +123,94 @@ class ProviderClient:
             "model": model,
             "error": "",
         }
+
+    def _parse_openai_compatible(self, data: dict[str, Any]) -> tuple[str, str, str]:
+        """解析 OpenAI-compatible 响应，返回 (text, finish_reason, tool_text)。
+
+        - text 仅取 message.content；
+        - content 为空时把 tool_calls 转成协议文本（工具调用:...）放入 tool_text；
+        - reasoning_content 不在此处回填，空输出交给调用方决定是否重发。
+        """
+        text = ""
+        finish_reason = ""
+        tool_text = ""
+        if "choices" in data:
+            choices = data.get("choices") or []
+            choice = choices[0] if choices else {}
+            message = choice.get("message", {}) if isinstance(choice, dict) else {}
+            finish_reason = str(choice.get("finish_reason") or "")
+            text = message.get("content") or ""
+            if not text:
+                tool_text = self._format_tool_calls(message.get("tool_calls"))
+        elif "text" in data:
+            text = data["text"]
+        else:
+            text = str(data)
+        return text, finish_reason, tool_text
+
+    @staticmethod
+    def _format_tool_calls(tool_calls: Any) -> str:
+        """OpenAI tool_calls -> 协议文本「工具调用:name|arg...」，兼容上游语法解析。"""
+        if not tool_calls:
+            return ""
+
+        shell_names = {"shell", "run-shell", "command"}
+        lines = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            name = str(fn.get("name") or "").strip()
+            if not name:
+                continue
+            args = fn.get("arguments")
+            if name.lower() in shell_names:
+                command = ProviderClient._extract_shell_command(args)
+                lines.append(f"工具调用:shell|{command}")
+            else:
+                args_text = ProviderClient._flatten_tool_arguments(args)
+                lines.append(f"工具调用:{name}|{args_text}" if args_text else f"工具调用:{name}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _flatten_tool_arguments(arguments: Any) -> str:
+        """JSON 对象/数组/字符串 参数 -> 以 | 分隔的协议参数串。"""
+        if isinstance(arguments, dict):
+            return "|".join(str(v) for v in arguments.values() if str(v).strip())
+        if isinstance(arguments, str):
+            text = arguments.strip()
+            if text.startswith("{") or text.startswith("["):
+                try:
+                    return ProviderClient._flatten_tool_arguments(json.loads(text))
+                except Exception:
+                    return text
+            return text
+        if isinstance(arguments, list):
+            return "|".join(str(a) for a in arguments if str(a).strip())
+        return str(arguments or "")
+
+    @staticmethod
+    def _extract_shell_command(arguments: Any) -> str:
+        """shell 工具参数：优先取 command 字段，其余场景取第一个非空值。"""
+        if isinstance(arguments, dict):
+            command = str(arguments.get("command") or "").strip()
+            if command:
+                return command
+            for value in arguments.values():
+                if str(value).strip():
+                    return str(value).strip()
+            return ""
+        if isinstance(arguments, str):
+            text = arguments.strip()
+            if text.startswith("{") or text.startswith("["):
+                try:
+                    return ProviderClient._extract_shell_command(json.loads(text))
+                except Exception:
+                    return text
+            return text
+        if isinstance(arguments, list):
+            return "|".join(str(a) for a in arguments if str(a).strip())
+        return str(arguments or "")
 
     def _call_ollama(
         self,
