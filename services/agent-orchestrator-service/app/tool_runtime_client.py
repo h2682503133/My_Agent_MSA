@@ -66,6 +66,7 @@ class ToolRuntimeClient:
         args: list[str],
         user_id: str = "default",
         session_id: str = "",
+        agent_id: str = "",
     ):
         """流式执行工具。
 
@@ -88,6 +89,7 @@ class ToolRuntimeClient:
                 kwargs={
                     "user_id": str(user_id or "default"),
                     "session_id": str(session_id or ""),
+                    "agent_id": str(agent_id or ""),
                     "workspace_scope": "user",
                 },
                 workspace_dir=workspace_dir,

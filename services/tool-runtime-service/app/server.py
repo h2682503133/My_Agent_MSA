@@ -19,6 +19,9 @@ from bs4 import BeautifulSoup
 
 from app import config
 from app.logger import log, debug
+from app.process_runtime import init as process_init
+from app.process_runtime import remove as process_remove
+from app.process_runtime import write as process_write
 from app.skill_runtime import skill_runtime
 from app.workspace import (
     append_text,
@@ -264,6 +267,40 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         if name in {"send-message", "notify"}:
             text = self._first_arg(args, kwargs, "text", "message", default="")
             return self._send_message(text)
+
+        # PROCESS 长期事件记录（按 user_id + agent_id 定位存储文件）
+        if name == "process-write":
+            index = kwargs.get("index") or (args[0] if args else "")
+            title = kwargs.get("title") or (args[1] if len(args) > 1 else "")
+            content = (
+                kwargs.get("content")
+                or kwargs.get("text")
+                or (args[2] if len(args) > 2 else "")
+            )
+            return process_write(
+                config.PROCESS_DIR,
+                kwargs.get("user_id") or "default",
+                kwargs.get("agent_id") or "main",
+                index,
+                title,
+                content,
+            )
+
+        if name == "process-remove":
+            index = kwargs.get("index") or (args[0] if args else "")
+            return process_remove(
+                config.PROCESS_DIR,
+                kwargs.get("user_id") or "default",
+                kwargs.get("agent_id") or "main",
+                index,
+            )
+
+        if name == "process-init":
+            return process_init(
+                config.PROCESS_DIR,
+                kwargs.get("user_id") or "default",
+                kwargs.get("agent_id") or "main",
+            )
 
         # Shell 执行
         if name in {"run-shell", "shell", "command"}:
@@ -694,6 +731,9 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 - get-image-url-from-local: local image path
 - send-image-by-url: image url (执行时立即将图片推送给用户)
 - send-message: text (执行过程中立即向用户推送文本消息)
+- process-write: index|title|content (index=-1 追加到末尾，1..N 覆写对应条目)
+- process-remove: index (按 1 起始删除对应条目)
+- process-init: 重置 PROCESS 为初始状态（清空条目、轮次归零）
 
 skill tools:
 - clawhub-search: keyword

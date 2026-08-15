@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -15,6 +16,37 @@ from app.response_parser import parse_model_response
 from app.syntax_parser import parse_syntax
 from app.tool_runtime_client import ToolRuntimeClient
 from app.timer_task_client import TimerTaskClient
+
+
+# PROCESS 长期事件记录：文件名即模式声明（PROCESS.md=不报时 / PROCESS_turn.md=轮次计数 / PROCESS_clock.md=时钟）
+_PROCESS_FILE_NAMES = {"process.md", "process_turn.md", "process_clock.md"}
+
+
+def _process_mode_from_files(files) -> str:
+    """取 files 中第一个 PROCESS 变体对应的模式：turn / clock / none / ""（未配置）。"""
+    for filename in files or []:
+        stem = str(filename).strip().lower()
+        if stem in _PROCESS_FILE_NAMES:
+            if "turn" in stem:
+                return "turn"
+            if "clock" in stem:
+                return "clock"
+            return "none"
+    return ""
+
+
+def _safe_process_segment(value: str, default: str = "default") -> str:
+    """user_id / agent_id 转安全目录名，避免路径逃逸。"""
+    raw = str(value or default).strip() or default
+    safe = re.sub(r"[^0-9A-Za-z_.@-]+", "_", raw).strip("._") or default
+    return "default" if safe in {".", ".."} else safe
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 class AgentRuntime:
@@ -401,17 +433,30 @@ class AgentRuntime:
         if not final_reply and task.send_text:
             final_reply = task.send_text
 
-        if final_reply:
+        if final_reply or task.intermediate_texts:
             try:
                 default_agent = getattr(task, "default_agent", None)
                 default_agent_id = getattr(default_agent, "id", "main")
                 default_agent_config = getattr(default_agent, "config", {}) or {}
+                record_mode = str(default_agent_config.get("record_mode", "final") or "final").strip().lower()
+                if record_mode == "intermediate":
+                    # 只记录第一步返回的前半段（中间推送内容）；没有则回退最终回复。
+                    recorded_message = task.intermediate_texts[0] if task.intermediate_texts else final_reply
+                elif record_mode == "both":
+                    parts = list(task.intermediate_texts)
+                    if final_reply:
+                        parts.append(final_reply)
+                    recorded_message = "\n\n".join(parts) if parts else final_reply
+                else:
+                    recorded_message = final_reply
+                if not recorded_message:
+                    recorded_message = final_reply
                 cls.context_client.append_turn(
                     user_id=task.user.id,
                     session_id=task.user.session_id,
                     task_id=task.task_id,
                     user_message=task.content,
-                    assistant_message=final_reply,
+                    assistant_message=recorded_message,
                     agent_id=task.agent_id or default_agent_id,
                     tool_summaries=[],
                     commit_limit=int(default_agent_config.get("commit_limit", 0) or 0),
@@ -474,6 +519,9 @@ class AgentRuntime:
                 system_messages.append({"role": "system", "content": content})
 
         for filename in self.config.get("files", []):
+            if str(filename).strip().lower() in _PROCESS_FILE_NAMES:
+                # PROCESS 变体不读 md：内容由结构化存储注入（见 _build_process_message）
+                continue
             file_path = prompt_dir / filename
             if not file_path.exists():
                 continue
@@ -486,6 +534,67 @@ class AgentRuntime:
 
         self.system_prompt = system_messages
         self._identity_system_indexes = identity_indexes
+
+    def _build_process_message(self, count_turn: bool = True) -> dict | None:
+        """按 config files 里的 PROCESS 变体，从结构化存储构造 PROCESS system 消息。
+
+        - turn 模式：count_turn=True（用户请求首次 send）时 turn+1 并落盘，
+          注入「现在时间是 第N轮对话」；工具回执/智能体转交等内部回调不计数
+        - clock / none 模式：不报时（框架请求自带时间戳）
+        - 无条目时返回 None（不注入空段）
+        """
+        mode = _process_mode_from_files(self.config.get("files", []))
+        if not mode:
+            return None
+
+        user_seg = _safe_process_segment(self.user_id)
+        agent_seg = _safe_process_segment(self.id)
+        path = config.PROCESS_DIR / user_seg / f"{agent_seg}.json"
+
+        store: dict = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    store = loaded
+            except Exception:
+                store = {}
+        else:
+            # 配置了 PROCESS 但存储不存在：自动创建空白文件
+            store = {"items": []}
+            _atomic_write_text(path, json.dumps(store, ensure_ascii=False, indent=2))
+
+        items = store.get("items")
+        if not isinstance(items, list):
+            items = []
+            store["items"] = items
+
+        header = "以下是你的长期事件记录（PROCESS）"
+        if mode == "turn":
+            try:
+                turn = int(store.get("turn") or 0)
+            except (TypeError, ValueError):
+                turn = 0
+            if count_turn:
+                turn += 1
+                store["turn"] = turn
+                _atomic_write_text(path, json.dumps(store, ensure_ascii=False, indent=2))
+            header += f"，现在时间是 第{turn}轮对话"
+        header += "，请参考："
+
+        if not items:
+            return None
+
+        lines = [header]
+        for index, item in enumerate(items, 1):
+            if isinstance(item, dict):
+                title = str(item.get("title") or "").strip()
+                content = str(item.get("content") or "").strip()
+                entry = f"{title}：{content}" if title else content
+            else:
+                entry = str(item)
+            lines.append(f"{index}. {entry}")
+        return {"role": "system", "content": "\n".join(lines)}
 
     def _effective_system_prompt(self) -> list[dict[str, str]]:
         """按杂项开关过滤系统提示词：main 关闭 IDENTITY.md 时跳过对应消息。"""
@@ -528,6 +637,14 @@ class AgentRuntime:
         )
 
         system_prompt_messages = self._effective_system_prompt()
+
+        # 仅用户请求的首次 send() 计入轮次（caller 为 user 对象）；
+        # 工具回执、智能体转交等内部回调 caller 是智能体，不计时。
+        process_message = self._build_process_message(
+            count_turn=bool(getattr(task, "caller", None) is getattr(task, "user", None))
+        )
+        if process_message:
+            system_prompt_messages = system_prompt_messages + [process_message]
 
         task_memory_messages = []
         if self.id == "main":
@@ -596,6 +713,29 @@ class AgentRuntime:
 
             parse_syntax(self, task)
             result = task.consume_temp_dialog_output()
+
+            # 模型在指令前输出的说明文本：当本轮转入后台执行（工具/转交/询问/定时任务）时，
+            # 先把说明文本作为中间消息发给用户，避免它随协议行一起被丢弃。
+            prefix = (result.get("prefix") or "").strip()
+            has_background_action = bool(
+                result.get("tool_call")
+                or result.get("agent_call")
+                or result.get("question")
+                or result.get("timer_task")
+            )
+            if prefix and has_background_action:
+                push_agent_id = (
+                    task.agent_id
+                    or getattr(getattr(task, "default_agent", None), "id", "")
+                    or "main"
+                )
+                task.intermediate_texts.append(prefix)
+                emit(self.build_event(
+                    task,
+                    "assistant_intermediate",
+                    text=prefix,
+                    metadata={"visible_to_user": "true", "final": "false", "agent_id": push_agent_id},
+                ))
 
             if result.get("switch_call") and result["agent_call"]:
                 debug_log(
@@ -792,12 +932,19 @@ class AgentRuntime:
         #   /app/workspace/users/<user_id>
         # 而不是：
         #   /app/workspace/tasks/<task_id>
+        # agent_id 供 process-* 等工具定位「当前对话主智能体」的存储文件。
+        push_agent_id = (
+            task.agent_id
+            or getattr(getattr(task, "default_agent", None), "id", "")
+            or "main"
+        )
         tool_events = self.tool_client.execute_tool(
             task_id=task.task_id,
             tool_name=tool_name,
             args=args,
             user_id=task.user.id,
             session_id=task.user.session_id,
+            agent_id=push_agent_id,
         )
 
         output = ""
@@ -808,14 +955,6 @@ class AgentRuntime:
             event_type = event.get("event_type", "")
 
             # 执行过程中的即时推送：立即转发给用户（不等待模型最终回复）。
-            # agent_id 优先用请求传入的 task.agent_id（前端订阅的就是这个 agent，
-            # 否则 sse_hub 会按订阅 agent 过滤掉这条事件，用户收不到）；
-            # QQ 等渠道不传 agent_id，回退到会话默认 agent，再回退 main。
-            push_agent_id = (
-                task.agent_id
-                or getattr(getattr(task, "default_agent", None), "id", "")
-                or "main"
-            )
             if event_type == "message":
                 emit(self.build_event(
                     task,

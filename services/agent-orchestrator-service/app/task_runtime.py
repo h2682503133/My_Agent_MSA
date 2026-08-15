@@ -48,6 +48,7 @@ class TaskRuntime:
     task_memory: list[str] = field(default_factory=list)
     tool_log: list[str] = field(default_factory=list)
     main_log: list[str] = field(default_factory=list)
+    intermediate_texts: list[str] = field(default_factory=list)
 
     send_images: list[str] = field(default_factory=list)
     send_text: str = ""

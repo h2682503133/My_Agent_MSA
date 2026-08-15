@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: agent-orchestrator-service
-        image: agent/agent-orchestrator-service:v38
+        image: agent/agent-orchestrator-service:v42
         imagePullPolicy: Always
         ports:
         - containerPort: 5300
@@ -32,6 +32,8 @@ spec:
           value: "/app/config/agent_list.json"
         - name: SYSTEM_PROMPT_DIR
           value: "/app/system_prompt"
+        - name: PROCESS_DIR
+          value: "/app/config/process"
         - name: MAX_AGENT_STEPS
           value: "30"
         volumeMounts:

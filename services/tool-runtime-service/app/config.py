@@ -64,3 +64,6 @@ CODEX_EXTERNAL_VM_WORKSPACE = os.getenv("CODEX_EXTERNAL_VM_WORKSPACE", "/srv/nfs
 CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING = env_bool("CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING", False)
 
 ENABLE_SHELL_TOOLS = env_bool("ENABLE_SHELL_TOOLS", True)
+
+# PROCESS 长期事件记录存储：config PVC 挂载在 /app/system_prompts（orchestrator 侧同目录为 /app/config）
+PROCESS_DIR = os.getenv("PROCESS_DIR", "/app/system_prompts/orchestrator/config/process")

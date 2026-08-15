@@ -55,8 +55,9 @@ async def main():
             images = event.get("images", [])
             metadata = event.get("metadata", {})
 
-            # 推送用户可见的 assistant_message
-            if event_type == "assistant_message" and metadata.get("visible_to_user") == "true":
+            # 推送用户可见的 assistant_message / assistant_intermediate
+            # （intermediate 含解析指令时提前转发给用户的说明文本）
+            if event_type in {"assistant_message", "assistant_intermediate"} and metadata.get("visible_to_user") == "true":
                 await bridge.send(session_id, text=text, images=images)
             # 询问挂起：把「询问：xxx」推给用户等待回复
             elif event_type == "task_waiting_user":

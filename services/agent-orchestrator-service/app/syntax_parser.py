@@ -17,12 +17,12 @@ import re
 
 _COMMAND_NAMES = ("对话", "工具调用", "切换", "定时任务")
 _COMMAND_LINE_RE = re.compile(
-    r"^\s*(?:[-*•]\s*)?(?:" + "|".join(map(re.escape, _COMMAND_NAMES)) + r")\s*:"
+    r"^\s*(?:[-*•`]\s*)?(?:" + "|".join(map(re.escape, _COMMAND_NAMES)) + r")\s*:"
 )
 _SHELL_TOOL_NAMES = {"shell", "run-shell", "command"}
 # 内容类工具：最后一个参数可能包含 | 和换行，需用 split("|", 2) 保留
 _CONTENT_TOOLS = {"file-write", "codex"}
-_PRIORITY_SHELL_RE = re.compile(r"^\s*(?:[-*•]\s*)?工具调用\s*:\s*shell\s*\|\s*(.*)$")
+_PRIORITY_SHELL_RE = re.compile(r"^\s*(?:[-*•`]\s*)?工具调用\s*:\s*shell\s*\|\s*(.*)$")
 # 用于在文本任意位置（非行首）匹配指令关键字，处理模型先说一段话再输出指令的场景
 _INLINE_COMMAND_RE = re.compile(
     r"(?:对话|工具调用|切换|定时任务)\s*:"
@@ -31,6 +31,25 @@ _INLINE_SHELL_RE = re.compile(r"工具调用\s*:\s*shell\s*\|\s*")
 # 询问指令：必须是独立关键字，前面不能是汉字/字母/数字，
 # 避免「请询问:」「我询问:」「想询问:」这类自然语言被误判为询问指令。
 _QUESTION_CMD_RE = re.compile(r"(?<![一-龥A-Za-z0-9])询问\s*:\s*(.*)$", re.S)
+# 任意指令关键字的起始位置（约束与各 _find_* 一致），
+# 用于提取指令前的说明文本，供中间过程转发给用户。
+_INSTRUCTION_START_RE = re.compile(
+    r"(?:对话|工具调用|切换|定时任务)\s*:"
+    r"|(?<![一-龥A-Za-z0-9])询问\s*:"
+    r"|切换到\w+智能体"
+)
+
+
+def _clean_shell_command(command: str) -> str:
+    """去掉模型用反引号包裹 shell 指令时残留的尾部反引号。
+
+    仅在反引号数量为奇数时清理（反引号包裹场景），
+    避免误伤 shell 命令替换（如 echo `date`）中的合法反引号。
+    """
+    command = (command or "").strip()
+    if command.count("`") % 2 == 1:
+        command = command.rstrip("`").rstrip()
+    return command
 
 
 def clean_ai_thinking(text: str) -> str:
@@ -44,6 +63,25 @@ def clean_ai_thinking(text: str) -> str:
 
 def _normalize_text(text: str) -> str:
     return (text or "").replace("：", ":").strip()
+
+
+def extract_command_prefix(full_text: str) -> str:
+    """
+    提取第一条指令关键字之前的说明文本。
+
+    例：好的，我先搜索一下。工具调用:web-search|关键词|10
+    → 好的，我先搜索一下。
+    指令在行首（或没有指令）时返回空串。
+    """
+    if not full_text:
+        return ""
+    match = _INSTRUCTION_START_RE.search(full_text)
+    if not match:
+        return ""
+    prefix = full_text[: match.start()]
+    # 指令若以列表符（- * •）起始，去掉前缀末尾的列表符
+    prefix = re.sub(r"[-*•`]\s*$", "", prefix).strip()
+    return prefix
 
 
 def _is_command_line(line: str) -> bool:
@@ -82,7 +120,7 @@ def _find_command_block(full_text: str, command_name: str, allow_multiline: bool
     注意：`询问:` 不使用本函数；它按兼容原逻辑的方式在最后判断，
     只要文本任意位置出现 `询问:`，就取其后的全部内容作为用户可见问题。
     """
-    pattern = re.compile(rf"^\s*(?:[-*•]\s*)?{re.escape(command_name)}\s*:\s*(.*)$")
+    pattern = re.compile(rf"^\s*(?:[-*•`]\s*)?{re.escape(command_name)}\s*:\s*(.*)$")
     lines = full_text.splitlines() or [full_text]
 
     for index, line in enumerate(lines):
@@ -131,6 +169,9 @@ def _parse_tool_call(tool_line: str) -> dict | None:
     if not tool_line:
         return None
 
+    # 兼容模型用反引号包裹指令/参数（如 工具调用:xxx|内容`），避免污染参数
+    tool_line = tool_line.strip().strip("`")
+
     first_part = tool_line.split("|", 1)[0].strip()
     if not first_part:
         return None
@@ -153,7 +194,7 @@ def _parse_tool_call(tool_line: str) -> dict | None:
         # 用 split("|", 2) 保留第二个 | 之后的所有内容作为最后一个参数
         parts = tool_line.split("|", 2)
         tool_name = parts[0].strip()
-        args = [p.strip() for p in parts[1:] if p.strip()]
+        args = [p.strip().strip("`") for p in parts[1:] if p.strip().strip("`")]
         if not tool_name:
             return None
         return {
@@ -164,7 +205,7 @@ def _parse_tool_call(tool_line: str) -> dict | None:
 
     parts = tool_line.split("|")
     tool_name = parts[0].strip()
-    args = [p.strip() for p in parts[1:] if p.strip()]
+    args = [p.strip().strip("`") for p in parts[1:] if p.strip().strip("`")]
     if not tool_name:
         return None
     return {
@@ -198,7 +239,7 @@ def _find_priority_shell_call(full_text: str) -> tuple[str, dict] | tuple[None, 
                 break
             command_lines.append(extra_line.rstrip())
 
-        command = "\n".join(command_lines).strip()
+        command = _clean_shell_command("\n".join(command_lines))
         if not command:
             return None, None
 
@@ -222,9 +263,9 @@ def _find_priority_shell_inline(full_text: str):
     remaining = full_text[match.end():]
     next_match = _INLINE_COMMAND_RE.search(remaining)
     if next_match:
-        command = remaining[:next_match.start()].strip()
+        command = _clean_shell_command(remaining[:next_match.start()])
     else:
-        command = remaining.strip()
+        command = _clean_shell_command(remaining)
 
     if not command:
         return None, None
@@ -248,6 +289,7 @@ def parse_syntax(agent, task):
     full_text = _normalize_text(raw_text)
 
     reply = full_text
+    prefix = extract_command_prefix(full_text)
     agent_call = None
     tool_call = None
     question = None
@@ -272,6 +314,7 @@ def parse_syntax(agent, task):
         task.set_temp_dialog_output({
             "final_reply": reply,
             "reply": full_text,
+            "prefix": prefix,
             "tool_call": priority_tool_call,
             "agent_call": None,
             "question": None,
@@ -398,6 +441,7 @@ def parse_syntax(agent, task):
     task.set_temp_dialog_output({
         "final_reply": reply,
         "reply": full_text,
+        "prefix": prefix,
         "tool_call": tool_call,
         "agent_call": agent_call,
         "question": question,

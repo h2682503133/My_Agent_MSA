@@ -143,6 +143,9 @@ async def list_configs():
                 rel = str(f.relative_to(CONFIG_ROOT)).replace("\\", "/")
                 if "system_prompt" in rel:
                     continue
+                # PROCESS 存储由智能体维护，不挤占配置管理显示空间
+                if "process" in rel.split("/"):
+                    continue
                 files.append({
                     "path": rel,
                     "size": f.stat().st_size,

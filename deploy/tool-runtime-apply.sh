@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v35}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v39}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -448,6 +448,8 @@ spec:
               value: "/app/workspace"
             - name: ENABLE_SHELL_TOOLS
               value: "true"
+            - name: PROCESS_DIR
+              value: "/app/system_prompts/orchestrator/config/process"
 
             - name: OPENVIKING_SERVER_URL
               value: "${OPENVIKING_SERVER_URL}"

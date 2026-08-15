@@ -42,3 +42,6 @@ WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", str(BASE_DIR / "workspace")))
 SYSTEM_SETTINGS_PATH = Path(
     os.getenv("SYSTEM_SETTINGS_PATH", str(BASE_DIR / "config" / "system_settings.json"))
 )
+
+# PROCESS 长期事件记录存储（按 <user_id>/<agent_id>.json 分片）
+PROCESS_DIR = Path(os.getenv("PROCESS_DIR", str(BASE_DIR / "config" / "process")))
