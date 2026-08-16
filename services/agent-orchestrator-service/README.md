@@ -82,19 +82,12 @@ MODEL_PROXY_TARGET=model-proxy-service:5302
 TOOL_RUNTIME_TARGET=tool-runtime-service:5303
 ```
 
-如果这些下游服务暂时没有完成，可以打开 mock：
-
-```bash
-export MOCK_DOWNSTREAM=true
-python -m app.main
-```
-
-mock 模式下会直接返回一条测试回复，用于先打通 scheduler / gateway / frontend 链路。
+如果这些下游服务暂时没有完成，任务会直接失败并暴露错误，避免误以为真实模型已经调用成功（见下文 no-mock build）。
 
 ## K8s
 
 ```bash
-kubectl apply -f k8s/agent-orchestrator-service.yaml
+kubectl apply -f deploy/services/agent-orchestrator-service.yaml
 ```
 
 ## 当前说明
@@ -129,9 +122,14 @@ SYSTEM_PROMPT_DIR=/app/system_prompt
 首次部署顺序：
 
 ```bash
-kubectl apply -f k8s/agent-orchestrator-config-pv-pvc.yaml
-kubectl apply -f k8s/agent-orchestrator-config-init-job.yaml
-kubectl apply -f k8s/agent-orchestrator-service.yaml
+kubectl apply -f deploy/services/agent-orchestrator-service.yaml
+```
+
+依赖 `my-agent-config-pvc`（由 `deploy/apply-pv.sh` 创建），通过 subPath 挂载：
+
+```text
+orchestrator/config       → /app/config          （agent_list.json、system_settings.json、process）
+orchestrator/system_prompt → /app/system_prompt   （各智能体 System Prompt）
 ```
 
 ## agent_list.json 按用户选择
@@ -186,3 +184,12 @@ tool-runtime-service:5303
 ```
 
 如果下游服务不可用，任务应直接失败并暴露错误，避免误以为真实模型已经调用成功。
+
+## 长期记忆降级（openviking-context-service 不可用时）
+
+当 `openviking-context-service` 未部署或不可达时，上下文检索自动降级为本地维护的最近对话（`app/local_context.py`）：
+
+- 每个 `(user_id, session_id, agent_id)` 维护最近 **4 个回合**（用户消息 + 智能体回复算 1 条）。
+- 存储于 config 卷（`PROCESS_DIR` 同级 `local_context/` 目录），JSON 文件形式，重启后可延续。
+- `SearchContext` 失败 → 返回本地最近回合；本地无历史时返回「长期记忆服务未启用」提示。
+- `AppendTurn` 失败 → 写入本地最近回合，对话连续性不受影响。

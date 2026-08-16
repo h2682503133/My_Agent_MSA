@@ -39,6 +39,11 @@ TOOL_RUNTIME_PORT = env_int("TOOL_RUNTIME_PORT", 5303)
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/app/workspace")
 MAX_LIST_FILES = env_int("MAX_LIST_FILES", 500)
 MAX_READ_BYTES = env_int("MAX_READ_BYTES", 1024 * 1024)
+MAX_UPLOAD_BYTES = env_int("MAX_UPLOAD_BYTES", 48 * 1024 * 1024)
+GRPC_MAX_MESSAGE_BYTES = env_int("GRPC_MAX_MESSAGE_BYTES", 64 * 1024 * 1024)
+PORT_PROXY_RANGE = os.getenv("PORT_PROXY_RANGE", "5800-5899")
+PORT_PROXY_BASE_URL = os.getenv("PORT_PROXY_BASE_URL", "http://localhost:8080/api/port")
+HOST_MACHINE_URL = os.getenv("HOST_MACHINE_URL", "").rstrip("/")
 DEFAULT_TIMEOUT_SECONDS = env_int("DEFAULT_TIMEOUT_SECONDS", 30)
 WEB_SEARCH_MAX_RESULTS = env_int("WEB_SEARCH_MAX_RESULTS", 10)
 
@@ -62,6 +67,12 @@ CLAW_EXTERNAL_VM_CLAWHUB_BIN = os.getenv("CLAW_EXTERNAL_VM_CLAWHUB_BIN", "clawhu
 CODEX_BIN_PATH = os.getenv("CODEX_BIN_PATH", "codex")
 CODEX_EXTERNAL_VM_WORKSPACE = os.getenv("CODEX_EXTERNAL_VM_WORKSPACE", "/srv/nfs/my-agent/workspace")
 CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING = env_bool("CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING", False)
+
+# 功能开关：部署时未勾选对应功能则工具调用会提示"未启用"（默认开启，兼容旧部署）
+ENABLE_CODEX = env_bool("ENABLE_CODEX", True)
+ENABLE_CLAWHUB = env_bool("ENABLE_CLAWHUB", True)
+# 技能知识库（OpenViking）开关：未勾选 openviking-server 时技能查询/导入会提示未启用
+ENABLE_OPENVIKING = env_bool("ENABLE_OPENVIKING", True)
 
 ENABLE_SHELL_TOOLS = env_bool("ENABLE_SHELL_TOOLS", True)
 

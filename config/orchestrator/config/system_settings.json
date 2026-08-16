@@ -1,0 +1,11 @@
+{
+  "image_receive_enabled": true,
+  "main_read_identity": true,
+  "shell_restriction_enabled": false,
+  "shell_allowed_users": [],
+  "mnt_write_restriction_enabled": true,
+  "mnt_write_allowed_users": [
+    "replace-with-user-id-1",
+    "replace-with-user-id-2"
+  ]
+}

@@ -343,6 +343,26 @@ label.file-item:hover { color: var(--accent); }
           </div>
         </div>
       </div>
+      <div class="switch-row">
+        <div class="switch-info">
+          <div class="sw-title">Windows 宿主机访问权限</div>
+          <div class="sw-desc">开启后仅下方白名单中的 user_id 可以访问 Windows 宿主机：包括复制/移动写入 /mnt 目录，以及使用 host-url 获取宿主机地址访问其服务（如 ollama、deepseek-harness）；关闭则不做限制。</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="misc-mnt-restrict" onchange="saveMiscSettings()">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="switch-row" style="align-items:flex-start;">
+        <div class="switch-info">
+          <div class="sw-title">允许访问 Windows 宿主机的 user_id</div>
+          <div class="sw-desc">逗号或换行分隔多个 user_id；仅在上方「Windows 宿主机访问权限」开启时生效。</div>
+          <textarea id="misc-mnt-users" rows="4" placeholder="例如：&#10;h268&#10;dujiawei" style="margin-top:10px;min-height:70px;height:70px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-size:0.85rem;"></textarea>
+          <div style="margin-top:8px;">
+            <button class="btn green" onclick="saveHostUsers()">保存白名单</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </main>
@@ -830,6 +850,8 @@ async function loadMiscSettings() {
   const idCb = document.getElementById('misc-main-identity');
   const shCb = document.getElementById('misc-shell-restrict');
   const usersEl = document.getElementById('misc-shell-users');
+  const mntCb = document.getElementById('misc-mnt-restrict');
+  const mntUsersEl = document.getElementById('misc-mnt-users');
   try {
     const data = await fetch('/api/misc/settings').then(r => r.json()) || {};
     imgCb.checked = !!(data.image_receive_enabled !== false);
@@ -837,11 +859,16 @@ async function loadMiscSettings() {
     shCb.checked = !!data.shell_restriction_enabled;
     usersEl.value = (data.shell_allowed_users || []).join('\n');
     usersEl.disabled = !shCb.checked;
+    mntCb.checked = !!data.mnt_write_restriction_enabled;
+    mntUsersEl.value = (data.mnt_write_allowed_users || []).join('\n');
+    mntUsersEl.disabled = !mntCb.checked;
   } catch(e) {
     imgCb.checked = true;
     idCb.checked = true;
     shCb.checked = false;
     usersEl.disabled = true;
+    mntCb.checked = false;
+    mntUsersEl.disabled = true;
   }
 }
 
@@ -851,12 +878,16 @@ function collectMiscSettings() {
     main_read_identity: document.getElementById('misc-main-identity').checked,
     shell_restriction_enabled: document.getElementById('misc-shell-restrict').checked,
     shell_allowed_users: document.getElementById('misc-shell-users').value.split(/[\n,，]+/).map(s => s.trim()).filter(Boolean),
+    mnt_write_restriction_enabled: document.getElementById('misc-mnt-restrict').checked,
+    mnt_write_allowed_users: document.getElementById('misc-mnt-users').value.split(/[\n,，]+/).map(s => s.trim()).filter(Boolean),
   };
 }
 
 async function saveMiscSettings() {
   const shCb = document.getElementById('misc-shell-restrict');
   document.getElementById('misc-shell-users').disabled = !shCb.checked;
+  const mntCb = document.getElementById('misc-mnt-restrict');
+  document.getElementById('misc-mnt-users').disabled = !mntCb.checked;
   try {
     const r = await fetch('/api/misc/settings', {
       method: 'PUT',
@@ -868,6 +899,21 @@ async function saveMiscSettings() {
   } catch(e) {
     toast('保存失败: ' + e, false);
     loadMiscSettings();
+  }
+}
+
+async function saveHostUsers() {
+  const users = document.getElementById('misc-mnt-users').value.split(/[\n,，]+/).map(s => s.trim()).filter(Boolean);
+  try {
+    const r = await fetch('/api/misc/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mnt_write_allowed_users: users }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('宿主机访问白名单已保存');
+  } catch(e) {
+    toast('保存失败: ' + e, false);
   }
 }
 

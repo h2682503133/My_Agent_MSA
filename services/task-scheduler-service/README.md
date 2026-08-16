@@ -88,18 +88,18 @@ bash scripts/gen_proto.sh
 
 ```bash
 export SCHEDULER_HOST=0.0.0.0
-export SCHEDULER_PORT=5300
-export ORCHESTRATOR_TARGET=agent-orchestrator-service:5400
+export SCHEDULER_PORT=5100
+export ORCHESTRATOR_TARGET=agent-orchestrator-service:5300
 python -m app.main
 ```
 
 ## Docker 构建
 
 ```bash
-docker build -t task-scheduler-service:dev .
-docker run --rm -p 5300:5300 \
-  -e ORCHESTRATOR_TARGET=agent-orchestrator-service:5400 \
-  task-scheduler-service:dev
+docker build -t agent/task-scheduler-service:v12 .
+docker run --rm -p 5100:5100 \
+  -e ORCHESTRATOR_TARGET=agent-orchestrator-service:5300 \
+  agent/task-scheduler-service:v12
 ```
 
 ## 关键数据流

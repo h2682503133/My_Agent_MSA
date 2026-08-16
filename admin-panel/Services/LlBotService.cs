@@ -1,8 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.NetworkInformation;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -10,10 +12,14 @@ namespace MyAgentAdminPanel.Services;
 
 public class LlBotService
 {
+    private const int PmhqPort = 13000;
+    private const int WebuiPort = 3080;
+
     private Process? _llbotProcess;
     private FileSystemWatcher? _qrWatcher;
     private string _llbotFolder = "";
     private string _qqPath = "";
+    private int _qqPid;
     private bool _isRunning;
     private bool _isRestarting;
 
@@ -88,29 +94,18 @@ public class LlBotService
         {
             if (!string.IsNullOrEmpty(e.Data))
             {
-                LogReceived?.Invoke(e.Data);
-                CheckAutoRestart(e.Data);
+                OnLlbotLine(e.Data);
             }
         };
         _llbotProcess.ErrorDataReceived += (s, e) =>
         {
             if (!string.IsNullOrEmpty(e.Data))
             {
-                LogReceived?.Invoke($"[ERR] {e.Data}");
-                CheckAutoRestart(e.Data);
+                OnLlbotLine($"[ERR] {e.Data}");
             }
         };
 
-        _llbotProcess.Exited += (s, e) =>
-        {
-            _isRunning = false;
-            LogReceived?.Invoke("[系统] llbot.exe 已退出");
-            // 如果正在自动重启流程中，不再额外处理
-            if (!_isRestarting)
-            {
-                LogReceived?.Invoke("[系统] 如需重启请手动点击启动");
-            }
-        };
+        _llbotProcess.Exited += OnLlbotExited;
 
         _llbotProcess.Start();
         _llbotProcess.BeginOutputReadLine();
@@ -118,6 +113,38 @@ public class LlBotService
         _isRunning = true;
         _isRestarting = false;
         return _llbotProcess;
+    }
+
+    private void OnLlbotLine(string line)
+    {
+        LogReceived?.Invoke(line);
+        TryTrackQqPid(line);
+        CheckAutoRestart(line);
+    }
+
+    private void OnLlbotExited(object? sender, EventArgs e)
+    {
+        // 只处理当前进程的退出，避免旧进程异步退出事件覆盖新进程状态
+        if (!ReferenceEquals(sender, _llbotProcess)) return;
+
+        _isRunning = false;
+        LogReceived?.Invoke("[系统] llbot.exe 已退出");
+        if (!_isRestarting)
+        {
+            LogReceived?.Invoke("[系统] 如需重启请手动点击启动");
+        }
+    }
+
+    private void TryTrackQqPid(string line)
+    {
+        const string marker = "QQ 进程 PID:";
+        var idx = line.IndexOf(marker, StringComparison.Ordinal);
+        if (idx < 0) return;
+
+        var rest = line.Substring(idx + marker.Length).Trim();
+        var digits = new string(rest.TakeWhile(char.IsDigit).ToArray());
+        if (int.TryParse(digits, out var pid) && pid > 0)
+            _qqPid = pid;
     }
 
     private async void CheckAutoRestart(string line)
@@ -129,37 +156,84 @@ public class LlBotService
         LogReceived?.Invoke("[系统] 检测到「正在终止 QQ 进程」，3 秒后自动重启 LLBot...");
         await Task.Delay(3000);
 
-        // 停止当前进程
+        // 停止当前进程（连同 llbot 启动的 QQ）
         StopLlbot();
-        await Task.Delay(1000);
 
-        // 重新启动
+        // 等待旧实例占用的端口释放，避免新实例 PMHQ 连接失败
+        if (!await WaitPortsFreeAsync(TimeSpan.FromSeconds(20)))
+            LogReceived?.Invoke("[系统] 端口未在限时内释放，仍尝试重启");
+
         try
         {
             StartLlbot();
-            _isRestarting = false;
         }
         catch (Exception ex)
         {
             LogReceived?.Invoke($"[ERR] 自动重启失败: {ex.Message}");
-            _isRestarting = false;
         }
+        _isRestarting = false;
     }
 
     public void StopLlbot()
     {
-        if (_llbotProcess == null || !_isRunning) return;
+        var proc = _llbotProcess;
+        _llbotProcess = null;
+        _isRunning = false;
+
         try
         {
-            if (!_llbotProcess.HasExited)
+            if (proc != null && !proc.HasExited)
             {
-                _llbotProcess.Kill(entireProcessTree: true);
-                _llbotProcess.WaitForExit(3000);
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(3000);
             }
         }
         catch { }
-        _isRunning = false;
-        _llbotProcess = null;
+
+        // llbot 已退出时 QQ 可能变成孤儿进程，按 PID 精确清理，避免误杀其他 QQ
+        if (_qqPid > 0)
+        {
+            try
+            {
+                var qq = Process.GetProcessById(_qqPid);
+                if (!qq.HasExited && qq.ProcessName.Contains("QQ", StringComparison.OrdinalIgnoreCase))
+                {
+                    qq.Kill(entireProcessTree: true);
+                    qq.WaitForExit(3000);
+                }
+            }
+            catch { }
+            _qqPid = 0;
+        }
+    }
+
+    private static bool IsPortInUse(int port)
+    {
+        try
+        {
+            var props = IPGlobalProperties.GetIPGlobalProperties();
+            foreach (var listener in props.GetActiveTcpListeners())
+                if (listener.Port == port) return true;
+            foreach (var conn in props.GetActiveTcpConnections())
+                if (conn.LocalEndPoint.Port == port) return true;
+        }
+        catch
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private static async Task<bool> WaitPortsFreeAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!IsPortInUse(PmhqPort) && !IsPortInUse(WebuiPort))
+                return true;
+            await Task.Delay(500);
+        }
+        return !IsPortInUse(PmhqPort) && !IsPortInUse(WebuiPort);
     }
 
     public void Dispose()

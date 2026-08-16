@@ -28,35 +28,45 @@
 - `CODEX_BIN_PATH` 可指定 codex 可执行文件（默认 `codex`）；部署脚本会生成 `/home/<user>/.local/bin/my-agent-codex` 包装器以绕过 SSH 非交互 shell 的 PATH 问题。
 - `CODEX_EXTERNAL_VM_WORKSPACE` 表示容器工作区在 VM 上的挂载根路径（默认 `/srv/nfs/my-agent/workspace`）。
 
+## 功能开关（codex / clawhub / OpenViking）
+
+部署时（`deploy-all.ps1` 勾选 tool-runtime 后的子选项）可分别启用/停用 codex 与 clawhub；OpenViking 由是否勾选 `openviking-server` 决定：
+
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `ENABLE_CODEX` | `true` | 为 `false` 时调用 `codex` 工具会返回「Codex 未启用」提示 |
+| `ENABLE_CLAWHUB` | `true` | 为 `false` 时 `clawhub-search` / `clawhub-install` / `clawhub-list` / `skill-delete` 会返回「ClawHub 未启用」提示 |
+| `ENABLE_OPENVIKING` | `true` | 为 `false` 时 `skill-list` / `skill-abstract` / `skill-overview` / `skill-manual` / `add-skill-to-viking` 会返回「OpenViking 未启用」提示 |
+
+已安装技能的执行（`run_skill`）不依赖 clawhub / OpenViking，不受上述开关影响。
+
 ## 构建镜像
 
 ```bash
 cd tool-runtime-service
-docker build --no-cache --progress=plain -t agent/tool-runtime-service:v1 .
+docker build --no-cache --progress=plain -t agent/tool-runtime-service:v45 .
 ```
+
+版本号需与 `deploy/tool-runtime-apply.sh` 中的 `TOOL_RUNTIME_IMAGE`（默认 `agent/tool-runtime-service:v45`）保持一致。
 
 ## 导入 kind 节点
 
 如果是本地 kind / Docker Desktop，并且 YAML 使用 `imagePullPolicy: Never`：
 
 ```bash
-docker save agent/tool-runtime-service:v1 | docker exec -i desktop-control-plane ctr -n k8s.io images import -
-docker save agent/tool-runtime-service:v1 | docker exec -i desktop-worker ctr -n k8s.io images import -
+docker save agent/tool-runtime-service:v45 | docker exec -i desktop-control-plane ctr -n k8s.io images import -
+docker save agent/tool-runtime-service:v45 | docker exec -i desktop-worker ctr -n k8s.io images import -
 ```
 
 ## 部署
 
-如果已经有 `my-agent-workspace-pvc`：
+通过 `deploy/tool-runtime-apply.sh` 部署（脚本内嵌 Deployment + Service YAML，自动生成 SSH 密钥、配置外部 VM 执行环境并 apply）：
 
 ```bash
-kubectl apply -f k8s/tool-runtime-service.yaml
+bash deploy/tool-runtime-apply.sh
 ```
 
-如果 PVC 还没准备好，先用临时无 PVC 版本跑通：
-
-```bash
-kubectl apply -f k8s/tool-runtime-service-no-pvc.yaml
-```
+常用环境变量：`TOOL_RUNTIME_IMAGE`、`CLAW_EXTERNAL_VM_HOST`、`CLAW_EXTERNAL_VM_USER`、`CLAW_EXTERNAL_VM_PORT`、`CLAW_EXTERNAL_VM_SKILL_ROOT_DIR`、`OPENVIKING_SERVER_URL` 等，见脚本头部默认值。
 
 ## 检查
 

@@ -4,6 +4,8 @@ from pathlib import Path
 import grpc
 
 from app import config
+from app.local_context import append as local_append
+from app.local_context import search as local_search
 from app.logger import debug_log
 
 GENERATED_DIR = Path(__file__).parent / "generated"
@@ -80,7 +82,19 @@ class ContextClient:
             return messages
         except Exception as exc:
             debug_log(f"SearchContext failed: {exc}")
-            return []
+            # openviking-context-service 未部署或不可用：降级为本地维护的最近对话上下文
+            local_messages = local_search(
+                user_id=user_id,
+                session_id=session_id,
+                agent_id=agent_id or "main",
+            )
+            if local_messages:
+                return local_messages
+            # 本地也无历史时，注入提示让模型感知长期记忆不可用
+            return [{
+                "role": "system",
+                "content": "【系统提示】OpenViking 长期记忆服务未启用或不可用，本次对话没有历史记忆与 RAG 上下文。",
+            }]
 
     def append_turn(
         self,
@@ -114,4 +128,12 @@ class ContextClient:
             return bool(response.ok)
         except Exception as exc:
             debug_log(f"AppendTurn failed: {exc}")
+            # 降级：写入本地维护的最近对话上下文（openviking-context-service 不可用时）
+            local_append(
+                user_id=user_id,
+                session_id=session_id,
+                agent_id=agent_id or "main",
+                user_message=user_message,
+                assistant_message=assistant_message,
+            )
             return False

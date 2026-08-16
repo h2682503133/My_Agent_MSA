@@ -189,5 +189,47 @@
       }
     });
   </script>
+  <!-- 背景图轮换 -->
+  <div class="bg-rotator" id="bg-rotator"></div>
+  <style>
+    .bg-rotator {
+      position: fixed; inset: 0; z-index: 50;
+      background-size: cover; background-position: center; background-repeat: no-repeat;
+      opacity: 0.2; pointer-events: none;
+    }
+  </style>
+  <script>
+    (function () {
+      var BG_ROOT = '/backgrounds/';
+      var BG_INTERVAL = 5 * 60 * 1000;
+      var list = [], index = 0, el = null;
+      function setBg(url) {
+        if (!el) el = document.getElementById('bg-rotator');
+        if (el) el.style.backgroundImage = 'url("' + url + '")';
+      }
+      function preload(url) { var img = new Image(); img.src = url; }
+      function next() {
+        if (!list.length) return;
+        setBg(BG_ROOT + list[index % list.length]);
+        index += 1;
+        preload(BG_ROOT + list[index % list.length]);
+      }
+      function safeName(f) {
+        var n = f.name;
+        try { n = decodeURIComponent(n); } catch (e) {}
+        return n;
+      }
+      fetch(BG_ROOT)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          list = (data || []).map(safeName)
+            .filter(function (n) { return /\.(jpe?g|png|webp)$/i.test(n); });
+          if (!list.length) return;
+          next();
+          setInterval(next, BG_INTERVAL);
+        })
+        .catch(function () {});
+    })();
+  </script>
 </body>
 </html>

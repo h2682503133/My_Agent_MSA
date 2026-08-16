@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v39}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v45}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -16,6 +16,12 @@ CLAW_EXTERNAL_VM_USER="${CLAW_EXTERNAL_VM_USER:-$(id -un)}"
 CLAW_EXTERNAL_VM_SKILL_ROOT_DIR="${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR:-/srv/nfs/my-agent/workspace/skill}"
 CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING="${CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING:-false}"
 
+# 功能开关：是否安装/使用 clawhub（技能执行）与 codex（代码生成），默认都启用
+ENABLE_CLAWHUB="${ENABLE_CLAWHUB:-true}"
+ENABLE_CODEX="${ENABLE_CODEX:-true}"
+# 技能知识库（OpenViking）开关：deploy-all.ps1 未勾选 openviking-server 时置 false
+ENABLE_OPENVIKING="${ENABLE_OPENVIKING:-true}"
+
 # 处理 sudo 场景：保存真实用户信息，避免 root 环境下找不到 nvm/ssh key
 REAL_USER="${SUDO_USER:-$(id -un)}"
 REAL_HOME="$(eval echo ~"$REAL_USER")"
@@ -25,6 +31,11 @@ MY_AGENT_CLAWHUB_WRAPPER="${MY_AGENT_CLAWHUB_WRAPPER:-$REAL_HOME/.local/bin/my-a
 
 # 图床外部 URL：通过 host.docker.internal 解析宿主机 IP
 export IMAGE_BASE_URL="http://localhost:5102/assets"
+
+# Windows 宿主机访问地址（WSL2 默认网关，apply 时自动探测；Linux 实体机请手动设置）
+HOST_MACHINE_IP="$(ip route 2>/dev/null | awk '/default/{print $3; exit}')"
+HOST_MACHINE_URL="${HOST_MACHINE_URL:-${HOST_MACHINE_IP:+http://${HOST_MACHINE_IP}}}"
+export HOST_MACHINE_URL
 
 sudo_cmd() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -295,11 +306,20 @@ verify_local_ssh_login() {
   local ssh_log
   ssh_log="$(mktemp)" || ssh_log="/tmp/my_agent_ssh_check_$$.log"
 
+  # 按功能开关拼接待验证命令（跳过未启用的 clawhub/codex）
+  local check_cmds="whoami"
+  if [ "${ENABLE_CLAWHUB:-true}" = "true" ]; then
+    check_cmds="${check_cmds} && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V"
+  fi
+  if [ "${ENABLE_CODEX:-true}" = "true" ]; then
+    check_cmds="${check_cmds} && ${CODEX_BIN_PATH} --version"
+  fi
+
   # 以真实用户身份执行 SSH 测试（避免 root 的 known_hosts 干扰）
   if [ "$(id -un)" != "$REAL_USER" ]; then
-    sudo -u "$REAL_USER" ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V && ${CODEX_BIN_PATH} --version" >"$ssh_log" 2>&1
+    sudo -u "$REAL_USER" ssh -i "$MY_AGENT_SSH_KEY_FILE" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o ConnectTimeout=5 -p "$CLAW_EXTERNAL_VM_PORT" "${CLAW_EXTERNAL_VM_USER}@127.0.0.1" "$check_cmds" >"$ssh_log" 2>&1
   else
-    ssh       -i "$MY_AGENT_SSH_KEY_FILE"       -o StrictHostKeyChecking=no       -o UserKnownHostsFile=/dev/null       -o PasswordAuthentication=no       -o ConnectTimeout=5       -p "$CLAW_EXTERNAL_VM_PORT"       "${CLAW_EXTERNAL_VM_USER}@127.0.0.1"       "whoami && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V && ${CODEX_BIN_PATH} --version" >"$ssh_log" 2>&1
+    ssh -i "$MY_AGENT_SSH_KEY_FILE" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o ConnectTimeout=5 -p "$CLAW_EXTERNAL_VM_PORT" "${CLAW_EXTERNAL_VM_USER}@127.0.0.1" "$check_cmds" >"$ssh_log" 2>&1
   fi
 
   local ssh_rc=$?
@@ -340,8 +360,16 @@ main() {
   ensure_sshd_running
   ensure_ssh_key_authorized
   ensure_skill_root_dir
-  ensure_clawhub_wrapper
-  ensure_codex_wrapper
+  if [ "${ENABLE_CLAWHUB}" = "true" ]; then
+    ensure_clawhub_wrapper
+  else
+    echo "ENABLE_CLAWHUB=false，跳过 clawhub 安装"
+  fi
+  if [ "${ENABLE_CODEX}" = "true" ]; then
+    ensure_codex_wrapper
+  else
+    echo "ENABLE_CODEX=false，跳过 codex 安装"
+  fi
   verify_local_ssh_login
 
   echo
@@ -361,6 +389,8 @@ main() {
   echo "  CLAW_EXTERNAL_VM_SKILL_ROOT_DIR: ${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR}"
   echo "  CLAW_EXTERNAL_VM_CLAWHUB_BIN: ${CLAW_EXTERNAL_VM_CLAWHUB_BIN}"
   echo "  CODEX_BIN_PATH: ${CODEX_BIN_PATH}"
+  echo "  ENABLE_CLAWHUB: ${ENABLE_CLAWHUB}"
+  echo "  ENABLE_CODEX: ${ENABLE_CODEX}"
   echo
 
   kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
@@ -384,7 +414,11 @@ main() {
     CLAW_EXTERNAL_VM_SKILL_ROOT_DIR \
     CLAW_EXTERNAL_VM_CLAWHUB_BIN \
     CODEX_BIN_PATH \
-    CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING
+    CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING \
+    HOST_MACHINE_URL \
+    ENABLE_CLAWHUB \
+    ENABLE_CODEX \
+    ENABLE_OPENVIKING
 
   cat <<'YAML' | envsubst | kubectl apply -f -
 ---
@@ -448,6 +482,8 @@ spec:
               value: "/app/workspace"
             - name: ENABLE_SHELL_TOOLS
               value: "true"
+            - name: HOST_MACHINE_URL
+              value: "${HOST_MACHINE_URL}"
             - name: PROCESS_DIR
               value: "/app/system_prompts/orchestrator/config/process"
 
@@ -482,6 +518,12 @@ spec:
               value: "http://localhost:8080"
             - name: CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING
               value: "${CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING}"
+            - name: ENABLE_CLAWHUB
+              value: "${ENABLE_CLAWHUB}"
+            - name: ENABLE_CODEX
+              value: "${ENABLE_CODEX}"
+            - name: ENABLE_OPENVIKING
+              value: "${ENABLE_OPENVIKING}"
             - name: IMAGE_ASSET_DIR
               value: "/app/assets/images"
             - name: IMAGE_BASE_URL
@@ -537,6 +579,23 @@ metadata:
     app: tool-runtime-service
 spec:
   type: ClusterIP
+  selector:
+    app: tool-runtime-service
+  ports:
+    - name: grpc
+      port: 5303
+      targetPort: 5303
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tool-runtime-direct
+  namespace: ${NAMESPACE}
+  labels:
+    app: tool-runtime-service
+spec:
+  type: ClusterIP
+  clusterIP: None
   selector:
     app: tool-runtime-service
   ports:

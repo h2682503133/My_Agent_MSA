@@ -382,6 +382,33 @@ class SkillRuntime:
     ) -> str:
         name = (tool_name or "").strip()
 
+        # ClawHub 相关工具：部署时未勾选 clawhub 功能则给出明确提示
+        clawhub_tools = {
+            "clawhub-search", "search_skill", "skill-search", "search-skill",
+            "clawhub-install", "download_skill", "install_skill", "skill-install", "install-skill",
+            "clawhub-list",
+            "skill-delete",
+        }
+        if name in clawhub_tools and not config.ENABLE_CLAWHUB:
+            return (
+                "错误：ClawHub 未启用。部署 tool-runtime 时未勾选「clawhub 技能执行」功能，"
+                "无法搜索/安装/卸载技能。如需启用，请重新运行 deploy-all.ps1 并勾选 clawhub，"
+                "或设置环境变量 ENABLE_CLAWHUB=true 后重启 tool-runtime。"
+            )
+
+        # OpenViking（技能知识库）相关工具：部署时未勾选 openviking-server 则提示未启用
+        openviking_tools = {
+            "skill-list", "skill-list-simple",
+            "skill-abstract", "skill-overview", "skill-manual",
+            "add-skill-to-viking",
+        }
+        if name in openviking_tools and not config.ENABLE_OPENVIKING:
+            return (
+                "错误：OpenViking 未启用。部署时未勾选 openviking-server（技能知识库），"
+                "无法查询或导入技能。如需启用，请重新运行 deploy-all.ps1 并勾选 openviking-server，"
+                "或设置环境变量 ENABLE_OPENVIKING=true 后重启 tool-runtime。"
+            )
+
         if name in {"clawhub-search", "search_skill", "skill-search", "search-skill"}:
             keyword = self._first_arg(args, kwargs, "keyword", "query", "name")
             return self.clawhub_search(keyword, timeout=timeout)

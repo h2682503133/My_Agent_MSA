@@ -39,6 +39,8 @@ DEFAULT_MISC_SETTINGS = {
     "main_read_identity": True,
     "shell_restriction_enabled": False,
     "shell_allowed_users": [],
+    "mnt_write_restriction_enabled": False,
+    "mnt_write_allowed_users": [],
 }
 
 # ─── Pydantic models ────────────────────────────────────────
@@ -67,6 +69,8 @@ class MiscSettingsUpdate(BaseModel):
     main_read_identity: bool | None = None
     shell_restriction_enabled: bool | None = None
     shell_allowed_users: list[str] | None = None
+    mnt_write_restriction_enabled: bool | None = None
+    mnt_write_allowed_users: list[str] | None = None
 
 
 # ─── 密码管理 ────────────────────────────────────────────────

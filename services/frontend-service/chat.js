@@ -57,6 +57,11 @@
     // ═══════════════════════════════════════════════════════════════
     // 图片发送（选择 / 粘贴 / 预览）
     // ═══════════════════════════════════════════════════════════════
+    const wsFileInput = document.getElementById("ws-file-input");
+    const wsFolderInput = document.getElementById("ws-folder-input");
+    if (wsFileInput) wsFileInput.addEventListener("change", () => uploadWorkspaceFiles(wsFileInput, false));
+    if (wsFolderInput) wsFolderInput.addEventListener("change", () => uploadWorkspaceFiles(wsFolderInput, true));
+
     attachBtn.addEventListener("click", () => imageInput.click());
     imageInput.addEventListener("change", () => {
       addPendingImageFiles(imageInput.files);
@@ -693,6 +698,43 @@
         }
         tree.appendChild(item);
       }
+    }
+
+    async function uploadWorkspaceFiles(input, isFolder) {
+      const files = Array.from(input.files || []);
+      if (files.length === 0) return;
+      input.value = "";
+      const basePath = currentWsPath === "/" ? "" : currentWsPath.replace(/^\/+|\/+$/g, "");
+      let okCount = 0, failCount = 0;
+      const failures = [];
+      const tree = document.getElementById("ws-tree");
+      tree.innerHTML = '<div class="ws-empty">上传中，共 ' + files.length + ' 个文件...</div>';
+      for (const file of files) {
+        const relName = isFolder && file.webkitRelativePath ? file.webkitRelativePath : file.name;
+        const form = new FormData();
+        form.append("file", file, relName);
+        try {
+          const resp = await fetch(`/api/workspace/files/upload?user_id=${encodeURIComponent(userId)}&path=${encodeURIComponent(basePath)}`, {
+            method: "POST",
+            body: form,
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (resp.ok && data.ok) {
+            okCount++;
+          } else {
+            failCount++;
+            failures.push(relName + ": " + (data.error || ("HTTP " + resp.status)));
+          }
+        } catch (e) {
+          failCount++;
+          failures.push(relName + ": " + e.message);
+        }
+      }
+      tree.innerHTML = '<div class="ws-empty">上传完成：成功 ' + okCount + '，失败 ' + failCount + '</div>';
+      if (failures.length > 0) {
+        console.warn("上传失败:", failures);
+      }
+      loadWorkspaceFiles();
     }
 
     async function previewFile(filePath) {

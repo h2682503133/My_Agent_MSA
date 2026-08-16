@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import mimetypes
+import socket
 import os
 import shlex
 import shutil
@@ -19,6 +21,7 @@ from bs4 import BeautifulSoup
 
 from app import config
 from app.logger import log, debug
+from app import mnt_access
 from app.process_runtime import init as process_init
 from app.process_runtime import remove as process_remove
 from app.process_runtime import write as process_write
@@ -36,6 +39,7 @@ from app.workspace import (
     search_text,
     tail_text,
     workspace_root,
+    write_bytes,
     write_text,
 )
 
@@ -159,6 +163,48 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         # VM 侧绝对路径映射、以及 / 开头的 workspace 相对路径兼容。
         return safe_path(root, path)
 
+    def _host_url(self) -> str:
+        base = config.HOST_MACHINE_URL
+        if not base:
+            return "宿主机访问地址未配置（HOST_MACHINE_URL 为空），无法访问宿主机服务。"
+        return (
+            f"宿主机访问地址：{base}\n"
+            f"访问宿主机（Windows 主机）上的服务时，用该地址拼接服务端口，例如：\n"
+            f"  ollama API：{base}:11434/\n"
+            f"  deepseek-harness：{base}:18080/\n"
+            f"注意：目标服务需监听 0.0.0.0 且防火墙放行。"
+        )
+
+    def _port_expose(self, port_str: str) -> str:
+        try:
+            port = int(str(port_str or "").strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid port: {port_str}")
+        low, _, high = config.PORT_PROXY_RANGE.partition("-")
+        try:
+            low_i, high_i = int(low), int(high or low)
+        except (TypeError, ValueError):
+            low_i, high_i = 5800, 5899
+        if not (low_i <= port <= high_i):
+            raise ValueError(f"port {port} out of allowed range {low_i}-{high_i}")
+
+        listening = False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                listening = True
+        except OSError:
+            listening = False
+
+        warn = ""
+        if not listening:
+            warn = f"\n警告：端口 {port} 当前未检测到监听，请先启动服务再使用链接。"
+        return (
+            f"端口 {port} 已开放\n"
+            f"用户访问链接：{config.PORT_PROXY_BASE_URL}/{port}/\n"
+            f"容器内访问：http://tool-runtime-service:{port}/\n"
+            f"若服务有子路径，请在链接后拼接。{warn}"
+        )
+
     def _dispatch(self, tool_name: str, args: list[str], kwargs: dict[str, str], root: Path, timeout: int):
         # 与原项目 core/Agent/Tool_manager.py 保持一致：
         # 工具名使用 OpenClaw/ClawHub 风格的短横线命名，并按原名精确分发。
@@ -166,6 +212,25 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 
         if name in {"", "help"}:
             return self._help()
+
+        # windows-* 新工具：当前仅 windows-file-copy / windows-file-move
+        if name in {"windows-file-copy", "windows-file-move"}:
+            try:
+                mnt_access.ensure_enabled()
+                return mnt_access.copy_or_move(name[len("windows-"):], args, kwargs, timeout)
+            except Exception as exc:
+                return f"错误：{exc}"
+
+        # 旧 file-copy / file-move 防呆：源或目标为 Windows 目录时转调 windows-* 逻辑
+        if name in {"file-copy", "file-move"}:
+            source = kwargs.get("source") or kwargs.get("src") or (args[0] if args else "")
+            target = kwargs.get("target") or kwargs.get("dest") or (args[1] if len(args) > 1 else "")
+            if mnt_access.is_windows_path(source) or mnt_access.is_windows_path(target):
+                try:
+                    mnt_access.ensure_enabled()
+                    return mnt_access.copy_or_move(name, args, kwargs, timeout)
+                except Exception as exc:
+                    return f"错误：{exc}"
 
         if name == "echo":
             return kwargs.get("text") or " ".join(args)
@@ -188,6 +253,23 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             rel = kwargs.get("path") or (args[0] if args else "")
             text = kwargs.get("text") or (args[1] if len(args) > 1 else "")
             return write_text(root, rel, text)
+
+        if name == "host-url":
+            return self._host_url()
+
+        if name == "port-expose":
+            port = kwargs.get("port") or (args[0] if args else "")
+            return self._port_expose(port)
+
+        if name == "file-upload":
+            rel = kwargs.get("path") or (args[0] if args else "")
+            data_b64 = kwargs.get("data") or (args[1] if len(args) > 1 else "")
+            if not data_b64:
+                raise ValueError("missing data (base64)")
+            data = base64.b64decode(data_b64)
+            if len(data) > config.MAX_UPLOAD_BYTES:
+                raise ValueError(f"file too large: {len(data)} bytes > max {config.MAX_UPLOAD_BYTES} bytes")
+            return write_bytes(root, rel, data)
 
         if name == "file-append":
             rel = kwargs.get("path") or (args[0] if args else "")
@@ -317,6 +399,12 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         )
 
     def _codex(self, args: list[str], kwargs: dict[str, str], root: Path, timeout: int) -> str:
+        if not config.ENABLE_CODEX:
+            return (
+                "错误：Codex 未启用。部署 tool-runtime 时未勾选「codex 代码生成」功能，无法调用 codex。"
+                "如需启用，请重新运行 deploy-all.ps1 并勾选 codex，或设置环境变量 ENABLE_CODEX=true 后重启 tool-runtime。"
+            )
+
         working_dir = kwargs.get("working_dir") or (args[0] if args else str(root))
         requirement = kwargs.get("requirement") or (args[1] if len(args) > 1 else "")
 
@@ -721,6 +809,9 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 - file-read: kwargs.path or args[0]
 - file-write: kwargs.path + kwargs.text, or args[0] + args[1]
 - file-append: kwargs.path + kwargs.text, or args[0] + args[1] (append to file end)
+- file-upload: kwargs.path + kwargs.data (base64 内容，最大 48MB)
+- port-expose: 端口 - 声明对外开放端口（范围 5800-5899），返回用户访问链接
+- host-url - 获取宿主机（Windows 主机）访问地址，访问宿主机服务时拼接端口使用
 - file-copy: 源路径|目标路径
 - file-move: 源路径|目标路径
 - file-tail: 文件路径|行数 (默认50)
@@ -748,7 +839,13 @@ skill tools:
 
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=16),
+        options=[
+            ("grpc.max_send_message_length", config.GRPC_MAX_MESSAGE_BYTES),
+            ("grpc.max_receive_message_length", config.GRPC_MAX_MESSAGE_BYTES),
+        ],
+    )
     tool_runtime_pb2_grpc.add_ToolRuntimeServicer_to_server(ToolRuntimeService(), server)
 
     listen_addr = f"{config.TOOL_RUNTIME_HOST}:{config.TOOL_RUNTIME_PORT}"

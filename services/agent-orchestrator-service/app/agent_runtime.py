@@ -70,6 +70,8 @@ class AgentRuntime:
     MAX_INSTANCES = 20
     # tool-runtime 中执行 shell 的工具名（运行任意命令）
     SHELL_TOOL_NAMES = {"run-shell", "shell", "command"}
+    # 写入 /mnt（Windows 宿主机目录）的工具：需过 dashboard「杂项」写白名单
+    MNT_WRITE_TOOLS = {"file-copy", "file-move", "windows-file-copy", "windows-file-move"}
     _agent_instances: OrderedDict[str, "AgentRuntime"] = OrderedDict()
     default_agent: dict[str, str] = {}
 
@@ -191,12 +193,15 @@ class AgentRuntime:
         """将 tool_log 总结后持久化到 tool 的上下文，供 tool agent 后续检索。"""
         if not task.tool_log:
             return
+        tool_calls = [entry for entry in task.tool_log if str(entry).startswith("结果:")]
+        if len(tool_calls) < 3:
+            return
         try:
             tool_log_text = "\n".join(task.tool_log)
             reader = cls.get_agent("reader", task.user.session_id, task.user.id)
             reader_profile = reader.config.get("model_profile") or reader.config.get("model") or "reader"
             summary_messages = [
-                {"role": "system", "content": "请用一句话总结以下工具执行记录，只输出总结内容。"},
+                {"role": "system", "content": "请在三句话内总结以下工具执行记录，只输出总结内容。**注意内容主要反映工具如何正确使用，而非调用结果**"},
                 {"role": "user", "content": tool_log_text},
             ]
             summary_resp = cls.model_client.chat_completion(
@@ -207,6 +212,8 @@ class AgentRuntime:
                 params={"temperature": 0.3, "max_tokens": "256", "stream": "false"},
             )
             summary_text = summary_resp.get("text", "") or tool_log_text
+            tool_agent = cls.get_agent("tool", task.user.session_id, task.user.id)
+            commit_limit = int(tool_agent.config.get("commit_limit", 0) or 0)
             cls.context_client.append_turn(
                 user_id=task.user.id,
                 session_id=task.user.session_id,
@@ -215,7 +222,7 @@ class AgentRuntime:
                 assistant_message=summary_text,
                 agent_id="tool",
                 tool_summaries=[],
-                commit_limit=0,
+                commit_limit=commit_limit,
             )
         except Exception as exc:
             debug_log(f"[{task.user.id}] tool_log summary append failed: {exc}")
@@ -328,6 +335,24 @@ class AgentRuntime:
         if not bool(data.get("shell_restriction_enabled", False)):
             return True
         allowed = data.get("shell_allowed_users") or []
+        allowed_set = {str(u).strip() for u in allowed if str(u).strip()}
+        return str(user_id) in allowed_set
+
+    @staticmethod
+    def _is_windows_path(value) -> bool:
+        """是否 Windows 盘路径或 /mnt 路径。"""
+        raw = str(value or "").strip()
+        if raw.startswith("/mnt/"):
+            return True
+        return bool(re.match(r"^[A-Za-z]:[\\/]", raw))
+
+    @classmethod
+    def _mnt_write_allowed(cls, user_id: str) -> bool:
+        """/mnt 写白名单校验：未开启限制时所有用户可用。"""
+        data = cls._load_system_settings()
+        if not bool(data.get("mnt_write_restriction_enabled", False)):
+            return True
+        allowed = data.get("mnt_write_allowed_users") or []
         allowed_set = {str(u).strip() for u in allowed if str(u).strip()}
         return str(user_id) in allowed_set
 
@@ -918,6 +943,35 @@ class AgentRuntime:
             task.tool_log.append("结果:" + block_msg)
             task.set_temp_dialog_output(block_msg)
             return
+
+        # Windows 宿主机访问白名单拦截：host-url 工具（复用 mnt 同一个开关）
+        if tool_name == "host-url" and not self._mnt_write_allowed(task.user.id):
+            block_msg = f"工具 {tool_name} 被拦截：当前用户没有 Windows 宿主机访问权限。"
+            debug_log(f"[{task.user.id}] [宿主机拦截] {tool_name} 被拦截，用户未在白名单内")
+            emit(self.build_event(
+                task,
+                "assistant_intermediate",
+                text=block_msg,
+                metadata={"visible_to_user": "false", "final": "false"},
+            ))
+            task.tool_log.append("结果:" + block_msg)
+            task.set_temp_dialog_output(block_msg)
+            return
+
+        # /mnt 写白名单拦截：写类工具 + Windows 盘 / /mnt 路径
+        if tool_name in self.MNT_WRITE_TOOLS and not self._mnt_write_allowed(task.user.id):
+            if any(self._is_windows_path(a) for a in args):
+                block_msg = f"工具 {tool_name} 被拦截：当前用户没有 /mnt 写入权限。"
+                debug_log(f"[{task.user.id}] [/mnt拦截] {tool_name} 被拦截，用户未在白名单内")
+                emit(self.build_event(
+                    task,
+                    "assistant_intermediate",
+                    text=block_msg,
+                    metadata={"visible_to_user": "false", "final": "false"},
+                ))
+                task.tool_log.append("结果:" + block_msg)
+                task.set_temp_dialog_output(block_msg)
+                return
 
         emit(self.build_event(
             task,

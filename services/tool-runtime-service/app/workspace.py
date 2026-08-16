@@ -41,10 +41,17 @@ def safe_path(root: Path, relative_path: str) -> Path:
         # 绝对路径兼容：
         # 1) 容器内 /app/workspace/... 直接可用；
         # 2) VM 侧 /srv/nfs/my-agent/workspace/... 映射回容器路径；
-        # 3) 仍不在 workspace 内时，去掉开头 / 按 workspace 相对路径再试。
+        # 3) 共享 workspace 内的绝对路径（如 /app/workspace/skill/...）直接可用；
+        # 4) 仍不在 workspace 内时，去掉开头 / 按 workspace 相对路径再试。
         candidate = _vm_to_container(Path(raw)).resolve()
         try:
             candidate.relative_to(root)
+            return candidate
+        except ValueError:
+            pass
+        workspace = Path(config.WORKSPACE_DIR).resolve()
+        try:
+            candidate.relative_to(workspace)
             return candidate
         except ValueError:
             pass
@@ -92,6 +99,13 @@ def write_text(root: Path, relative_path: str, text: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return f"wrote {path.relative_to(root)} ({len(text.encode('utf-8'))} bytes)"
+
+
+def write_bytes(root: Path, relative_path: str, data: bytes) -> str:
+    path = safe_path(root, relative_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return f"wrote {path.relative_to(root)} ({len(data)} bytes)"
 
 
 def append_text(root: Path, relative_path: str, text: str) -> str:

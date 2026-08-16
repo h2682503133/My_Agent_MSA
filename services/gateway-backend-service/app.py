@@ -1,11 +1,12 @@
 import asyncio
+import base64
 import json
 import os
 import re
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -577,6 +578,42 @@ async def write_workspace_file(
     }
 
 
+@app.post("/api/workspace/files/upload")
+async def upload_workspace_file(
+    file: UploadFile = File(...),
+    user_id: str = Query(..., min_length=1),
+    path: str = Query(default=""),
+):
+    """上传文件到工作空间。path 为目标目录（空为根），文件名保留相对路径。"""
+    ensure_allowed_user(user_id)
+
+    filename = (file.filename or "").replace("\\", "/")
+    if not filename:
+        raise HTTPException(status_code=400, detail="missing filename")
+    segments = [seg for seg in filename.split("/") if seg not in ("", ".")]
+    if not segments or any(seg == ".." for seg in segments):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    rel_name = "/".join(segments)
+
+    base = _clean_path(path)
+    rel = f"{base}/{rel_name}" if base else rel_name
+    rel = _clean_path(rel)
+
+    data = await file.read()
+    if len(data) > 48 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"file too large: {len(data)} bytes > 48MB")
+
+    data_b64 = base64.b64encode(data).decode("ascii")
+    result = await tool_client.file_upload(path=rel, data_base64=data_b64, workspace_dir=_user_workspace(user_id))
+    return {
+        "ok": result.get("ok", False),
+        "path": rel,
+        "size": len(data),
+        "output": result.get("output", ""),
+        "error": result.get("error", ""),
+    }
+
+
 @app.delete("/api/workspace/files")
 async def delete_workspace_file(
     user_id: str = Query(..., min_length=1),
@@ -591,6 +628,59 @@ async def delete_workspace_file(
         "output": result.get("output", ""),
         "error": result.get("error", ""),
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# 端口代理（agent 暴露端口）
+# ═══════════════════════════════════════════════════════════════
+def _parse_port_range(spec: str) -> tuple[int, int]:
+    spec = (spec or "").strip()
+    if not spec:
+        return 5800, 5899
+    low, _, high = spec.partition("-")
+    try:
+        low_i = int(low.strip())
+    except (TypeError, ValueError):
+        low_i = 5800
+    try:
+        high_i = int(high.strip()) if high.strip() else low_i
+    except (TypeError, ValueError):
+        high_i = 5800
+    return low_i, max(low_i, high_i)
+
+
+_HOP_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "content-length",
+}
+
+
+@app.api_route("/api/port/{port}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+async def proxy_exposed_port(port: int, path: str, request: Request):
+    low, high = _parse_port_range(os.getenv("PORT_PROXY_RANGE", "5800-5899"))
+    if not (low <= port <= high):
+        raise HTTPException(status_code=403, detail=f"port {port} out of allowed range {low}-{high}")
+
+    import httpx
+
+    target = f"http://tool-runtime-direct:{port}/{path}"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
+    body = await request.body()
+
+    client = httpx.AsyncClient(timeout=300)
+    req = client.build_request(request.method, target, params=request.query_params, headers=headers, content=body)
+    resp = await client.send(req, stream=True)
+    resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_HEADERS}
+
+    async def _proxy_stream():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(_proxy_stream(), status_code=resp.status_code, headers=resp_headers)
 
 
 # ═══════════════════════════════════════════════════════════════

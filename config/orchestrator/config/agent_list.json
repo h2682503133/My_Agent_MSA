@@ -1,0 +1,69 @@
+{
+  "default": {
+    "main": {
+      "model_profile": "default-main",
+      "temperature": 0.7,
+      "commit_limit": 15,
+      "files": [
+        "SOUL.md",
+        "TOOL.md"
+      ]
+    },
+    "tool": {
+      "model_profile": "default-tool",
+      "temperature": 0.7,
+      "commit_limit": 15,
+      "files": [
+        "SOUL.md",
+        "TOOL.md"
+      ],
+      "max_tokens": 4096
+    },
+    "reader": {
+      "model_profile": "default-reader",
+      "temperature": 0.3,
+      "commit_limit": 0,
+      "files": [
+        "SOUL.md"
+      ]
+    },
+    "writer": {
+      "model_profile": "default-writer",
+      "temperature": 1.4,
+      "commit_limit": 0,
+      "files": [
+        "SOUL.md"
+      ]
+    },
+    "talker": {
+      "model_profile": "default-talker",
+      "temperature": 1.4,
+      "commit_limit": 30,
+      "files": [
+        "SOUL.md",
+        "IDENTITY.md"
+      ]
+    },
+    "example": {
+      "model_profile": "default-main",
+      "temperature": 1.4,
+      "commit_limit": 30,
+      "max_tokens": 8192,
+      "record_mode": "intermediate",
+      "files": [
+        "SOUL.md"
+      ]
+    }
+  },
+  "users": {
+    "example-user": {
+      "main": {
+        "model_profile": "default-main",
+        "temperature": 0.8
+      },
+      "tool": {
+        "model_profile": "default-tool"
+      }
+    }
+  }
+}

@@ -42,7 +42,11 @@ class ToolClient:
     ) -> dict:
         self._ensure_imports()
         try:
-            async with grpc.aio.insecure_channel(self.target) as channel:
+            channel_options = [
+                ("grpc.max_send_message_length", 64 * 1024 * 1024),
+                ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+            ]
+            async with grpc.aio.insecure_channel(self.target, options=channel_options) as channel:
                 stub = tool_runtime_pb2_grpc.ToolRuntimeStub(channel)
                 req = tool_runtime_pb2.ExecuteToolRequest(
                     task_id="gateway",
@@ -77,6 +81,14 @@ class ToolClient:
             "file-write",
             kwargs={"path": path, "text": text},
             workspace_dir=workspace_dir,
+        )
+
+    async def file_upload(self, path: str, data_base64: str, workspace_dir: str | None = None) -> dict:
+        return await self._execute_tool(
+            "file-upload",
+            kwargs={"path": path, "data": data_base64},
+            workspace_dir=workspace_dir,
+            timeout=120,
         )
 
     async def delete_file(self, path: str, workspace_dir: str | None = None) -> dict:

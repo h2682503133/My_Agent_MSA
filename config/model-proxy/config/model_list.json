@@ -1,0 +1,77 @@
+{
+  "default": "main",
+  "models": {
+    "main": {
+      "provider": "openai_compatible",
+      "api_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+      "method": "POST",
+      "model": "doubao-seed-2-0-pro-260215",
+      "api_key": "replace-with-your-api-key",
+      "temperature": 0.7,
+      "model_params": {}
+    },
+    "tool": {
+      "provider": "openai_compatible",
+      "api_url": "https://api.deepseek.com/chat/completions",
+      "method": "POST",
+      "model": "deepseek-v4-flash",
+      "api_key": "replace-with-your-api-key",
+      "temperature": 0.7,
+      "model_params": {}
+    },
+    "reader": {
+      "provider": "openai_compatible",
+      "api_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+      "method": "POST",
+      "model": "ep-20260805181503-5b98s",
+      "api_key": "replace-with-your-api-key",
+      "temperature": 0.3,
+      "model_params": {}
+    },
+    "local-ollama": {
+      "provider": "ollama",
+      "api_url": "http://host.docker.internal:11434/api/chat",
+      "method": "POST",
+      "model": "qwen3.5:9b",
+      "temperature": 0.7,
+      "model_params": {}
+    },
+    "talker": {
+      "api_url": "http://host.docker.internal:11434/api/chat",
+      "method": "POST",
+      "model": "llama3.1:8b",
+      "temperature": 1.4,
+      "model_params": {}
+    },
+    "writer": {
+      "api_url": "http://host.docker.internal:11434/api/chat",
+      "method": "POST",
+      "model": "qwen3:14b",
+      "temperature": 1.4,
+      "model_params": {}
+    },
+    "imitator": {
+      "provider": "openai_compatible",
+      "api_url": "https://api.deepseek.com/chat/completions",
+      "method": "POST",
+      "model": "deepseek-v4-flash",
+      "api_key": "replace-with-your-api-key",
+      "temperature": 1.6,
+      "model_params": {
+        "options": {
+          "num_ctx": 4096,
+          "num_predict": 2048,
+          "repeat_penalty": 1.4
+        }
+      }
+    }
+  },
+  "aliases": {
+    "default-main": "main",
+    "default-tool": "tool",
+    "default-reader": "reader",
+    "default-talker": "talker",
+    "default-writer": "writer",
+    "h268-imitator": "imitator"
+  }
+}

@@ -92,22 +92,17 @@ python -m app.main
 ## Docker
 
 ```bash
-docker build -t agent/openviking-context-service:v1 .
+docker build -t agent/openviking-context-service:v24 .
 ```
 
 ## K8s
 
-如果使用 hostPath PV：
-
 ```bash
-kubectl apply -f k8s/openviking-context-pv-pvc.yaml
-kubectl apply -f k8s/openviking-context-service.yaml
+kubectl apply -f deploy/services/openviking-context-service.yaml
 ```
 
-默认宿主机路径：
+部署要点：
 
-```text
-/data/my-agent/openviking-context/viking_data
-```
-
-注意：如果你是 Docker Desktop / kind 这种节点容器环境，hostPath 目录需要存在于 Pod 所在节点里。
+- 数据与索引由 `openviking-server` 管理（`deploy/services/openviking-server.yaml`），本服务通过 `OPENVIKING_BACKEND=server` + `OPENVIKING_SERVER_URL=http://openviking.agent.svc.cluster.local:1933` 连接。
+- API key 从 config 卷读取：`OPENVIKING_API_KEY=/app/config/openviking/api_key`、`OPENVIKING_ROOT_API_KEY=/app/config/openviking/root_api_key`。
+- 依赖 `my-agent-config-pvc`（挂载到 `/app/config`，只读）。

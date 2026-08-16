@@ -6,7 +6,7 @@
 
 ```text
 namespace: agent
-image: agent/gateway-backend-service:local
+image: agent/gateway-backend-service:v31
 service: gateway-backend-service
 port: 5210
 scheduler target: task-scheduler-service.agent.svc.cluster.local:5100
@@ -22,13 +22,13 @@ scheduler target: task-scheduler-service.agent.svc.cluster.local:5100
 ## 构建镜像
 
 ```bash
-docker build -t agent/gateway-backend-service:local .
+docker build -t agent/gateway-backend-service:v31 .
 ```
 
 ## 部署
 
 ```bash
-kubectl apply -f k8s/gateway-backend-service.yaml
+kubectl apply -f deploy/services/gateway-backend-service.yaml
 ```
 
 ## 直接测试

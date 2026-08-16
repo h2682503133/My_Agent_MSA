@@ -93,6 +93,10 @@
           <div class="ws-toolbar">
             <input id="ws-path-input" placeholder="/app/workspace/users/..." value="/" />
             <button class="btn-sm" onclick="loadWorkspaceFiles()">浏览</button>
+            <button class="btn-sm" onclick="document.getElementById('ws-file-input').click()">上传文件</button>
+            <button class="btn-sm outline" onclick="document.getElementById('ws-folder-input').click()">上传文件夹</button>
+            <input type="file" id="ws-file-input" multiple style="display:none" />
+            <input type="file" id="ws-folder-input" webkitdirectory multiple style="display:none" />
           </div>
           <div class="ws-tree" id="ws-tree"><div class="ws-empty">输入路径后点击浏览</div></div>
           <div class="ws-preview" id="ws-preview"><div class="ws-empty">选择文件查看内容</div></div>
@@ -159,6 +163,48 @@
 
     // Override PC toggleRightPanel (not used on mobile)
     function toggleRightPanel() { togglePanel(); }
+  </script>
+  <!-- 背景图轮换 -->
+  <div class="bg-rotator" id="bg-rotator"></div>
+  <style>
+    .bg-rotator {
+      position: fixed; inset: 0; z-index: 50;
+      background-size: cover; background-position: center; background-repeat: no-repeat;
+      opacity: 0.2; pointer-events: none;
+    }
+  </style>
+  <script>
+    (function () {
+      var BG_ROOT = '/backgrounds/';
+      var BG_INTERVAL = 5 * 60 * 1000;
+      var list = [], index = 0, el = null;
+      function setBg(url) {
+        if (!el) el = document.getElementById('bg-rotator');
+        if (el) el.style.backgroundImage = 'url("' + url + '")';
+      }
+      function preload(url) { var img = new Image(); img.src = url; }
+      function next() {
+        if (!list.length) return;
+        setBg(BG_ROOT + list[index % list.length]);
+        index += 1;
+        preload(BG_ROOT + list[index % list.length]);
+      }
+      function safeName(f) {
+        var n = f.name;
+        try { n = decodeURIComponent(n); } catch (e) {}
+        return n;
+      }
+      fetch(BG_ROOT)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          list = (data || []).map(safeName)
+            .filter(function (n) { return /\.(jpe?g|png|webp)$/i.test(n); });
+          if (!list.length) return;
+          next();
+          setInterval(next, BG_INTERVAL);
+        })
+        .catch(function () {});
+    })();
   </script>
 </body>
 </html>

@@ -103,24 +103,18 @@ bash scripts/gen_proto.sh
 python -m app.main
 ```
 
-如果暂时没有真实模型服务：
-
-```bash
-export MOCK_MODEL=true
-python -m app.main
-```
+no-mock build：本版本 `MOCK_MODEL` 已硬编码为 `False`，不再提供 mock 模式，模型请求会真实发出，下游不可用时任务直接失败并暴露错误。
 
 ## Docker
 
 ```bash
-docker build -t agent/model-proxy-service:v1 .
+docker build -t agent/model-proxy-service:v10 .
 ```
 
 ## K8s
 
 ```bash
-kubectl apply -f k8s/model-proxy-config.yaml
-kubectl apply -f k8s/model-proxy-service.yaml
+kubectl apply -f deploy/services/model-proxy-service.yaml
 ```
 
 如果使用外部 API Key，建议用 Secret 注入环境变量，例如：

@@ -17,11 +17,19 @@ spec:
     spec:
       containers:
         - name: frontend-service
-          image: agent/frontend-service:v13
+          image: agent/frontend-service:v15
           imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 80
+          volumeMounts:
+            - name: backgrounds
+              mountPath: /usr/share/nginx/html/backgrounds
+              subPath: backgrounds
+      volumes:
+        - name: backgrounds
+          persistentVolumeClaim:
+            claimName: my-agent-assets-pvc
 ---
 apiVersion: v1
 kind: Service
