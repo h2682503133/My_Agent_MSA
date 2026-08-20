@@ -7,7 +7,8 @@
       "files": [
         "SOUL.md",
         "TOOL.md"
-      ]
+      ],
+      "image_model_profile": "视觉模型，如果不需要可以删除本条设置"
     },
     "tool": {
       "model_profile": "default-tool",

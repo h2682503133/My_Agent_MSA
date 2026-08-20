@@ -724,6 +724,17 @@ class AgentRuntime:
         )
 
         model_profile = self.config.get("model_profile") or self.config.get("model") or self.id
+        base_model_profile = model_profile
+        # 多模态路由：本次请求带图片时切换到 image_model_profile（如豆包多模态），纯文本保持 model_profile
+        image_count = len(dialog_images or []) + len(list(getattr(task, "images", None) or []))
+        if image_count > 0:
+            vision_profile = self.config.get("image_model_profile")
+            if vision_profile:
+                chat_log(
+                    f"[{self.user_id}] {self.id} 检测到 {image_count} 张图片，"
+                    f"模型 {model_profile} -> {vision_profile}"
+                )
+                model_profile = vision_profile
         params = {
             "temperature": self.config.get("temperature", 1),
             "max_tokens": self.config.get("max_tokens", 2048),
@@ -739,9 +750,32 @@ class AgentRuntime:
                 params=params
             )
         except Exception as exc:
-            error_text = f"【模型请求失败】{exc}"
-            self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
-            return
+            # 防呆：agent_list 未配置 image_model_profile 时本就不会切换（model_profile==base）；
+            # 若视觉模型路由调用失败（如 model_list 缺 default-main-vision 别名），
+            # 回退到普通文本模型重试一次。重试保留原 messages（含 images）不做去图处理：
+            # 若配置位置实际是单模态模型，API 会原样报错（如“不支持图片”），
+            # 该报错即对用户的提示，不应静默吞掉。
+            if model_profile == base_model_profile:
+                error_text = f"【模型请求失败】{exc}"
+                self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
+                return
+            chat_log(
+                f"[{self.user_id}] {self.id} 视觉模型({model_profile})调用失败：{exc}，"
+                f"回退到普通模型 {base_model_profile} 重试"
+            )
+            model_profile = base_model_profile
+            try:
+                model_response = self.model_client.chat_completion(
+                    task_id=task.task_id,
+                    agent_id=self.id,
+                    model_profile=model_profile,
+                    messages=messages,
+                    params=params
+                )
+            except Exception as exc2:
+                error_text = f"【模型请求失败】{exc2}"
+                self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
+                return
 
         raw_model_text = self._extract_raw_model_text(model_response)
 
