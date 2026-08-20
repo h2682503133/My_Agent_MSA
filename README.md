@@ -38,6 +38,8 @@ frontend (nginx) ── gateway-backend (SSE) ── task-scheduler ── agent
 | 文档 | 内容 |
 |------|------|
 | [项目介绍.md](项目介绍.md) | 架构、服务端口、核心功能、部署流程、配置清单、QQ 渠道、NFS |
+| [对于多节点集群.md](对于多节点集群.md) | 多节点部署：节点亲和、跨主机端口、副本数限制 |
+| [卸载指南.md](卸载指南.md) | 完整卸载步骤：K8s / Istio / 镜像 / NFS / tool-runtime 残留 |
 | [常见问题处理.md](常见问题处理.md) | 常见问题排查 |
 | [上下文管理.md](上下文管理.md) | 上下文与记忆管理 |
 | [deploy/README.md](deploy/README.md) | 部署脚本说明（NFS / PV / 服务 YAML） |

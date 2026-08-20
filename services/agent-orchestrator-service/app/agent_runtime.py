@@ -360,6 +360,7 @@ class AgentRuntime:
     def get_agent(cls, agent_id: str, session_id: str, user_id: str = "default") -> "AgentRuntime":
         debug_log(f"[get_agent] calling with agent_id={agent_id!r} session_id={session_id!r} user_id={user_id!r}")
         user_id = user_id or "default"
+        agent_id = (agent_id or "").strip() or "main"
         key = f"{user_id}_{session_id}_{agent_id}"
         if key in cls._agent_instances:
             cls._agent_instances.move_to_end(key)
@@ -370,7 +371,20 @@ class AgentRuntime:
             del cls._agent_instances[oldest_key]
             debug_log(f"[{user_id}] [实例上限] 删除最久未使用: {oldest_key}")
 
-        agent = cls(agent_id, session_id, user_id)
+        try:
+            agent = cls(agent_id, session_id, user_id)
+        except KeyError:
+            # 未知智能体：加载配置抛异常（agent_list.json 中不存在），
+            # 自动把会话默认智能体换成 main 后重试。
+            debug_log(f"[{user_id}] 未知智能体 {agent_id!r}，default 换为 main")
+            cls.default_agent[session_id] = "main"
+            agent_id = "main"
+            key = f"{user_id}_{session_id}_{agent_id}"
+            if key in cls._agent_instances:
+                cls._agent_instances.move_to_end(key)
+                return cls._agent_instances[key]
+            agent = cls(agent_id, session_id, user_id)
+
         cls._agent_instances[key] = agent
         debug_log(f"[{user_id}] {session_id} 新建智能体: {agent_id}")
         return agent
@@ -934,20 +948,6 @@ class AgentRuntime:
         if tool_name in self.SHELL_TOOL_NAMES and not self._shell_allowed(task.user.id):
             block_msg = f"工具 {tool_name} 被拦截：当前用户没有使用 shell 工具的权限。"
             debug_log(f"[{task.user.id}] [shell拦截] {tool_name} 被拦截，用户未在白名单内")
-            emit(self.build_event(
-                task,
-                "assistant_intermediate",
-                text=block_msg,
-                metadata={"visible_to_user": "false", "final": "false"},
-            ))
-            task.tool_log.append("结果:" + block_msg)
-            task.set_temp_dialog_output(block_msg)
-            return
-
-        # Windows 宿主机访问白名单拦截：host-url 工具（复用 mnt 同一个开关）
-        if tool_name == "host-url" and not self._mnt_write_allowed(task.user.id):
-            block_msg = f"工具 {tool_name} 被拦截：当前用户没有 Windows 宿主机访问权限。"
-            debug_log(f"[{task.user.id}] [宿主机拦截] {tool_name} 被拦截，用户未在白名单内")
             emit(self.build_event(
                 task,
                 "assistant_intermediate",

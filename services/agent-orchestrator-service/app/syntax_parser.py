@@ -22,6 +22,8 @@ _COMMAND_LINE_RE = re.compile(
 _SHELL_TOOL_NAMES = {"shell", "run-shell", "command"}
 # 内容类工具：最后一个参数可能包含 | 和换行，需用 split("|", 2) 保留
 _CONTENT_TOOLS = {"file-write", "codex"}
+# 位置敏感工具：保留空槽，保证 fetch 参数不错位
+_POSITIONAL_TOOLS = {"fetch"}
 _PRIORITY_SHELL_RE = re.compile(r"^\s*(?:[-*•`]\s*)?工具调用\s*:\s*shell\s*\|\s*(.*)$")
 # 用于在文本任意位置（非行首）匹配指令关键字，处理模型先说一段话再输出指令的场景
 _INLINE_COMMAND_RE = re.compile(
@@ -62,7 +64,11 @@ def clean_ai_thinking(text: str) -> str:
 
 
 def _normalize_text(text: str) -> str:
-    return (text or "").replace("：", ":").strip()
+    text = (text or "").replace("：", ":").strip()
+    # 兼容模型把协议关键字顺序写反：调用工具:xxx → 工具调用:xxx
+    # （否则 _find_command_block 匹配不到，工具调用会被当成普通回复直接返回）
+    text = text.replace("调用工具:", "工具调用:")
+    return text
 
 
 def extract_command_prefix(full_text: str) -> str:
@@ -165,6 +171,10 @@ def _parse_tool_call(tool_line: str) -> dict | None:
 
     shell 类工具只按第一个 `|` 切分，后面的内容作为原始 shell command
     完整保留，避免 `ps aux | grep python` 里的管道被协议层吞掉。
+
+    fetch 系列工具（fetch / fetch-outline）保留空槽，保证位置参数不错位：
+        工具调用:fetch|url|GET||问题
+        → args = ["url", "GET", "", "问题"]（query 落在第 5 个位置）
     """
     if not tool_line:
         return None
@@ -195,6 +205,19 @@ def _parse_tool_call(tool_line: str) -> dict | None:
         parts = tool_line.split("|", 2)
         tool_name = parts[0].strip()
         args = [p.strip().strip("`") for p in parts[1:] if p.strip().strip("`")]
+        if not tool_name:
+            return None
+        return {
+            "tool": tool_name,
+            "args": args,
+            "kwargs": {},
+        }
+
+    if first_part in _POSITIONAL_TOOLS:
+        # 位置敏感工具：保留空槽，避免 fetch|url|GET||问题 的 query 错位
+        parts = tool_line.split("|")
+        tool_name = parts[0].strip()
+        args = [p.strip().strip("`") for p in parts[1:]]
         if not tool_name:
             return None
         return {
@@ -301,13 +324,14 @@ def parse_syntax(agent, task):
     # 管道/重定向/多行命令被普通工具分隔逻辑或对话/切换逻辑干扰。
     priority_tool_line, priority_tool_call = _find_priority_shell_call(full_text)
     if priority_tool_call:
+        # 「收到请求」在「调用工具」之前：先收到 main 等转交的要求，再执行工具
+        if task.last_dialog_content:
+            task.tool_log.append("收到请求:" + task.last_dialog_content)
+            task.last_dialog_content = ""
         task.tool_log.append("调用工具:" + priority_tool_line)
         stack_parts = []
         if task.tool_log:
             stack_parts.append("【本轮已执行的工具】\n" + "\n".join(task.tool_log))
-        if task.last_dialog_content:
-            task.tool_log.append("收到请求:" + task.last_dialog_content)
-            task.last_dialog_content = ""
         stack_content = "\n".join(stack_parts) if stack_parts else ""
         task.push_context(agent, stack_content)
 
@@ -338,13 +362,14 @@ def parse_syntax(agent, task):
     # 然后解析工具调用。
     tool_line = _find_command_block(full_text, "工具调用", allow_multiline=True)
     if tool_line:
+        # 「收到请求」在「调用工具」之前：先收到 main 等转交的要求，再执行工具
+        if task.last_dialog_content:
+            task.tool_log.append("收到请求:" + task.last_dialog_content)
+            task.last_dialog_content = ""
         task.tool_log.append("调用工具:" + tool_line)
         stack_parts = []
         if task.tool_log:
             stack_parts.append("【本轮已执行的工具】\n" + "\n".join(task.tool_log))
-        if task.last_dialog_content:
-            task.tool_log.append("收到请求:" + task.last_dialog_content)
-            task.last_dialog_content = ""
         stack_content = "\n".join(stack_parts) if stack_parts else ""
         task.push_context(agent, stack_content)
 

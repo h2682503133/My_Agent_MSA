@@ -446,6 +446,12 @@
           addMsg("agent", data.text || "", data.images || []);
           if (window.AndroidNotify) AndroidNotify.notifyMsg(data.text || "收到新消息");
           break;
+        case "assistant_intermediate":
+          // 中间消息（agent 处理过程中提前推送的说明文本），只显示用户可见的
+          if ((data.metadata || {}).visible_to_user === "true") {
+            addMsg("agent", data.text || "", data.images || []);
+          }
+          break;
         case "task_waiting_user":
           addMsg("agent", data.text || "需要你补充信息。");
           break;
@@ -457,8 +463,10 @@
           addMsg("agent", `任务失败：${data.error || "未知错误"}`);
           break;
         default:
-          if ("waiting" in data) queueStatus.textContent = `排队：${data.waiting}`;
-          else if ("text" in data || "images" in data) addMsg("agent", data.text || "", data.images || []);
+          // 注意：payload 总是包含 waiting 字段，不能再用 if/else 判断，
+          // 否则会吞掉其他未知事件类型的文本显示
+          if (typeof data.waiting === "number") queueStatus.textContent = `排队：${data.waiting}`;
+          if (data.text || (data.images && data.images.length)) addMsg("agent", data.text || "", data.images || []);
           break;
       }
     }

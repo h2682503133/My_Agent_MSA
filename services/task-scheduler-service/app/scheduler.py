@@ -228,6 +228,10 @@ def _run_execution(task: ScheduledTask, stream_factory):
     try:
         for event in stream_factory():
             event_type = event.get("type", "")
+            # 去重：task_started 由 scheduler 统一发布（run_task L213 / send_message 定时任务 L192），
+            # orchestrator 流回传的 task_started 会重复触发前端「任务开始」提示，直接丢弃。
+            if event_type == "task_started":
+                continue
             if event_type == "task_waiting_user":
                 # 询问挂起：登记挂起任务并释放物理槽位。
                 # 用户保留在 BUSY_USERS（阻滞该用户后续任务），processed 也保留计数，

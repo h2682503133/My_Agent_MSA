@@ -6,7 +6,7 @@
 ### 可用工具：
 - shell|命令 - 执行PowerShell命令
 - list-workspace - 列出工作空间内所有文件
-- fetch|url|method|data - 发送HTTP请求
+- fetch|url|method|data - 发送HTTP请求。GET: data=搜索词（空格分隔）或章节序号/章节名；空则大页面返回大纲，再按序号取章节内容
 - web-search|关键词 - 搜索网页
 - file-read|文件路径 - 读取文件
 - file-write|文件路径|内容 - 写入文件

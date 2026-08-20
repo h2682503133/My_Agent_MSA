@@ -94,6 +94,50 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
         base["content"] = content
         return base
 
+    def Embedding(self, request, context):
+        try:
+            profile = profile_store.get_profile(request.model_profile)
+            result = provider_client.embedding(
+                profile=profile,
+                texts=list(request.texts),
+                params=dict(request.params),
+            )
+
+            log(
+                f"Embedding model={result.get('model', 'unknown')} "
+                f"texts={len(request.texts)} "
+                f"request_id={request.request_id} task_id={request.task_id} "
+                f"agent_id={request.agent_id} profile={request.model_profile}"
+            )
+
+            return model_proxy_pb2.EmbeddingResponse(
+                ok=True,
+                embeddings=[
+                    model_proxy_pb2.EmbeddingItem(
+                        index=item["index"],
+                        vector=item["vector"],
+                    )
+                    for item in result["embeddings"]
+                ],
+                provider=result.get("provider", ""),
+                model=result.get("model", ""),
+                error="",
+            )
+
+        except Exception as exc:
+            log(
+                "Embedding failed "
+                f"request_id={request.request_id} task_id={request.task_id} "
+                f"agent_id={request.agent_id} profile={request.model_profile}: {exc}"
+            )
+            return model_proxy_pb2.EmbeddingResponse(
+                ok=False,
+                embeddings=[],
+                provider="",
+                model="",
+                error=str(exc),
+            )
+
 
 def serve():
     # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB，纯字节数限制）

@@ -53,6 +53,12 @@
       "files": [
         "SOUL.md"
       ]
+    },
+    "embedding": {
+      "model_profile": "default-embedding",
+      "temperature": 0,
+      "commit_limit": 0,
+      "files": []
     }
   },
   "users": {

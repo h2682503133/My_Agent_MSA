@@ -64,6 +64,15 @@
           "repeat_penalty": 1.4
         }
       }
+    },
+    "embedding": {
+      "provider": "openai_compatible",
+      "api_url": "https://your-embedding-provider.example.com/v1/embeddings",
+      "method": "POST",
+      "model": "text-embedding-v4",
+      "api_key": "replace-with-your-api-key",
+      "temperature": 0,
+      "model_params": {}
     }
   },
   "aliases": {
@@ -72,6 +81,7 @@
     "default-reader": "reader",
     "default-talker": "talker",
     "default-writer": "writer",
-    "h268-imitator": "imitator"
+    "h268-imitator": "imitator",
+    "default-embedding": "embedding"
   }
 }

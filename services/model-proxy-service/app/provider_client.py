@@ -37,6 +37,119 @@ class ProviderClient:
         # 默认按 OpenAI-compatible 尝试
         return self._call_openai_compatible(profile, messages, params)
 
+    def embedding(
+        self,
+        profile: dict[str, Any],
+        texts: list[str],
+        params: dict[str, str],
+    ) -> dict[str, Any]:
+        """文本向量化：支持 OpenAI-compatible / Ollama 嵌入接口。
+
+        profile 指向 model_list.json 中配置的 embedding 模型：
+        {
+          "embedding": {
+            "provider": "openai_compatible",
+            "api_url": "https://.../v1/embeddings",
+            "model": "text-embedding-v4",
+            ...
+          }
+        }
+        """
+        texts = [t for t in (texts or []) if t is not None]
+        if not texts:
+            raise RuntimeError("embedding input texts is empty")
+
+        provider = profile.get("provider", "openai_compatible")
+        if provider in {"ollama", "ollama_chat"}:
+            return self._embed_ollama(profile, texts, params)
+        return self._embed_openai_compatible(profile, texts, params)
+
+    def _embed_openai_compatible(
+        self,
+        profile: dict[str, Any],
+        texts: list[str],
+        params: dict[str, str],
+    ) -> dict[str, Any]:
+        api_url = profile["api_url"]
+        method = profile.get("method", "POST").upper()
+        model = profile["model"]
+
+        body = dict(profile.get("model_params", {}) or {})
+        for key, value in params.items():
+            body[key] = value
+        body.update({"model": model, "input": texts})
+
+        headers = self._base_headers(profile)
+        response = self._request(method, api_url, headers, body)
+        data = response.json()
+
+        items: list[dict[str, Any]] = []
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            # OpenAI 风格：data: [{embedding: [...], index: N}]
+            for entry in data["data"]:
+                if not isinstance(entry, dict):
+                    continue
+                vec = entry.get("embedding")
+                if not isinstance(vec, list):
+                    continue
+                items.append({
+                    "index": _parse_int(entry.get("index", len(items))),
+                    "vector": [float(x) for x in vec],
+                })
+        elif isinstance(data, dict) and isinstance(data.get("embeddings"), list):
+            # 部分兼容实现直接返回 embeddings 数组
+            for i, vec in enumerate(data["embeddings"]):
+                if not isinstance(vec, list):
+                    continue
+                items.append({"index": i, "vector": [float(x) for x in vec]})
+
+        if not items:
+            raise RuntimeError(f"embedding response has no vectors: {str(data)[:300]}")
+
+        return {
+            "ok": True,
+            "embeddings": items,
+            "provider": profile.get("provider", "openai_compatible"),
+            "model": model,
+            "error": "",
+        }
+
+    def _embed_ollama(
+        self,
+        profile: dict[str, Any],
+        texts: list[str],
+        params: dict[str, str],
+    ) -> dict[str, Any]:
+        api_url = profile["api_url"]
+        model = profile["model"]
+
+        body = dict(profile.get("model_params", {}) or {})
+        for key, value in params.items():
+            body[key] = value
+        body.update({"model": model, "input": texts})
+
+        headers = self._base_headers(profile)
+        response = self._request("POST", api_url, headers, body)
+        data = response.json()
+
+        embeddings = data.get("embeddings") or []
+        items: list[dict[str, Any]] = []
+        for i, vec in enumerate(embeddings):
+            if not isinstance(vec, list):
+                continue
+            items.append({"index": i, "vector": [float(x) for x in vec]})
+
+        if not items:
+            raise RuntimeError(f"embedding response has no vectors: {str(data)[:300]}")
+
+        return {
+            "ok": True,
+            "embeddings": items,
+            "provider": profile.get("provider", "ollama"),
+            "model": model,
+            "error": "",
+        }
+
     def _base_headers(self, profile: dict[str, Any]) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
 

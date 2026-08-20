@@ -50,3 +50,10 @@ SUBSCRIBER_ID = _env("SUBSCRIBER_ID", _cfg.get("subscriber_id", "qq-llbot-1"))
 
 # 群聊消息是否必须 @ 机器人才下发（私聊不受影响）
 GROUP_AT_REQUIRED = _env("GROUP_AT_REQUIRED", _cfg.get("group_at_required", "true")).lower() == "true"
+
+# 用户工作空间根目录（K8s 部署时挂载 my-agent-workspace-pvc → /app/workspace，
+# 与 tool-runtime / orchestrator 共享同一 NFS workspace 目录）
+WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", "/app/workspace"))
+
+# 单文件下载大小上限（字节），默认 50MB
+MAX_FILE_BYTES = int(_env("MAX_FILE_BYTES", str(_cfg.get("max_file_bytes", 50 * 1024 * 1024))))

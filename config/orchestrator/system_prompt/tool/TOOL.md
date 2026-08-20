@@ -12,9 +12,11 @@
 - list-workspace - 列出工作空间所有文件
 - dir-list|目录|通配符 - 列出目录内容，可用 *.py|recursive=true 递归 等过滤
 - fetch|url|method|data - 发送 HTTP 请求
+  - 不确定页面结构或要概览 → data 留空（fetch|url|GET|），大页面返回带编号【N】的章节大纲；需要某章节完整内容时，再调用 fetch|url|GET|N（章节序号）或 fetch|url|GET|章节名
+  - 直接查具体信息 → fetch|url|GET|要查找的内容（多关键词用空格分隔，如：灵梦 能力）
+  - POST 请求 → fetch|url|POST|请求体JSON（data=请求体，返回即结果）
 - download|url|目标路径 - 下载 URL 并保存为工作区文件（不传目标路径则用 URL 文件名）
 - port-expose|端口 - 声明对外开放端口（范围 5800-5899）
-- host-url - 获取宿主机（Windows 主机）访问地址
 - web-search|关键词|条数 - 搜索网页（条数可选，默认10，最多50）
 - file-read|文件路径 - 读取文件
 - file-write|文件路径|内容 - 写入文件（覆盖）
@@ -49,6 +51,7 @@
 3. 未指定路径时，均视为当前工作空间相对路径。用户工作目录为 `/app/workspace/users/<user_id>`，无需手动指定绝对地址。
 4. 下载或使用某技能前，先通过 `skill-list-simple` 或相关工具确认知识库中是否已有。
 5.对于图片发送，对于有url的图片可以直接使用`send-image-by-url`发送,对于没有的需要将其下载到本地再`get-image-url-from-local`得到url，得到url后就可以使用`send-image-by-url`发送。**不要反复尝试获取图片的url，特别是在返回“该图片的url是xxx的时候”**
+6. 访问宿主机（Windows 主机）上的服务（如 Ollama 的 11434）时，容器内可直接使用 host.docker.internal 作为宿主机地址。
 
 ## 关于技能的补充说明
 - **不要反复查看已有skill**

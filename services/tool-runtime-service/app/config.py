@@ -36,6 +36,10 @@ def env_bool(name: str, default: bool = False) -> bool:
 TOOL_RUNTIME_HOST = os.getenv("TOOL_RUNTIME_HOST", "0.0.0.0")
 TOOL_RUNTIME_PORT = env_int("TOOL_RUNTIME_PORT", 5303)
 
+# model-proxy（LLM / Embedding 代理）：fetch 语义召回（策略二）与 LLM 提取（策略三）使用
+MODEL_PROXY_TARGET = os.getenv("MODEL_PROXY_TARGET", "model-proxy-service:5302")
+MODEL_TIMEOUT_SECONDS = env_int("MODEL_TIMEOUT_SECONDS", 120)
+
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/app/workspace")
 MAX_LIST_FILES = env_int("MAX_LIST_FILES", 500)
 MAX_READ_BYTES = env_int("MAX_READ_BYTES", 1024 * 1024)
@@ -43,9 +47,27 @@ MAX_UPLOAD_BYTES = env_int("MAX_UPLOAD_BYTES", 48 * 1024 * 1024)
 GRPC_MAX_MESSAGE_BYTES = env_int("GRPC_MAX_MESSAGE_BYTES", 64 * 1024 * 1024)
 PORT_PROXY_RANGE = os.getenv("PORT_PROXY_RANGE", "5800-5899")
 PORT_PROXY_BASE_URL = os.getenv("PORT_PROXY_BASE_URL", "http://localhost:8080/api/port")
-HOST_MACHINE_URL = os.getenv("HOST_MACHINE_URL", "").rstrip("/")
 DEFAULT_TIMEOUT_SECONDS = env_int("DEFAULT_TIMEOUT_SECONDS", 30)
 WEB_SEARCH_MAX_RESULTS = env_int("WEB_SEARCH_MAX_RESULTS", 10)
+
+# ---- fetch 体积控制与信息提取（fetch_tools.py）----
+# 清洗后文本长度 <= FETCH_MAX_RAW_CHARS：直接返回原始文本
+FETCH_MAX_RAW_CHARS = env_int("FETCH_MAX_RAW_CHARS", 1500)
+# 清洗后文本长度 <= FETCH_MAX_FULL_TEXT_CHARS：返回完整清洗文本（不触发提取策略）
+FETCH_MAX_FULL_TEXT_CHARS = env_int("FETCH_MAX_FULL_TEXT_CHARS", 6000)
+# 分块参数（字符）：块大小 / 块间重叠
+FETCH_CHUNK_SIZE = env_int("FETCH_CHUNK_SIZE", 600)
+FETCH_CHUNK_OVERLAP = env_int("FETCH_CHUNK_OVERLAP", 100)
+# 语义召回 Top-K（多个子问题合并去重后的上限）
+FETCH_TOP_K = env_int("FETCH_TOP_K", 4)
+# 大纲输出上限（字符）
+FETCH_OUTLINE_MAX_CHARS = env_int("FETCH_OUTLINE_MAX_CHARS", 2000)
+# 语义召回使用的 embedding 模型 profile（model_list.json 中的别名/模型名）
+FETCH_EMBEDDING_PROFILE = os.getenv("FETCH_EMBEDDING_PROFILE", "default-embedding")
+# LLM 提取（降级）使用的 chat 模型 profile
+FETCH_EXTRACT_PROFILE = os.getenv("FETCH_EXTRACT_PROFILE", "default-reader")
+# LLM 提取最多处理的块数（超出按关键词得分取前 N 块）
+FETCH_LLM_EXTRACT_CHUNKS = env_int("FETCH_LLM_EXTRACT_CHUNKS", 10)
 
 SKILL_ROOT_DIR = os.getenv("SKILL_ROOT_DIR", os.path.join(WORKSPACE_DIR, "skill"))
 

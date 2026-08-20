@@ -38,7 +38,12 @@ spec:
             - name: my-agent-config
               mountPath: /service/config
               subPath: qq-llbot
+            - name: my-agent-workspace
+              mountPath: /app/workspace
       volumes:
         - name: my-agent-config
           persistentVolumeClaim:
             claimName: my-agent-config-pvc
+        - name: my-agent-workspace
+          persistentVolumeClaim:
+            claimName: my-agent-workspace-pvc

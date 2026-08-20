@@ -14,6 +14,9 @@ RUN pip install \
     \
     -r /app/requirements.txt
 
+# 无头浏览器：Playwright + Chromium（--with-deps 自动 apt 安装系统依赖）
+RUN python -m playwright install --with-deps chromium
+
 COPY . /app
 
 RUN find /app -type f \( \
@@ -27,7 +30,9 @@ RUN find /app -type f \( \
     bash /app/scripts/gen_proto.sh && \
     find /app/app/generated -name "*pb2*.py" -print && \
     test -f /app/app/generated/tool_runtime_pb2.py && \
-    test -f /app/app/generated/tool_runtime_pb2_grpc.py
+    test -f /app/app/generated/tool_runtime_pb2_grpc.py && \
+    test -f /app/app/generated/model_proxy_pb2.py && \
+    test -f /app/app/generated/model_proxy_pb2_grpc.py
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app:/app/app/generated

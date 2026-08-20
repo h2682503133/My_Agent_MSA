@@ -20,6 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app import config
+from app import fetch_tools
 from app.logger import log, debug
 from app import mnt_access
 from app.process_runtime import init as process_init
@@ -163,18 +164,6 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         # VM 侧绝对路径映射、以及 / 开头的 workspace 相对路径兼容。
         return safe_path(root, path)
 
-    def _host_url(self) -> str:
-        base = config.HOST_MACHINE_URL
-        if not base:
-            return "宿主机访问地址未配置（HOST_MACHINE_URL 为空），无法访问宿主机服务。"
-        return (
-            f"宿主机访问地址：{base}\n"
-            f"访问宿主机（Windows 主机）上的服务时，用该地址拼接服务端口，例如：\n"
-            f"  ollama API：{base}:11434/\n"
-            f"  deepseek-harness：{base}:18080/\n"
-            f"注意：目标服务需监听 0.0.0.0 且防火墙放行。"
-        )
-
     def _port_expose(self, port_str: str) -> str:
         try:
             port = int(str(port_str or "").strip())
@@ -254,9 +243,6 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             text = kwargs.get("text") or (args[1] if len(args) > 1 else "")
             return write_text(root, rel, text)
 
-        if name == "host-url":
-            return self._host_url()
-
         if name == "port-expose":
             port = kwargs.get("port") or (args[0] if args else "")
             return self._port_expose(port)
@@ -317,8 +303,29 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             return extract_zip(root, zip_rel, target_rel)
 
         # HTTP 请求工具，对齐提示词：fetch|url|method|data
+        #   GET:  data=搜索词（空格分隔）或章节序号/章节名；空 → 大纲/全文
+        #   POST: data=请求体，返回即结果
         if name == "fetch":
-            return self._fetch(args=args, kwargs=kwargs, timeout=timeout)
+            url = kwargs.get("url") or (args[0] if args else "")
+            method = (kwargs.get("method") or (args[1] if len(args) > 1 else "") or "GET").upper()
+            data = kwargs.get("data") or (args[2] if len(args) > 2 else "")
+
+            # 兼容「fetch|url|搜索词」：漏写 method 时把第 2 参当 data
+            if (
+                method not in fetch_tools.VALID_HTTP_METHODS
+                and not data
+                and len(args) > 1
+                and not kwargs.get("method")
+            ):
+                data = args[1]
+                method = "GET"
+
+            return fetch_tools.fetch(
+                url=url,
+                method=method,
+                data=data,
+                timeout=timeout,
+            )
 
         if name == "download":
             return self._download(args=args, kwargs=kwargs, root=root, timeout=timeout)
@@ -516,126 +523,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         output += f"\n[exit_code] {proc.returncode}"
         return output
 
-    # ---- fetch 响应类型识别与格式化 ----
-
-    @classmethod
-    def _format_json_response(cls, status_line: str, response) -> str:
-        try:
-            parsed = response.json()
-            import json
-            formatted = json.dumps(parsed, ensure_ascii=False, indent=2)
-            return f"{status_line}\n[JSON]\n{formatted}"
-        except Exception:
-            return f"{status_line}\n[JSON·解析失败]\n{response.text}"
-
-    @classmethod
-    def _format_html_response(cls, status_line: str, response) -> str:
-        try:
-            soup = BeautifulSoup(response.text, "html.parser")
-            # 提取页面中的图片 URL
-            img_urls = []
-            for img in soup.find_all("img"):
-                src = img.get("src") or img.get("data-src") or ""
-                if src and not src.startswith("data:"):
-                    from urllib.parse import urljoin
-                    img_urls.append(urljoin(response.url, src))
-            # 去重，最多 20 张
-            seen = set()
-            unique_imgs = []
-            for u in img_urls:
-                if u not in seen:
-                    seen.add(u)
-                    unique_imgs.append(u)
-            unique_imgs = unique_imgs[:20]
-
-            # 移除无用标签
-            for tag in soup(["script", "style", "nav", "footer", "header"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
-            import re
-            text = re.sub(r"\n{3,}", "\n\n", text)
-
-            result = f"{status_line}\n[HTML→文本]\n{text}"
-            if unique_imgs:
-                result += "\n\n[页面图片]\n" + "\n".join(f"- {u}" for u in unique_imgs)
-            return result
-        except Exception:
-            return f"{status_line}\n[HTML→文本·解析失败]\n{response.text}"
-
-    @staticmethod
-    def _format_image_response(status_line: str, response) -> str:
-        content_type = response.headers.get("Content-Type", "image/unknown")
-        content_length = response.headers.get("Content-Length", "未知")
-        return f"{status_line}\n[图片] 类型: {content_type} | 大小: {content_length} bytes（图片二进制数据未在文本中返回，请使用 send-image-by-url 发送）"
-
-    @classmethod
-    def _format_text_response(cls, status_line: str, response) -> str:
-        return f"{status_line}\n[文本]\n{response.text}"
-
-    @staticmethod
-    def _format_binary_response(status_line: str, response, content_type: str) -> str:
-        content_length = response.headers.get("Content-Length", "未知")
-        return f"{status_line}\n[二进制] 类型: {content_type} | 大小: {content_length} bytes（二进制数据未在文本中返回）"
-
-    _MAX_RAW_CHARS = 8000
-
-    @classmethod
-    def _process_fetch_response(cls, response) -> str:
-        content_type = response.headers.get("Content-Type", "").lower()
-        status_line = f"[status] {response.status_code}"
-
-        # 图片（非 SVG）始终格式化（二进制对模型无意义；SVG 是文本，按普通文本处理）
-        if content_type.startswith("image/") and "svg" not in content_type:
-            return cls._format_image_response(status_line, response)
-
-        text = response.text
-        # 未超过阈值，直接返回原始文本
-        if len(text) <= cls._MAX_RAW_CHARS:
-            return f"{status_line}\n{text}"
-
-        # 超过阈值，按类型智能格式化
-        if "application/json" in content_type:
-            return cls._format_json_response(status_line, response)
-        if "text/html" in content_type:
-            return cls._format_html_response(status_line, response)
-        if "text/" in content_type:
-            return cls._format_text_response(status_line, response)
-        return cls._format_binary_response(status_line, response, content_type)
-
-    def _fetch(self, args: list[str], kwargs: dict[str, str], timeout: int) -> str:
-        url = kwargs.get("url") or (args[0] if args else "")
-        method = (kwargs.get("method") or (args[1] if len(args) > 1 else "GET") or "GET").upper()
-        data = kwargs.get("data") or (args[2] if len(args) > 2 else "")
-
-        if not url:
-            return "请求失败：url 不能为空"
-
-        request_timeout = timeout or 10
-
-        try:
-            if method == "GET":
-                response = requests.get(url, timeout=request_timeout)
-            else:
-                json_data = None
-                raw_data = None
-
-                if data:
-                    try:
-                        json_data = requests.compat.json.loads(data)
-                    except Exception:
-                        raw_data = data
-
-                response = requests.request(
-                    method,
-                    url,
-                    json=json_data,
-                    data=raw_data,
-                    timeout=request_timeout,
-                )
-
-            return self._process_fetch_response(response)
-        except Exception as exc:
-            return f"请求失败：{exc}"
+    # ---- fetch 相关逻辑已拆到 app/fetch_tools.py ----
 
     def _web_search(self, query: str, limit: int | str | None = None, timeout: int = 0) -> str:
         """通过 SearXNG 元搜索引擎执行网页搜索。"""
@@ -803,7 +691,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 - shell: run system command (disabled by default)
 - list-workspace: list all files in workspace
 - dir-list: 目录|通配符 (kwargs: path/pattern/recursive)
-- fetch: url|method|data
+- fetch: url|method|data (GET: data=搜索词(空格分隔)或章节序号/章节名，空则大页面返回带序号大纲；POST: data=请求体)
 - download: url|目标路径 (保存到工作区)
 - web-search: 关键词|条数 (条数可选，默认10，最多50)
 - file-read: kwargs.path or args[0]
@@ -811,7 +699,6 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 - file-append: kwargs.path + kwargs.text, or args[0] + args[1] (append to file end)
 - file-upload: kwargs.path + kwargs.data (base64 内容，最大 48MB)
 - port-expose: 端口 - 声明对外开放端口（范围 5800-5899），返回用户访问链接
-- host-url - 获取宿主机（Windows 主机）访问地址，访问宿主机服务时拼接端口使用
 - file-copy: 源路径|目标路径
 - file-move: 源路径|目标路径
 - file-tail: 文件路径|行数 (默认50)

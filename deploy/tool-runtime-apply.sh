@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v45}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v51}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -31,11 +31,6 @@ MY_AGENT_CLAWHUB_WRAPPER="${MY_AGENT_CLAWHUB_WRAPPER:-$REAL_HOME/.local/bin/my-a
 
 # 图床外部 URL：通过 host.docker.internal 解析宿主机 IP
 export IMAGE_BASE_URL="http://localhost:5102/assets"
-
-# Windows 宿主机访问地址（WSL2 默认网关，apply 时自动探测；Linux 实体机请手动设置）
-HOST_MACHINE_IP="$(ip route 2>/dev/null | awk '/default/{print $3; exit}')"
-HOST_MACHINE_URL="${HOST_MACHINE_URL:-${HOST_MACHINE_IP:+http://${HOST_MACHINE_IP}}}"
-export HOST_MACHINE_URL
 
 sudo_cmd() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -415,7 +410,6 @@ main() {
     CLAW_EXTERNAL_VM_CLAWHUB_BIN \
     CODEX_BIN_PATH \
     CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING \
-    HOST_MACHINE_URL \
     ENABLE_CLAWHUB \
     ENABLE_CODEX \
     ENABLE_OPENVIKING
@@ -482,8 +476,6 @@ spec:
               value: "/app/workspace"
             - name: ENABLE_SHELL_TOOLS
               value: "true"
-            - name: HOST_MACHINE_URL
-              value: "${HOST_MACHINE_URL}"
             - name: PROCESS_DIR
               value: "/app/system_prompts/orchestrator/config/process"
 

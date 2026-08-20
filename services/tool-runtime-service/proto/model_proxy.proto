@@ -5,6 +5,7 @@ package model_proxy.v1;
 message Message {
   string role = 1;
   string content = 2;
+  repeated string images = 3;
 }
 
 message ChatCompletionRequest {
@@ -30,6 +31,29 @@ message ChatCompletionResponse {
   string error = 6;
 }
 
+message EmbeddingRequest {
+  string request_id = 1;
+  string task_id = 2;
+  string agent_id = 3;
+  string model_profile = 4;
+  repeated string texts = 5;
+  map<string, string> params = 6;
+}
+
+message EmbeddingItem {
+  int32 index = 1;
+  repeated float vector = 2;
+}
+
+message EmbeddingResponse {
+  bool ok = 1;
+  repeated EmbeddingItem embeddings = 2;
+  string provider = 3;
+  string model = 4;
+  string error = 5;
+}
+
 service ModelProxy {
   rpc ChatCompletion(ChatCompletionRequest) returns (ChatCompletionResponse);
+  rpc Embedding(EmbeddingRequest) returns (EmbeddingResponse);
 }

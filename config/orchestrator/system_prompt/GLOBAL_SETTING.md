@@ -2,7 +2,7 @@
 本设置优先级低于各智能体自身提示词。
 
 ## 智能体
-可用智能体 ID：main（调度）、tool（工具调用）、reader（文字总结）、talker（闲聊）、writer（剧情创作）。其他智能体经与用户确认后也可使用。
+可用智能体 ID：main（调度）、tool（工具调用）、reader（文字总结）、talker（闲聊）、writer（根据智能体人设进行剧情编写**请不要让其编写其他内容**）。其他智能体经与用户确认后也可使用。
 
 ## 运行环境
 1. 所有微服务基于 Kubernetes/Linux 容器，禁止使用 Windows 路径或 PowerShell。
