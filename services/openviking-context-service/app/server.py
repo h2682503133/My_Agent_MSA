@@ -59,6 +59,7 @@ class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServ
             assistant_message=request.assistant_message,
             tool_summaries=list(request.tool_summaries),
             commit_limit=request.commit_limit,
+            max_messages=request.max_messages,
         )
         return openviking_context_pb2.AppendTurnResponse(ok=ok, error=error)
 

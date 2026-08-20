@@ -595,6 +595,7 @@ class OpenVikingServerBackend:
         assistant_message: str,
         tool_summaries: list[str],
         commit_limit: int,
+        max_messages: int = 0,
     ) -> tuple[bool, str]:
         client = await self._new_client(user_id=user_id, agent_id=agent_id)
         try:
@@ -633,11 +634,26 @@ class OpenVikingServerBackend:
                 try:
                     session_info = await self.ensure_session(client, full_session_id)
                     message_count = self._extract_message_count(session_info)
-                    if message_count > commit_limit:
+                    # commit 时保留最近 max_messages 条（与 search_context 读取窗口对齐，
+                    # 默认取 DEFAULT_MAX_MESSAGES），只归档更早的消息：
+                    # 判定只看“可归档条数”（总条数 - 保留条数），保证保留的最近消息
+                    # 不会被凑数提前 commit，commit 本身也 keep_recent_count 兜底不吞。
+                    keep = int(max_messages or 0) or config.DEFAULT_MAX_MESSAGES
+                    if message_count - keep > commit_limit:
                         commit_session = getattr(client, "commit_session", None)
                         if commit_session is not None:
-                            debug_log(f"[session-commit] {full_session_id} 提交 {message_count} 条记录")
-                            await self._maybe_await(commit_session(session_id=full_session_id))
+                            debug_log(
+                                f"[session-commit] {full_session_id} 提交 {message_count - keep} 条记录"
+                                f"（保留最近 {keep} 条）"
+                            )
+                            try:
+                                await self._maybe_await(commit_session(
+                                    session_id=full_session_id,
+                                    keep_recent_count=keep,
+                                ))
+                            except TypeError:
+                                # 服务端/SDK 不支持保留参数时退化为全量归档（旧行为）
+                                await self._maybe_await(commit_session(session_id=full_session_id))
                 except Exception as exc:
                     debug_log(f"commit check failed: {exc}")
 
@@ -847,6 +863,7 @@ class VikingStore:
         assistant_message: str,
         tool_summaries: list[str],
         commit_limit: int,
+        max_messages: int = 0,
     ) -> tuple[bool, str]:
         full_id = self.full_session_id(agent_id, session_id)
 
@@ -864,6 +881,7 @@ class VikingStore:
                 assistant_message=assistant_message,
                 tool_summaries=tool_summaries,
                 commit_limit=commit_limit,
+                max_messages=max_messages,
             ))
             if not ok:
                 debug_log(f"server append_turn failed: {error}")

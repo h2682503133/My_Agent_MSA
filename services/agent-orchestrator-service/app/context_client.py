@@ -106,6 +106,7 @@ class ContextClient:
         agent_id: str = "main",
         tool_summaries=None,
         commit_limit: int = 0,
+        max_messages: int = 6,
     ):
         if openviking_context_pb2 is None:
             raise RuntimeError("openviking_context protobuf is not generated")
@@ -121,6 +122,7 @@ class ContextClient:
                 tool_summaries=tool_summaries or [],
                 metadata={},
                 commit_limit=commit_limit,
+                max_messages=max_messages,
             )
             response = self._get_stub().AppendTurn(request, timeout=config.CONTEXT_TIMEOUT_SECONDS)
             if not response.ok:

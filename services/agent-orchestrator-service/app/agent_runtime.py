@@ -223,6 +223,7 @@ class AgentRuntime:
                 agent_id="tool",
                 tool_summaries=[],
                 commit_limit=commit_limit,
+                max_messages=int(tool_agent.config.get("max_messages", 6) or 6),
             )
         except Exception as exc:
             debug_log(f"[{task.user.id}] tool_log summary append failed: {exc}")
@@ -499,6 +500,7 @@ class AgentRuntime:
                     agent_id=task.agent_id or default_agent_id,
                     tool_summaries=[],
                     commit_limit=int(default_agent_config.get("commit_limit", 0) or 0),
+                    max_messages=int(default_agent_config.get("max_messages", 6) or 6),
                 )
             except Exception as exc:
                 debug_log(f"[{task.user.id}] append_turn failed: {exc}")

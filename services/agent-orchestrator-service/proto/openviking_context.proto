@@ -80,6 +80,7 @@ message AppendTurnRequest {
   repeated string tool_summaries = 7;
   map<string, string> metadata = 8;
   int32 commit_limit = 9;
+  int32 max_messages = 10; // commit 时保留的最近消息条数（与 search_context 读取窗口对齐）
 }
 
 message AppendTurnResponse {
