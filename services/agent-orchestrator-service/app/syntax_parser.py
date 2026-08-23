@@ -11,7 +11,6 @@
 - 定时任务:类型|时间|内容
 """
 
-from datetime import datetime
 import re
 
 
@@ -301,11 +300,6 @@ def _find_priority_shell_inline(full_text: str):
     }
 
 
-def to_timestamp(time_str: str) -> float:
-    dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-    return dt.timestamp()
-
-
 def parse_syntax(agent, task):
     raw_text = task.consume_temp_dialog_output()
     raw_text = clean_ai_thinking(raw_text)
@@ -423,13 +417,16 @@ def parse_syntax(agent, task):
     # 定时任务在询问之前判断，避免同时出现时被询问分支抢走。
     timer_line = _find_command_block(full_text, "定时任务", allow_multiline=False)
     if timer_line:
-        # 统一格式: 定时任务:任务类别|智能体id|任务内容|任务时间
-        match_timer = re.match(r"([^|]+)\|([^|]+)\|([^|]+)(?:\|(.+))?", timer_line)
+        # 统一格式: 定时任务:任务类别|智能体id|任务内容|开始时间|重复计划(可选,0=不重复)
+        match_timer = re.match(r"([^|]+)\|([^|]+)\|([^|]+)(?:\|(.*))?", timer_line)
         if match_timer:
             task_type = match_timer.group(1).strip()
             agent_id = match_timer.group(2).strip()
             content = match_timer.group(3).strip()
-            time_str = match_timer.group(4).strip() if match_timer.group(4) else ""
+            rest = match_timer.group(4) or ""
+            rest_parts = rest.split("|")
+            start_time = rest_parts[0].strip() if rest_parts else ""
+            repeat_str = rest_parts[1].strip() if len(rest_parts) > 1 else ""
 
             if task_type in ("delete", "query"):
                 # 定时任务:delete|agent_id|task_id|
@@ -439,22 +436,23 @@ def parse_syntax(agent, task):
                     "content": content,
                     "agent_id": agent_id,
                     "time_str": "",
+                    "repeat_str": "",
                     "trigger_timestamp": 0.0,
                 }
             else:
-                # submit_task / send_message: 定时任务:类型|agent_id|内容|时间
-                time_str = time_str or "2026-01-31 00:00:00"
-                try:
-                    trigger_ts = to_timestamp(time_str)
-                    timer_task = {
-                        "task_type": task_type,
-                        "time_str": time_str,
-                        "trigger_timestamp": trigger_ts,
-                        "content": content,
-                        "agent_id": agent_id,
-                    }
-                except Exception:
-                    pass
+                # submit_task / send_message:
+                #   第4参 开始时间：绝对 2026-01-31 10:00 / 当天 10:00 / 10点30分
+                #     相对 5分钟后 / 明天10:00 / 区间随机 10:00-11:00 / 现在 / 空=立即
+                #   第5参 重复计划（可选，0=不重复）：
+                #     每30分钟 / 每2小时 / 每1小时30分钟 / 每5-10分钟
+                timer_task = {
+                    "task_type": task_type,
+                    "time_str": start_time,
+                    "repeat_str": repeat_str,
+                    "trigger_timestamp": 0.0,
+                    "content": content,
+                    "agent_id": agent_id,
+                }
 
     # 最后才判断询问：只有没有工具、智能体调用、定时任务时，才把
     # `询问:` 之后的全部内容作为最终用户可见问题。

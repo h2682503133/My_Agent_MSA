@@ -36,6 +36,8 @@ class TimerTaskClient:
         task_type: str = "submit_task",
         agent_id: str = "",
         client_message_id: str = "",
+        time_str: str = "",
+        repeat_str: str = "",
     ) -> dict:
         try:
             with grpc.insecure_channel(self.target) as channel:
@@ -49,6 +51,8 @@ class TimerTaskClient:
                     task_type=task_type,
                     agent_id=agent_id,
                     client_message_id=client_message_id,
+                    time_str=time_str,
+                    repeat_str=repeat_str,
                 )
                 response = stub.CreateTimerTask(request, timeout=10)
                 return {
@@ -98,6 +102,8 @@ class TimerTaskClient:
                         "client_message_id": t.client_message_id,
                         "agent_id": t.agent_id,
                         "created_at": t.created_at,
+                        "schedule_str": t.schedule_str,
+                        "schedule": t.schedule,
                     }
                     for t in response.tasks
                 ]

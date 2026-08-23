@@ -11,6 +11,13 @@ message CreateTimerTaskRequest {
   string task_type = 6;
   string client_message_id = 7;
   string agent_id = 8;
+  // 灵活时间描述（优先于 trigger_timestamp）：
+  // 第4参「开始时间」：绝对/当天/相对/区间随机，空=立即，也可写 现在/立即
+  string time_str = 9;
+  // 重复计划 JSON（可选，一般由服务端从 repeat_str 解析生成）
+  string schedule = 10;
+  // 第5参「重复计划」（可选）：空/0/无=不重复；每30分钟/每5-10分钟=间隔重复
+  string repeat_str = 11;
 }
 
 message CreateTimerTaskResponse {
@@ -35,6 +42,10 @@ message TimerTaskInfo {
   string client_message_id = 9;
   string agent_id = 10;
   string created_at = 11;
+  // 重复计划人类可读描述（如 每天10:00 / 每30分钟），一次性任务为空
+  string schedule_str = 12;
+  // 重复计划 JSON
+  string schedule = 13;
 }
 
 message ListUserTasksResponse {

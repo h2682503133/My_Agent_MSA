@@ -1,3 +1,4 @@
+import json
 import sys
 from concurrent import futures
 from pathlib import Path
@@ -43,6 +44,8 @@ class TimerTaskService(timer_task_pb2_grpc.TimerTaskServicer):
                 session_id=request.session_id or None,
                 client_message_id=request.client_message_id or "",
                 agent_id=request.agent_id or "",
+                time_str=request.time_str or "",
+                repeat_str=request.repeat_str or "",
             )
 
             ok = not message.startswith("定时任务创建失败")
@@ -70,6 +73,8 @@ class TimerTaskService(timer_task_pb2_grpc.TimerTaskServicer):
                     client_message_id=t.get("client_message_id", ""),
                     agent_id=t.get("agent_id", ""),
                     created_at=t.get("created_at", ""),
+                    schedule_str=t.get("schedule_str", ""),
+                    schedule=json.dumps(t.get("schedule") or {}, ensure_ascii=False),
                 )
                 for t in tasks
             ]

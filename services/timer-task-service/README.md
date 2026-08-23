@@ -15,20 +15,40 @@ port: 5103 (gRPC)
 
 | RPC | 说明 |
 |-----|------|
-| `CreateTimerTask` | 创建定时任务（trigger_timestamp 为 Unix 秒级时间戳） |
-| `ListUserTasks` | 列出某用户全部定时任务（按触发时间排序） |
+| `CreateTimerTask` | 创建定时任务（`time_str` 开始时间 + `repeat_str` 重复计划，或 `trigger_timestamp` Unix 秒级时间戳） |
+| `ListUserTasks` | 列出某用户全部定时任务（按触发时间排序，带 `schedule_str` 重复描述） |
 | `DeleteUserTask` | 删除指定定时任务 |
 
+协议格式：`定时任务:任务类别|智能体id|任务内容|开始时间|重复计划`
+
+**第 4 参 = 开始时间**（`time_str`，空=立即，也可写 `现在`）：
+
+- 绝对时间：`2026-01-31 10:00:00` / `2026/01/31 10:00`
+- 当天时间：`10:00` / `10点30分` / `下午3点`（已过顺延明天）
+- 相对时间：`5分钟后` / `2小时后` / `明天10:00` / `后天9点`
+- 区间随机：`10:00-11:00`（当天随机时刻）/ `5-10分钟后`（随机延迟）
+
+**第 5 参 = 重复计划**（`repeat_str`，可选；空或 `0` = 不重复）：
+
+- 单一时长：`每10秒` / `每30分钟` / `每2小时` / `每天`
+- 混合单位：`每1小时30分钟`
+- 区间随机时长：`每5-10分钟` / `每1-2小时`
+- 混合单位区间：`每5分钟-2小时` / `每1小时30分钟-2小时`（区间两端可用不同单位）
+
+兼容旧格式：第 4 参直接写重复计划（如 `每30分钟`）且第 5 参为空时，视为立即开始 + 该重复计划。
+
 任务以 JSON 文件落盘于 `TIMER_TASK_DIR`（`task_{毫秒时间戳}_{user_id}.json`）。
+重复任务（带 `schedule` 字段）到期执行后按间隔自动重排下一次触发时间，不删除文件。
 
 ## 执行流程
 
 ```text
-CreateTimerTask(user_id, trigger_timestamp, content, task_type, ...)
+CreateTimerTask(user_id, time_str|trigger_timestamp, content, task_type, ...)
+  → time_parser 解析（首次触发时间 + 重复计划）
   → 落盘 JSON
   → 后台扫描线程（timer_scan_loop）发现到期任务
   → 回调 scheduler.CreateTask(channel=channel_id, ...)
-  → 删除任务文件
+  → 一次性任务删除文件；重复任务按 schedule 重排下一次触发
 ```
 
 - **task_type = `submit_task`**：到期后走完整 Agent 链路（orchestrator）。

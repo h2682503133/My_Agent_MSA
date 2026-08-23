@@ -13,6 +13,7 @@ from pathlib import Path
 from app import config
 from app.logger import timer_log
 from app.scheduler_client import SchedulerClient
+from app.time_parser import next_trigger, parse_repeat_spec, parse_time_spec, schedule_to_str
 
 # ======================
 # 定时任务配置
@@ -23,6 +24,9 @@ TASK_DIR.mkdir(parents=True, exist_ok=True)
 scan_interval = float(config.TIMER_SCAN_INTERVAL_FAST)
 NEED_FAST_SCAN = False
 LAST_TASK_ADD_TIME = 0
+
+# 新任务添加时立即唤醒扫描循环，避免慢扫描 sleep(60s) 期间新任务最长等 60 秒
+_wake_event = threading.Event()
 
 _scheduler_client: SchedulerClient | None = None
 
@@ -46,12 +50,58 @@ def add_timer_task(
     session_id: str | None = None,
     client_message_id: str = "",
     agent_id: str = "",
+    time_str: str = "",
+    repeat_str: str = "",
 ) -> str:
+    """创建定时任务。
+
+    协议格式：定时任务:任务类别|智能体id|任务内容|开始时间|重复计划(可选,0=不重复)
+    - time_str   ：第 4 参「开始时间」，空=立即；「现在/立即/马上」=立即
+    - repeat_str ：第 5 参「重复计划」，空/0/无/不重复=一次性；每30分钟/每5-10分钟=间隔重复
+    - 兼容旧格式：第 4 参直接写重复计划（如 每30分钟）且第 5 参为空时，
+      视为 立即开始 + 该重复计划。
+    """
     global NEED_FAST_SCAN, LAST_TASK_ADD_TIME
 
     try:
         task_id = f"task_{int(time.time() * 1000)}_{user_id}"
         session_id = session_id or f"{channel_id}_{user_id}"
+
+        # ---- 第 4 参：开始时间 ----
+        schedule = None
+        if time_str:
+            try:
+                trigger_timestamp, sched = parse_time_spec(time_str)
+            except ValueError as e:
+                timer_log(f"定时任务开始时间解析失败：{user_id} {task_type} {time_str} -> {e}")
+                return f"定时任务创建失败：{e}"
+            if sched:
+                # 开始时间解析出 interval：说明第 4 参直接写了重复计划（旧格式兼容）
+                if repeat_str:
+                    return ("定时任务创建失败：开始时间不能是重复计划（每...），"
+                            "请把重复计划填到第 5 参（开始时间|重复计划）")
+                schedule = sched
+        elif not trigger_timestamp or trigger_timestamp <= 0:
+            # 无开始时间：仅当给了重复计划时允许「立即开始」，否则报错
+            if not repeat_str:
+                return ("定时任务创建失败：缺少开始时间"
+                        "（可用如 10:00 / 2026-01-31 10:00 / 5分钟后 / 10:00-11:00，"
+                        "或填 现在）")
+            trigger_timestamp = time.time()  # 立即开始 + 重复计划
+
+        # ---- 第 5 参：重复计划（可选，0=不重复） ----
+        if repeat_str:
+            r = repeat_str.strip().lower()
+            if r in ("0", "无", "不重复", "none", "false", "-", "off", "no"):
+                pass  # 显式不重复
+            else:
+                rpt = parse_repeat_spec(repeat_str)
+                if not rpt:
+                    return f"定时任务创建失败：无法识别的重复计划：{repeat_str}"
+                if schedule:
+                    return ("定时任务创建失败：开始时间和重复计划不能同时是间隔写法，"
+                            "请把重复计划填到第 5 参（开始时间|重复计划）")
+                schedule = rpt
 
         task_data = {
             "task_id": task_id,
@@ -65,6 +115,8 @@ def add_timer_task(
             "task_type": task_type,
             "created_at": datetime.now().isoformat(),
         }
+        if schedule:
+            task_data["schedule"] = schedule
 
         path = TASK_DIR / f"{task_id}.json"
         with open(path, "w", encoding="utf-8") as f:
@@ -72,9 +124,15 @@ def add_timer_task(
 
         NEED_FAST_SCAN = True
         LAST_TASK_ADD_TIME = time.time()
+        _wake_event.set()  # 立即唤醒扫描循环处理新任务
 
+        next_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(trigger_timestamp))
+        if schedule:
+            desc = schedule_to_str(schedule)
+            timer_log(f"创建定时任务：{user_id} {task_type} {trigger_timestamp} {content} [{desc}]")
+            return f"定时任务{task_type}:{content}创建成功，首次将于 {next_str} 执行，此后{desc}重复"
         timer_log(f"创建定时任务：{user_id} {task_type} {trigger_timestamp} {content}")
-        return f"定时任务{task_type}:{content}创建成功，将在指定时间执行"
+        return f"定时任务{task_type}:{content}创建成功，将于 {next_str} 执行"
 
     except Exception as e:
         timer_log(f"定时任务创建失败：{user_id} {task_type} {trigger_timestamp} {content}")
@@ -100,6 +158,7 @@ def list_user_tasks(user_id: str) -> list[dict]:
                 task["trigger_time_str"] = time.strftime(
                     "%Y-%m-%d %H:%M:%S", time.localtime(trigger_time)
                 )
+                task["schedule_str"] = schedule_to_str(task.get("schedule") or {})
                 tasks.append(task)
 
         tasks.sort(key=lambda x: x["trigger_time"])
@@ -165,36 +224,55 @@ def has_nearby_task(seconds=180):
 def timer_scan_loop():
     global scan_interval, NEED_FAST_SCAN
     while True:
-        now = time.time()
+        try:
+            now = time.time()
 
-        if NEED_FAST_SCAN:
-            scan_interval = float(config.TIMER_SCAN_INTERVAL_FAST)
-            if now - LAST_TASK_ADD_TIME > 30:
-                NEED_FAST_SCAN = False
-        else:
-            if has_nearby_task(180):
+            if NEED_FAST_SCAN:
                 scan_interval = float(config.TIMER_SCAN_INTERVAL_FAST)
+                if now - LAST_TASK_ADD_TIME > 30:
+                    NEED_FAST_SCAN = False
             else:
-                scan_interval = float(config.TIMER_SCAN_INTERVAL_SLOW)
+                if has_nearby_task(180):
+                    scan_interval = float(config.TIMER_SCAN_INTERVAL_FAST)
+                else:
+                    scan_interval = float(config.TIMER_SCAN_INTERVAL_SLOW)
 
-        for filename in os.listdir(TASK_DIR):
-            if not filename.endswith(".json"):
-                continue
+            for filename in os.listdir(TASK_DIR):
+                if not filename.endswith(".json"):
+                    continue
 
-            path = TASK_DIR / filename
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    task = json.load(f)
+                path = TASK_DIR / filename
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        task = json.load(f)
 
-                trigger_time = task.get("trigger_time", 0)
-                if now >= trigger_time:
-                    execute_timer_task(task)
-                    os.remove(path)
-            except Exception as e:
-                timer_log(f"定时任务扫描失败：{path} {e}")
-                continue
+                    trigger_time = task.get("trigger_time", 0)
+                    if now >= trigger_time:
+                        execute_timer_task(task)
+                        schedule = task.get("schedule")
+                        if schedule:
+                            nxt = next_trigger(schedule, now)
+                            if nxt and nxt > now:
+                                # 重复任务：重排下一次触发时间，继续保留
+                                task["trigger_time"] = nxt
+                                with open(path, "w", encoding="utf-8") as f:
+                                    json.dump(task, f, ensure_ascii=False, indent=2)
+                                timer_log(
+                                    f"定时任务已重排：{task.get('task_id')} "
+                                    f"下次 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(nxt))}"
+                                )
+                                continue
+                        os.remove(path)
+                except Exception as e:
+                    timer_log(f"定时任务扫描失败：{path} {e}")
+                    continue
+        except Exception as e:
+            # 单次扫描整体异常（如 NFS 抖动导致 os.listdir 失败）不能杀死扫描线程
+            timer_log(f"定时任务扫描循环异常：{e}")
 
-        time.sleep(scan_interval)
+        # 等待下一轮：新任务添加会立即唤醒（否则按当前 scan_interval 睡眠）
+        _wake_event.wait(timeout=scan_interval)
+        _wake_event.clear()
 
 
 # ======================

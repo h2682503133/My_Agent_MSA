@@ -900,9 +900,12 @@ class AgentRuntime:
                         else:
                             lines = ["当前定时任务列表："]
                             for t in tasks:
+                                sch = t.get("schedule_str", "")
+                                repeat_tag = f" | 重复:{sch}" if sch else ""
                                 lines.append(
                                     f"  - [{t.get('task_id','')}] {t.get('task_type','')} "
                                     f"| {t.get('content','')} | {t.get('trigger_time_str','')}"
+                                    f"{repeat_tag}"
                                 )
                             reply = "\n".join(lines)
                     else:
@@ -924,6 +927,8 @@ class AgentRuntime:
                         session_id=timer_session_id,
                         channel_id=task.channel,
                         trigger_timestamp=timer.get("trigger_timestamp", 0),
+                        time_str=timer.get("time_str", ""),
+                        repeat_str=timer.get("repeat_str", ""),
                         content=timer.get("content", ""),
                         task_type=task_type,
                         agent_id=timer_agent_id,
