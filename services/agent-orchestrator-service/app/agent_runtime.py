@@ -868,10 +868,21 @@ class AgentRuntime:
         dialog_images = task.consume_temp_dialog_images() or []
         image_receive_enabled = self._image_receive_enabled()
 
-        current_input_messages = [
-            {"role": "system", "content": "以下为本次单轮对话内容"},
-            {"role": "user", "content": f"<{getattr(task.caller, 'id', 'user')}>" + str(content)},
-        ]
+        # 外部群聊调度（agent→agent 轮转）：内容已在共享历史（grp_ session）里，
+        # 抑制 user 输入重复注入，只提示"轮到该角色接话"（suppress_user_input 标记来自 metadata）
+        if task.metadata.get("suppress_user_input"):
+            current_input_messages = [
+                {"role": "system", "content": "以下为本次群聊转场"},
+                {"role": "user", "content": (
+                    f"<{task.metadata.get('speaker_id') or getattr(task.caller, 'id', 'user')}>"
+                    "（请基于共享对话历史继续接话，不要重复此前已输出的内容）"
+                )},
+            ]
+        else:
+            current_input_messages = [
+                {"role": "system", "content": "以下为本次单轮对话内容"},
+                {"role": "user", "content": f"<{getattr(task.caller, 'id', 'user')}>" + str(content)},
+            ]
         if dialog_images:
             if self.id == "main" and image_receive_enabled:
                 current_input_messages[1]["images"] = dialog_images

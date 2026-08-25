@@ -654,18 +654,59 @@ class OpenVikingServerBackend:
             if add_message is None:
                 raise RuntimeError("OpenViking HTTP client has no add_message API")
 
-            await self._add_message_compat(
-                add_message,
-                session_id=full_session_id,
-                role="user",
-                content=f"<{raw_session_id}>{user_message}",
-                role_id=user_id,
-            )
+            # ── 群聊转场去重 + 说话人前缀（存储层新逻辑）──
+            # 1) 读本 session 最后一条 assistant：本轮 user 若包含其内容（子串），
+            #    判定为 agent→agent 转发（外部调度把上轮角色回复原样作为本轮输入），
+            #    user 段跳过不重复存储（内容已在共享历史里）
+            # 2) assistant 段存储时拼 `<agent_id>: ` 前缀，历史自包含说话人，
+            #    前端/上下文读取即可显示"谁说的"
+            last_assistant = ""
+            try:
+                get_ctx = getattr(client, "get_session_context", None)
+                if get_ctx is not None:
+                    ctx = await self._maybe_await(get_ctx(
+                        session_id=full_session_id,
+                        token_budget=4000,
+                    ))
+                    for key in ("messages", "current_messages"):
+                        msgs = (ctx or {}).get(key) or []
+                        for m in reversed(msgs):
+                            role, content = self._message_to_role_content(m)
+                            if role == "assistant" and str(content).strip():
+                                last_assistant = str(content)
+                                break
+                        if last_assistant:
+                            break
+            except Exception:
+                last_assistant = ""
+
+            def _strip_tag(text: str) -> str:
+                # 去掉开头的 <xxx>: 或 <xxx> 前缀（如 <lilith>: 或 <web_h268>）
+                m = re.match(r"^\s*<[^>]*>:?\s*", str(text or ""))
+                return str(text)[m.end():] if m else str(text)
+
+            norm_last = _strip_tag(last_assistant)
+            norm_user = _strip_tag(user_message)
+            is_forward = bool(norm_last) and norm_last in norm_user
+
+            if is_forward:
+                debug_log(f"[grp-forward] {full_session_id} 检测到转场输入（上轮 assistant 子串），跳过 user 段")
+            else:
+                # user 消息直接原样存储（<真实发言者>: 前缀已由 VikingStore 门面拼好，
+                # 群共享时 user_id 是群账号，但内容前缀保留真实发言者，QQ 群多人可区分）
+                await self._add_message_compat(
+                    add_message,
+                    session_id=full_session_id,
+                    role="user",
+                    content=user_message,
+                    role_id=user_id,
+                )
+
             await self._add_message_compat(
                 add_message,
                 session_id=full_session_id,
                 role="assistant",
-                content=assistant_message,
+                content=f"<{agent_id or 'main'}>: {assistant_message}",
                 role_id=agent_id or "main",
             )
 
@@ -855,7 +896,22 @@ class VikingStore:
         self.mode = "file"
 
     def full_session_id(self, agent_id: str, session_id: str) -> str:
+        # 群聊共享：session_id 以 grp_（多角色群聊）或 qq_g_（QQ 群）开头 →
+        # 所有 agent 共用同一历史（不拼 agent 前缀），群内多 agent 内容共享。
+        s = str(session_id)
+        if s.startswith("grp_") or s.startswith("qq_g_"):
+            return s
         return f"{agent_id}_{session_id}"
+
+    def _storage_user_id(self, user_id: str, session_id: str) -> str:
+        """存储层 user 映射：群共享 session（grp_/qq_g_）统一挂到"群账号"名下，
+        否则 openviking 的 session URI（viking://user/{user}/sessions/{sid}）按 user 隔离，
+        同群不同成员的消息会各自成独立 session（同名但事实上隔离）。
+        群账号 = session_id 本身（如 qq_g_1065434062），所有群成员消息读写同一处。"""
+        s = str(session_id)
+        if s.startswith("grp_") or s.startswith("qq_g_"):
+            return s
+        return str(user_id or "default")
 
     def _mock_context(self) -> dict[str, Any]:
         return {
@@ -885,8 +941,9 @@ class VikingStore:
 
         if self.mode == "server":
             try:
+                # 群共享：存储 user 映射为群账号（统一历史），发言者身份在消息内容前缀体现
                 return _run_coro_sync(self.server.search_context(
-                    user_id=user_id,
+                    user_id=self._storage_user_id(user_id, session_id),
                     agent_id=agent_id or "main",
                     full_session_id=full_id,
                     query=query,
@@ -921,12 +978,14 @@ class VikingStore:
             return True, ""
 
         if self.mode == "server":
+            # 群共享：存储 user 映射为群账号（session_id 作为 openviking 的 user，统一历史）；
+            # 发言者前缀 <真实user_id>: 由本门面拼进 user_message（不走额外字段）
             ok, error = _run_coro_sync(self.server.append_turn(
-                user_id=user_id,
+                user_id=self._storage_user_id(user_id, session_id),
                 agent_id=agent_id or "main",
                 raw_session_id=session_id,
                 full_session_id=full_id,
-                user_message=user_message,
+                user_message=f"<{user_id}>: {user_message}",
                 assistant_message=assistant_message,
                 tool_summaries=tool_summaries,
                 commit_limit=commit_limit,
