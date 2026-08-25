@@ -110,6 +110,30 @@ class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServ
         ok, content, error = store.read_skill_doc(skill_name=request.skill_name, doc_type=request.doc_type or "manual")
         return openviking_context_pb2.ReadSkillDocResponse(ok=ok, content=content, error=error)
 
+    def SearchWorldInfo(self, request, context):
+        result = store.search_world_info(
+            user_id=request.user_id,
+            agent_id=request.agent_id or "main",
+            query=request.query,
+            recent_messages=list(request.recent_messages),
+            max_tokens=request.max_tokens,
+            max_entries=request.max_entries,
+        )
+        return openviking_context_pb2.SearchWorldInfoResponse(
+            hits=[
+                openviking_context_pb2.WorldInfoHit(
+                    entry_id=item.get("entry_id", ""),
+                    keys=list(item.get("keys", []) or []),
+                    content=item.get("content", ""),
+                    priority=int(item.get("priority", 0)),
+                    constant=bool(item.get("constant", False)),
+                    token_count=int(item.get("token_count", 0)),
+                )
+                for item in result.get("hits", [])
+            ],
+            error=result.get("error", ""),
+        )
+
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))

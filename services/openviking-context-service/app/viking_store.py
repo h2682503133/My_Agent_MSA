@@ -23,6 +23,7 @@ from typing import Any
 from app import config
 from app.logger import debug_log, log
 from app.text_utils import clean_text
+from app.world_info import search_world_info as _world_info_search
 
 
 def _run_coro_sync(coro):
@@ -922,6 +923,25 @@ class VikingStore:
                 query=query, skill_names=skill_names, top_k=top_k, max_tokens=max_tokens
             ))
         return [], ""
+
+    def search_world_info(
+        self,
+        user_id: str,
+        agent_id: str,
+        query: str,
+        recent_messages: list[str],
+        max_tokens: int = 0,
+        max_entries: int = 0,
+    ) -> dict:
+        """世界书检索：纯本地文件 + 关键词匹配，与后端模式无关。"""
+        return _world_info_search(
+            user_id=user_id,
+            agent_id=agent_id,
+            query=query,
+            recent_messages=recent_messages,
+            max_tokens=max_tokens,
+            max_entries=max_entries,
+        )
 
 
 store = VikingStore()

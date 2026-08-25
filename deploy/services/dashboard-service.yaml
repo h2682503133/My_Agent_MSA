@@ -1,4 +1,4 @@
-apiVersion: apps/v1
+﻿apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: dashboard-service
@@ -20,7 +20,7 @@ spec:
       serviceAccountName: dashboard-sa
       containers:
         - name: dashboard-service
-          image: docker.io/agent/dashboard-service:v20
+          image: docker.io/agent/dashboard-service:v26
           imagePullPolicy: Always
           ports:
             - name: http

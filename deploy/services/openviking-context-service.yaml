@@ -1,4 +1,4 @@
-apiVersion: apps/v1
+﻿apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: openviking-context-service
@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: openviking-context-service
-          image: agent/openviking-context-service:v24
+          image: agent/openviking-context-service:v27
           imagePullPolicy: Always
           ports:
             - containerPort: 5301

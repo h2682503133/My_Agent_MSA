@@ -100,3 +100,8 @@ ENABLE_SHELL_TOOLS = env_bool("ENABLE_SHELL_TOOLS", True)
 
 # PROCESS 长期事件记录存储：config PVC 挂载在 /app/system_prompts（orchestrator 侧同目录为 /app/config）
 PROCESS_DIR = os.getenv("PROCESS_DIR", "/app/system_prompts/orchestrator/config/process")
+
+# 世界书（World Info）存储：与 PROCESS 同级（orchestrator 侧同目录为 /app/config/world_info）
+WORLD_INFO_DIR = os.getenv("WORLD_INFO_DIR", "/app/system_prompts/orchestrator/config/world_info")
+WORLD_INFO_PATH = os.getenv("WORLD_INFO_PATH", os.path.join(WORLD_INFO_DIR, "world_info.json"))
+WORLD_INFO_GROUPS_PATH = os.getenv("WORLD_INFO_GROUPS_PATH", os.path.join(WORLD_INFO_DIR, "groups.json"))

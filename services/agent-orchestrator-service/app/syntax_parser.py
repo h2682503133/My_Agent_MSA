@@ -14,7 +14,7 @@
 import re
 
 
-_COMMAND_NAMES = ("对话", "工具调用", "切换", "定时任务")
+_COMMAND_NAMES = ("对话", "工具调用", "切换", "定时任务", "世界书")
 _COMMAND_LINE_RE = re.compile(
     r"^\s*(?:[-*•`]\s*)?(?:" + "|".join(map(re.escape, _COMMAND_NAMES)) + r")\s*:"
 )
@@ -26,7 +26,7 @@ _POSITIONAL_TOOLS = {"fetch"}
 _PRIORITY_SHELL_RE = re.compile(r"^\s*(?:[-*•`]\s*)?工具调用\s*:\s*shell\s*\|\s*(.*)$")
 # 用于在文本任意位置（非行首）匹配指令关键字，处理模型先说一段话再输出指令的场景
 _INLINE_COMMAND_RE = re.compile(
-    r"(?:对话|工具调用|切换|定时任务)\s*:"
+    r"(?:对话|工具调用|切换|定时任务|世界书)\s*:"
 )
 _INLINE_SHELL_RE = re.compile(r"工具调用\s*:\s*shell\s*\|\s*")
 # 询问指令：必须是独立关键字，前面不能是汉字/字母/数字，
@@ -35,7 +35,7 @@ _QUESTION_CMD_RE = re.compile(r"(?<![一-龥A-Za-z0-9])询问\s*:\s*(.*)$", re.S
 # 任意指令关键字的起始位置（约束与各 _find_* 一致），
 # 用于提取指令前的说明文本，供中间过程转发给用户。
 _INSTRUCTION_START_RE = re.compile(
-    r"(?:对话|工具调用|切换|定时任务)\s*:"
+    r"(?:对话|工具调用|切换|定时任务|世界书)\s*:"
     r"|(?<![一-龥A-Za-z0-9])询问\s*:"
     r"|切换到\w+智能体"
 )
@@ -383,6 +383,7 @@ def parse_syntax(agent, task):
                 _find_command_block(full_text, "对话")
                 or _find_command_block(full_text, "工具调用")
                 or _find_command_block(full_text, "定时任务")
+                or _find_command_block(full_text, "世界书")
             )
             pure_switch = not has_other
             switch_call = {"target_id": agent_id, "pure": pure_switch}
@@ -399,6 +400,7 @@ def parse_syntax(agent, task):
                 _find_command_block(full_text, "对话")
                 or _find_command_block(full_text, "工具调用")
                 or _find_command_block(full_text, "定时任务")
+                or _find_command_block(full_text, "世界书")
             )
             pure_switch = not has_other
             switch_call = {"target_id": agent_id, "pure": pure_switch}
@@ -418,7 +420,8 @@ def parse_syntax(agent, task):
     timer_line = _find_command_block(full_text, "定时任务", allow_multiline=False)
     if timer_line:
         # 统一格式: 定时任务:任务类别|智能体id|任务内容|开始时间|重复计划(可选,0=不重复)
-        match_timer = re.match(r"([^|]+)\|([^|]+)\|([^|]+)(?:\|(.*))?", timer_line)
+        # 第 2/3 参允许为空（agent_id 可留空，如 定时任务:query||2195239690|2026-08-23 14:29:00|0）
+        match_timer = re.match(r"([^|]+)\|([^|]*)\|([^|]*)(?:\|(.*))?", timer_line)
         if match_timer:
             task_type = match_timer.group(1).strip()
             agent_id = match_timer.group(2).strip()
@@ -454,10 +457,29 @@ def parse_syntax(agent, task):
                     "agent_id": agent_id,
                 }
 
-    # 最后才判断询问：只有没有工具、智能体调用、定时任务时，才把
+    # 世界书（World Info）管理命令：与定时任务同级，先于询问判断。
+    # 格式：
+    #   世界书:add|关键词1,关键词2|内容|优先级|scope    （scope 省略=当前 agent；群组用 group:群组id）
+    #   世界书:list
+    #   世界书:update|条目id|新内容
+    #   世界书:delete|条目id
+    #   世界书:enable|条目id|true|false
+    world_line = _find_command_block(full_text, "世界书", allow_multiline=False)
+    world_info_task = None
+    if world_line:
+        parts = [p.strip() for p in world_line.split("|")]
+        action = parts[0] if parts else ""
+        if action == "list":
+            world_info_task = {"action": "list", "args": []}
+        elif action in ("add", "update", "delete", "enable") and len(parts) >= 2:
+            world_info_task = {"action": action, "args": parts[1:]}
+        else:
+            world_info_task = {"action": "unknown", "args": parts[1:]}
+
+    # 最后才判断询问：只有没有工具、智能体调用、定时任务、世界书命令时，才把
     # `询问:` 之后的全部内容作为最终用户可见问题。
     question_tail = _find_question_tail(full_text)
-    if question_tail is not None and not tool_call and not agent_call and not timer_task:
+    if question_tail is not None and not tool_call and not agent_call and not timer_task and not world_info_task:
         question = question_tail
         reply = question
 
@@ -469,5 +491,6 @@ def parse_syntax(agent, task):
         "agent_call": agent_call,
         "question": question,
         "timer_task": timer_task,
+        "world_info_task": world_info_task,
         "switch_call": switch_call,
     })

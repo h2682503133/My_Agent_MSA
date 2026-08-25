@@ -65,6 +65,7 @@ class ModelProxyClient:
                 raise RuntimeError(response.error or "model proxy returned ok=false")
             return {
                 "text": response.text,
+                "reasoning": response.reasoning,
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,

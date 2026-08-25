@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from app import config
+from app import world_info_manager
 from app.agent_config import load_agent_config
 from app.context_client import ContextClient
 from app.events import TaskEventDTO, DeliveryTarget, new_event_id
@@ -20,6 +21,8 @@ from app.timer_task_client import TimerTaskClient
 
 # PROCESS 长期事件记录：文件名即模式声明（PROCESS.md=不报时 / PROCESS_turn.md=轮次计数 / PROCESS_clock.md=时钟）
 _PROCESS_FILE_NAMES = {"process.md", "process_turn.md", "process_clock.md"}
+# 世界书（World Info）两阶段：files 含 world_info.md 即声明启用（虚假文件，不读取内容，与 PROCESS 同款机制）
+_WORLD_INFO_FILE_NAMES = {"world_info.md"}
 
 
 def _process_mode_from_files(files) -> str:
@@ -33,6 +36,14 @@ def _process_mode_from_files(files) -> str:
                 return "clock"
             return "none"
     return ""
+
+
+def _world_info_mode_from_files(files) -> bool:
+    """files 含 world_info.md → 启用两阶段世界书（否则完全跳过世界书）。"""
+    for filename in files or []:
+        if str(filename).strip().lower() in _WORLD_INFO_FILE_NAMES:
+            return True
+    return False
 
 
 def _safe_process_segment(value: str, default: str = "default") -> str:
@@ -395,7 +406,11 @@ class AgentRuntime:
         agent_id = task.agent_id or cls.default_agent.get(task.user.session_id, "main")
         if not agent_id or not str(agent_id).strip():
             agent_id = "main"
-        cls.default_agent[task.user.session_id] = agent_id
+        # 定时任务触发的执行（metadata.source == "timer_task"）：用指定 agent 处理本次任务，
+        # 但**不改写会话默认智能体**——否则 submit 定时任务到点执行时会用定时任务里指定的
+        # agent_id 覆盖用户（如 QQ 端）的默认智能体。
+        if (task.metadata or {}).get("source") != "timer_task":
+            cls.default_agent[task.user.session_id] = agent_id
         target = cls.get_agent(agent_id, task.user.session_id, task.user.id)
         task.target = target
         chat_log(f"[{task.user.id}] {task.user.session_id}->{target.id}\n{task.content}")
@@ -563,6 +578,9 @@ class AgentRuntime:
             if str(filename).strip().lower() in _PROCESS_FILE_NAMES:
                 # PROCESS 变体不读 md：内容由结构化存储注入（见 _build_process_message）
                 continue
+            if str(filename).strip().lower() in _WORLD_INFO_FILE_NAMES:
+                # world_info.md 为声明式开关（虚假文件），不读取内容
+                continue
             file_path = prompt_dir / filename
             if not file_path.exists():
                 continue
@@ -636,6 +654,164 @@ class AgentRuntime:
                 entry = str(item)
             lines.append(f"{index}. {entry}")
         return {"role": "system", "content": "\n".join(lines)}
+
+    def _world_info_enabled(self) -> bool:
+        """files 含 world_info.md → 启用两阶段世界书（否则完全跳过）。"""
+        return _world_info_mode_from_files(self.config.get("files", []))
+
+    def _extract_concepts(self, thinking: str) -> list[str]:
+        """从阶段1输出中提取【概念词】清单；无清单返回 []。"""
+        if not thinking:
+            return []
+        m = re.search(r"【概念词】\s*(.+)", thinking)
+        if not m:
+            m = re.search(r"概念词\s*[:：]\s*(.+)", thinking)
+        if not m:
+            return []
+        line = m.group(1).strip().rstrip("。.！!？?")
+        if line in ("无", "无概念词", "无。", "none", "None", "NONE"):
+            return []
+        words = []
+        for part in re.split(r"[、，,;；/|\\\s]+", line):
+            w = part.strip()
+            if w and w not in words:
+                words.append(w)
+        return words
+
+    def _format_world_info_block(self, hits) -> str:
+        """命中条目拼成【世界设定】注入段。"""
+        lines = ["【世界设定】"]
+        for hit in hits:
+            keys = "、".join(hit.get("keys") or [])
+            tag = f"[{keys}]" if keys else ""
+            lines.append(f"- {tag} {hit.get('content', '')}".strip())
+        return "\n".join(lines)
+
+    def _dedup_identity_hits(self, hits, head) -> list:
+        """世界书注入去重：条目内容已存在于该智能体自身常驻内容（identity 等系统提示）中则跳过。
+
+        解决"某词条已常驻在 A 的 identity.md，同时又作为世界书给群组里其他智能体"的场景：
+        词条 scope 照常填群组，A 命中后检测到内容重复自动跳过，无需对 A 单独做例外。
+        规则对所有智能体统一生效（谁的常驻内容里已有就跳过谁的）。
+        """
+        if not hits or not head:
+            return hits
+        head_text = re.sub(r"\s+", "", " ".join(
+            str(m.get("content") or "") for m in head if isinstance(m, dict)
+        ))
+        if not head_text:
+            return hits
+        kept = []
+        for hit in hits:
+            content = str(hit.get("content") or "").strip()
+            if not content:
+                kept.append(hit)
+                continue
+            norm = re.sub(r"\s+", "", content)
+            if norm and norm in head_text:
+                debug_log(f"[{self.user_id}] world_info 跳过重复条目（内容已在自身常驻提示中）: {norm[:30]}")
+                continue
+            kept.append(hit)
+        return kept
+
+    def _search_world_info_hits(self, task, user_query: str, trigger_sources) -> list:
+        """搜索世界书命中；失败静默降级返回 []。"""
+        try:
+            return self.context_client.search_world_info(
+                user_id=task.user.id,
+                agent_id=self.id,
+                query=user_query or "",
+                recent_messages=trigger_sources or [],
+                max_tokens=int(self.config.get("world_info_max_tokens", 0) or 0)
+                or getattr(config, "WORLD_INFO_MAX_TOKENS", 1500),
+                max_entries=int(self.config.get("world_info_max_entries", 0) or 0)
+                or getattr(config, "WORLD_INFO_MAX_ENTRIES", 20),
+            )
+        except Exception as exc:
+            debug_log(f"[{self.user_id}] world_info 匹配失败: {exc}")
+            return []
+
+    def _single_call_with_hits(self, task, head, tail, model_profile, params, hits):
+        """单次调用（可带世界书注入）；失败返回 None。"""
+        hits = self._dedup_identity_hits(hits, head)
+        if hits:
+            tail = [{"role": "system", "content": self._format_world_info_block(hits)}] + list(tail)
+        try:
+            return self.model_client.chat_completion(
+                task_id=task.task_id,
+                agent_id=self.id,
+                model_profile=model_profile,
+                messages=head + tail,
+                params=params,
+            )
+        except Exception as exc:
+            debug_log(f"[{self.user_id}] world_info 降级单次失败: {exc}")
+            return None
+
+    def _world_info_two_phase_call(self, task, head, tail, model_profile, params, user_query: str):
+        """两阶段世界书：阶段1 让模型列概念词 → 扫描匹配世界书 → 阶段2 注入后生成。
+
+        - 阶段2 messages = head + 【世界设定·命中】 + tail（注入段插在 current_input 上方）
+        - 阶段1 的思考过程不注入（已通过关键词拿到命中，思考全文塞回纯属浪费 token）
+        - 阶段1 失败 / 无输出 → 降级单次调用，但**用户消息关键词仍触发世界书**（不浪费 query）
+        - 阶段2 失败 → 返回 None（调用方降级为纯单次调用）
+        - 触发源 = 【概念词】清单 ∪ 阶段1 输出全文（模型直接生成闲聊时也扫描）∪ 用户消息
+        """
+        phase1_messages = head + tail + [{
+            "role": "system",
+            "content": (
+                "这是一个准备步骤，不要写回复正文，不要输出任何协议指令。\n"
+                "只列出你本次回复中将使用的关键名词/概念（如地名、人物、组织、物品、专属名词）。\n"
+                "格式：第一行必须是【概念词】词1、词2、词3\n"
+                "若不需要任何世界概念，输出：【概念词】无\n"
+                "系统将根据这些词注入相关世界设定，确保你的回复符合世界设定。"
+            ),
+        }]
+        try:
+            phase1_resp = self.model_client.chat_completion(
+                task_id=task.task_id,
+                agent_id=self.id,
+                model_profile=model_profile,
+                messages=phase1_messages,
+                params=params,
+            )
+        except Exception as exc:
+            debug_log(f"[{self.user_id}] world_info 阶段1失败，降级单次（用户消息仍触发）: {exc}")
+            phase1_resp = None
+
+        thinking = (phase1_resp.get("reasoning") or "").strip() if phase1_resp else ""
+        phase1_text = (phase1_resp.get("text") or "").strip() if phase1_resp else ""
+        if phase1_resp is None or (not thinking and not phase1_text):
+            # 阶段1无输出（模型不配合，如本地小模型）：降级单次调用，
+            # 但用户消息里的关键词仍可触发世界书注入
+            debug_log(f"[{self.user_id}] world_info 阶段1无输出，降级单次（用户消息仍触发）")
+            hits = self._search_world_info_hits(task, user_query, [])
+            return self._single_call_with_hits(task, head, tail, model_profile, params, hits)
+
+        # 触发源：概念词清单 + 阶段1全文（reasoning 与正文都扫，模型直接生成闲聊也覆盖）+ 用户消息（query 已含）
+        concepts = self._extract_concepts(phase1_text or thinking)
+        trigger_sources = [thinking]
+        if phase1_text and phase1_text != thinking:
+            trigger_sources.append(phase1_text)
+        trigger_sources.extend(concepts)
+        hits = self._search_world_info_hits(task, user_query, trigger_sources)
+        # 注入去重：内容已在该智能体自身常驻提示（identity 等）中的条目跳过
+        hits = self._dedup_identity_hits(hits, head)
+
+        # 阶段2：head + 【世界设定·命中】 + tail（无命中则不带注入段）
+        if hits:
+            tail = [{"role": "system", "content": self._format_world_info_block(hits)}] + list(tail)
+        try:
+            return self.model_client.chat_completion(
+                task_id=task.task_id,
+                agent_id=self.id,
+                model_profile=model_profile,
+                messages=head + tail,
+                params=params,
+            )
+        except Exception as exc:
+            debug_log(f"[{self.user_id}] world_info 阶段2失败，降级单次: {exc}")
+            return None
 
     def _effective_system_prompt(self) -> list[dict[str, str]]:
         """按杂项开关过滤系统提示词：main 关闭 IDENTITY.md 时跳过对应消息。"""
@@ -724,6 +900,10 @@ class AgentRuntime:
             + user_input_messages
             + current_input_messages
         )
+        # 世界书注入段插在 current_input（"以下为本次单轮对话内容"）上方：
+        # base_head = 到 user_input 为止，base_tail = current_input
+        base_head = system_prompt_messages + long_context_message + task_memory_messages + user_input_messages
+        base_tail = current_input_messages
 
         model_profile = self.config.get("model_profile") or self.config.get("model") or self.id
         base_model_profile = model_profile
@@ -737,35 +917,38 @@ class AgentRuntime:
                     f"模型 {model_profile} -> {vision_profile}"
                 )
                 model_profile = vision_profile
+        # 采样参数白名单：agent 配置里配了才透传（model_proxy 已支持透传；
+        # 模型级默认放 model profile 的 model_params，agent 级此处覆盖）
+        _SAMPLE_PARAM_KEYS = (
+            "top_p", "top_k", "min_p", "tfs_z",
+            "repetition_penalty", "repeat_last_n",
+            "presence_penalty", "frequency_penalty",
+            "mirostat", "mirostat_tau", "mirostat_eta",
+            "seed",
+        )
         params = {
             "temperature": self.config.get("temperature", 1),
             "max_tokens": self.config.get("max_tokens", 2048),
             "stream": False,
         }
+        for _key in _SAMPLE_PARAM_KEYS:
+            if _key in self.config and self.config[_key] is not None:
+                params[_key] = self.config[_key]
 
-        try:
-            model_response = self.model_client.chat_completion(
-                task_id=task.task_id,
-                agent_id=self.id,
-                model_profile=model_profile,
-                messages=messages,
-                params=params
+        # 两阶段世界书：仅用户请求轮 + files 声明 world_info.md + 无图片（多模态轮保持单次）
+        two_phase = (
+            image_count == 0
+            and self._world_info_enabled()
+            and bool(getattr(task, "caller", None) is getattr(task, "user", None))
+        )
+
+        model_response = None
+        if two_phase:
+            model_response = self._world_info_two_phase_call(
+                task, base_head, base_tail, model_profile, params, content or ""
             )
-        except Exception as exc:
-            # 防呆：agent_list 未配置 image_model_profile 时本就不会切换（model_profile==base）；
-            # 若视觉模型路由调用失败（如 model_list 缺 default-main-vision 别名），
-            # 回退到普通文本模型重试一次。重试保留原 messages（含 images）不做去图处理：
-            # 若配置位置实际是单模态模型，API 会原样报错（如“不支持图片”），
-            # 该报错即对用户的提示，不应静默吞掉。
-            if model_profile == base_model_profile:
-                error_text = f"【模型请求失败】{exc}"
-                self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
-                return
-            chat_log(
-                f"[{self.user_id}] {self.id} 视觉模型({model_profile})调用失败：{exc}，"
-                f"回退到普通模型 {base_model_profile} 重试"
-            )
-            model_profile = base_model_profile
+
+        if model_response is None:
             try:
                 model_response = self.model_client.chat_completion(
                     task_id=task.task_id,
@@ -774,10 +957,33 @@ class AgentRuntime:
                     messages=messages,
                     params=params
                 )
-            except Exception as exc2:
-                error_text = f"【模型请求失败】{exc2}"
-                self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
-                return
+            except Exception as exc:
+                # 防呆：agent_list 未配置 image_model_profile 时本就不会切换（model_profile==base）；
+                # 若视觉模型路由调用失败（如 model_list 缺 default-main-vision 别名），
+                # 回退到普通文本模型重试一次。重试保留原 messages（含 images）不做去图处理：
+                # 若配置位置实际是单模态模型，API 会原样报错（如“不支持图片”），
+                # 该报错即对用户的提示，不应静默吞掉。
+                if model_profile == base_model_profile:
+                    error_text = f"【模型请求失败】{exc}"
+                    self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
+                    return
+                chat_log(
+                    f"[{self.user_id}] {self.id} 视觉模型({model_profile})调用失败：{exc}，"
+                    f"回退到普通模型 {base_model_profile} 重试"
+                )
+                model_profile = base_model_profile
+                try:
+                    model_response = self.model_client.chat_completion(
+                        task_id=task.task_id,
+                        agent_id=self.id,
+                        model_profile=model_profile,
+                        messages=messages,
+                        params=params
+                    )
+                except Exception as exc2:
+                    error_text = f"【模型请求失败】{exc2}"
+                    self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
+                    return
 
         raw_model_text = self._extract_raw_model_text(model_response)
 
@@ -789,7 +995,7 @@ class AgentRuntime:
             parse_syntax(self, task)
             result = task.consume_temp_dialog_output()
 
-            # 模型在指令前输出的说明文本：当本轮转入后台执行（工具/转交/询问/定时任务）时，
+            # 模型在指令前输出的说明文本：当本轮转入后台执行（工具/转交/询问/定时任务/世界书）时，
             # 先把说明文本作为中间消息发给用户，避免它随协议行一起被丢弃。
             prefix = (result.get("prefix") or "").strip()
             has_background_action = bool(
@@ -797,6 +1003,7 @@ class AgentRuntime:
                 or result.get("agent_call")
                 or result.get("question")
                 or result.get("timer_task")
+                or result.get("world_info_task")
             )
             if prefix and has_background_action:
                 push_agent_id = (
@@ -882,17 +1089,14 @@ class AgentRuntime:
                     )
                     reply = resp["message"]
                     task.set_temp_dialog_output(reply)
-                    emit(self.build_event(
-                        task,
-                        "assistant_intermediate",
-                        text=reply,
-                        metadata={"visible_to_user": "true", "final": "false", "agent_id": self.id},
-                    ))
 
                 elif task_type == "query":
-                    resp = client.list_user_tasks(
-                        user_id=timer.get("content", "") or task.user.id,
-                    )
+                    query_user_id = timer.get("content", "") or task.user.id
+                    resp = client.list_user_tasks(user_id=query_user_id)
+                    if resp["ok"] and not resp["tasks"] and query_user_id != task.user.id:
+                        # 兼容：模型填的 user_id 未命中任何任务时，回退查询当前用户
+                        query_user_id = task.user.id
+                        resp = client.list_user_tasks(user_id=query_user_id)
                     if resp["ok"]:
                         tasks = resp["tasks"]
                         if not tasks:
@@ -911,12 +1115,6 @@ class AgentRuntime:
                     else:
                         reply = f"查询定时任务失败：{resp['message']}"
                     task.set_temp_dialog_output(reply)
-                    emit(self.build_event(
-                        task,
-                        "assistant_intermediate",
-                        text=reply,
-                        metadata={"visible_to_user": "true", "final": "false", "agent_id": self.id},
-                    ))
 
                 else:
                     # submit_task / send_message
@@ -938,12 +1136,15 @@ class AgentRuntime:
                     else:
                         reply = f"定时任务创建失败：{resp['message']}"
                     task.set_temp_dialog_output(reply)
-                    emit(self.build_event(
-                        task,
-                        "assistant_intermediate",
-                        text=reply,
-                        metadata={"visible_to_user": "true", "final": "false", "agent_id": self.id},
-                    ))
+
+            elif result["world_info_task"]:
+                wi_task = result["world_info_task"]
+                try:
+                    reply = self._handle_world_info_task(task, wi_task)
+                except Exception as exc:
+                    debug_log(f"[{self.user_id}] world_info 命令执行失败: {exc}")
+                    reply = f"世界书命令执行失败：{exc}"
+                task.set_temp_dialog_output(reply)
 
             else:
                 final_reply = result["final_reply"]
@@ -952,6 +1153,56 @@ class AgentRuntime:
         except Exception as exc:
             self._emit_raw_model_fallback(task, emit, raw_model_text, exc)
             return
+
+    def _handle_world_info_task(self, task, wi_task: dict) -> str:
+        """执行 世界书:add/list/update/delete/enable 协议命令，返回用户可见结果。
+
+        scope 默认当前 agent（agent 写只对自己）；群组用 group:群组id（groups.json 定义）。
+        """
+        action = wi_task.get("action", "")
+        args = wi_task.get("args") or []
+        agent_id = self.id
+
+        if action == "list":
+            return world_info_manager.list_all(agent_id=agent_id)
+
+        if action == "add":
+            if len(args) < 2:
+                return "世界书:add 用法：世界书:add|关键词1,关键词2|内容|优先级|scope|constant|regex|match_mode"
+            keys_str = args[0]
+            content = args[1]
+            priority = args[2] if len(args) > 2 else "0"
+            scope = args[3] if len(args) > 3 else ""
+            constant = args[4] if len(args) > 4 else "false"
+            regex = args[5] if len(args) > 5 else "false"
+            match_mode = args[6] if len(args) > 6 else "or"
+            return world_info_manager.add(
+                agent_id=agent_id,
+                keys_str=keys_str,
+                content=content,
+                priority=priority,
+                scope=scope,
+                constant=constant,
+                regex=regex,
+                match_mode=match_mode,
+            )
+
+        if action == "update":
+            if len(args) < 2:
+                return "世界书:update 用法：世界书:update|条目id|新内容"
+            return world_info_manager.update(entry_id=args[0], new_content=args[1])
+
+        if action == "delete":
+            if len(args) < 1:
+                return "世界书:delete 用法：世界书:delete|条目id"
+            return world_info_manager.delete(entry_id=args[0])
+
+        if action == "enable":
+            if len(args) < 2:
+                return "世界书:enable 用法：世界书:enable|条目id|true|false"
+            return world_info_manager.enable(entry_id=args[0], enabled_str=args[1])
+
+        return f"未知的世界书命令：{action}（支持 add/list/update/delete/enable）"
 
     def call_agent(self, target_agent_id: str, task, emit: Callable[[TaskEventDTO], None]):
         content = task.consume_temp_dialog_input()

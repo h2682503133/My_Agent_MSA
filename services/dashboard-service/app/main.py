@@ -150,6 +150,9 @@ async def list_configs():
                 # PROCESS 存储由智能体维护，不挤占配置管理显示空间
                 if "process" in rel.split("/"):
                     continue
+                # 世界书由「世界书」页面管理，不挤占配置管理显示空间
+                if "world_info" in rel.split("/"):
+                    continue
                 files.append({
                     "path": rel,
                     "size": f.stat().st_size,
@@ -173,6 +176,153 @@ async def write_config(path: str, body: ConfigUpdate):
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(body.content, encoding="utf-8")
     return {"ok": True, "path": path}
+
+
+# ─── 世界书（World Info）管理 ────────────────────────────────
+# 存储：orchestrator/config/world_info/{world_info.json, groups.json}
+#（与 PROCESS 同级；orchestrator/tool-runtime 直接读写同一文件）
+
+WORLD_INFO_ROOT = CONFIG_ROOT / "orchestrator" / "config" / "world_info"
+WORLD_INFO_PATH = WORLD_INFO_ROOT / "world_info.json"
+WORLD_INFO_GROUPS_PATH = WORLD_INFO_ROOT / "groups.json"
+
+def _load_world_info() -> dict:
+    if WORLD_INFO_PATH.exists():
+        try:
+            data = json.loads(WORLD_INFO_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {"version": 1, "entries": []}
+
+def _save_world_info(data: dict) -> None:
+    WORLD_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if WORLD_INFO_PATH.exists():
+        try:
+            shutil.copy2(WORLD_INFO_PATH, WORLD_INFO_PATH.with_name(WORLD_INFO_PATH.name + ".bak"))
+        except Exception:
+            pass
+    tmp = WORLD_INFO_PATH.with_name(WORLD_INFO_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(WORLD_INFO_PATH)
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+class WorldInfoEntry(BaseModel):
+    scope: str = ""
+    keys: list[str] = []
+    content: str = ""
+    priority: int = 0
+    constant: bool = False
+    regex: bool = False
+    match_mode: str = "or"
+    enabled: bool = True
+
+class WorldInfoGroups(BaseModel):
+    agent_groups: dict[str, list[str]] = {}
+
+@app.get("/api/world_info")
+async def world_info_list():
+    data = _load_world_info()
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        entries = []
+    return {"entries": entries, "total": len(entries)}
+
+@app.post("/api/world_info")
+async def world_info_add(body: WorldInfoEntry):
+    keys = [str(k).strip() for k in body.keys if str(k).strip()]
+    if not keys:
+        raise HTTPException(400, "至少需要一个触发关键词")
+    content = str(body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "内容不能为空")
+    data = _load_world_info()
+    entries = data.setdefault("entries", [])
+    if not isinstance(entries, list):
+        entries = []
+        data["entries"] = entries
+    now = _now_iso()
+    entry_id = f"wi_{int(datetime.now().timestamp() * 1000)}"
+    entries.append({
+        "id": entry_id,
+        "scope": str(body.scope or "").strip() or "main",
+        "keys": keys,
+        "content": content,
+        "priority": int(body.priority or 0),
+        "constant": bool(body.constant),
+        "regex": bool(body.regex),
+        "match_mode": body.match_mode if body.match_mode in ("or", "and") else "or",
+        "enabled": bool(body.enabled),
+        "created_at": now,
+        "updated_at": now,
+    })
+    _save_world_info(data)
+    return {"ok": True, "id": entry_id}
+
+@app.get("/api/world_info/groups")
+async def world_info_groups_get():
+    if WORLD_INFO_GROUPS_PATH.exists():
+        try:
+            data = json.loads(WORLD_INFO_GROUPS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {"agent_groups": {}}
+
+@app.put("/api/world_info/groups")
+async def world_info_groups_put(body: WorldInfoGroups):
+    WORLD_INFO_GROUPS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = WORLD_INFO_GROUPS_PATH.with_name(WORLD_INFO_GROUPS_PATH.name + ".tmp")
+    tmp.write_text(
+        json.dumps({"agent_groups": body.agent_groups}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(WORLD_INFO_GROUPS_PATH)
+    return {"ok": True}
+
+@app.put("/api/world_info/{entry_id}")
+async def world_info_update(entry_id: str, body: WorldInfoEntry):
+    keys = [str(k).strip() for k in body.keys if str(k).strip()]
+    if not keys:
+        raise HTTPException(400, "至少需要一个触发关键词")
+    content = str(body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "内容不能为空")
+    data = _load_world_info()
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        raise HTTPException(500, "世界书数据损坏")
+    entry = next((e for e in entries if isinstance(e, dict) and e.get("id") == entry_id), None)
+    if entry is None:
+        raise HTTPException(404, "条目不存在")
+    entry["scope"] = str(body.scope or "").strip() or entry.get("scope", "main")
+    entry["keys"] = keys
+    entry["content"] = content
+    entry["priority"] = int(body.priority or 0)
+    entry["constant"] = bool(body.constant)
+    entry["regex"] = bool(body.regex)
+    entry["match_mode"] = body.match_mode if body.match_mode in ("or", "and") else "or"
+    entry["enabled"] = bool(body.enabled)
+    entry["updated_at"] = _now_iso()
+    _save_world_info(data)
+    return {"ok": True}
+
+@app.delete("/api/world_info/{entry_id}")
+async def world_info_delete(entry_id: str):
+    data = _load_world_info()
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        raise HTTPException(500, "世界书数据损坏")
+    entry = next((e for e in entries if isinstance(e, dict) and e.get("id") == entry_id), None)
+    if entry is None:
+        raise HTTPException(404, "条目不存在")
+    entries.remove(entry)
+    _save_world_info(data)
+    return {"ok": True}
 
 
 # ─── Pod 状态 ────────────────────────────────────────────────
@@ -313,19 +463,19 @@ async def list_sp():
     agents = []
     global_files = []
     if SYSTEM_PROMPT_ROOT.exists():
-        # 根目录下的直接文件（全局通用提示词）
+        # 根目录下的直接文件（全局通用提示词）；.bak 备份不展示，避免误编辑
         for f in sorted(SYSTEM_PROMPT_ROOT.iterdir()):
-            if f.is_file() and not f.name.startswith("."):
+            if f.is_file() and not f.name.startswith(".") and not f.name.endswith(".bak"):
                 global_files.append({"name": f.name, "size": f.stat().st_size})
         for d in sorted(SYSTEM_PROMPT_ROOT.iterdir()):
             if d.is_dir() and d.name == "global":
                 for f in sorted(d.iterdir()):
-                    if f.is_file() and not f.name.startswith("."):
+                    if f.is_file() and not f.name.startswith(".") and not f.name.endswith(".bak"):
                         global_files.append({"name": f.name, "size": f.stat().st_size})
             elif d.is_dir() and not d.name.startswith("."):
                 files = []
                 for f in sorted(d.iterdir()):
-                    if f.is_file() and not f.name.startswith("."):
+                    if f.is_file() and not f.name.startswith(".") and not f.name.endswith(".bak"):
                         files.append({"name": f.name, "size": f.stat().st_size})
                 agents.append({"name": d.name, "files": files})
     return {"agents": agents, "global_files": global_files}
@@ -364,16 +514,36 @@ async def read_sp(agent: str, filename: str):
 
 @app.put("/api/system_prompt/file")
 async def write_sp(body: SystemPromptFile):
-    if body.agent:
+    # agent 为空或 "global" 时写全局文件：优先写回文件原有位置（根目录 > global/ 子目录），
+    # 两处都不存在时写根目录（orchestrator 只读根目录的 GLOBAL_SETTING.md 等）。
+    if body.agent and body.agent != "global":
         fp = SYSTEM_PROMPT_ROOT / body.agent / body.filename
     else:
-        fp = SYSTEM_PROMPT_ROOT / body.filename
+        root_fp = SYSTEM_PROMPT_ROOT / body.filename
+        global_fp = SYSTEM_PROMPT_ROOT / "global" / body.filename
+        if root_fp.exists():
+            fp = root_fp
+        elif global_fp.exists():
+            fp = global_fp
+        else:
+            fp = root_fp
     fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(body.content, encoding="utf-8")
     return {"ok": True}
 
 @app.delete("/api/system_prompt/file/{agent}/{filename:path}")
 async def delete_sp(agent: str, filename: str):
+    # agent == "global" 时删除全局文件：根目录优先，其次 global/ 子目录
+    if agent in ("global", ""):
+        root_fp = SYSTEM_PROMPT_ROOT / filename
+        global_fp = SYSTEM_PROMPT_ROOT / "global" / filename
+        if root_fp.exists():
+            root_fp.unlink()
+            return {"ok": True, "deleted": str(root_fp)}
+        if global_fp.exists():
+            global_fp.unlink()
+            return {"ok": True, "deleted": str(global_fp)}
+        raise HTTPException(404, "文件不存在")
     fp = SYSTEM_PROMPT_ROOT / agent / filename
     if not fp.exists():
         raise HTTPException(404, "文件不存在")

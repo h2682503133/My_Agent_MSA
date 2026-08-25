@@ -96,6 +96,52 @@ class ContextClient:
                 "content": "【系统提示】OpenViking 长期记忆服务未启用或不可用，本次对话没有历史记忆与 RAG 上下文。",
             }]
 
+    def search_world_info(
+        self,
+        user_id: str,
+        agent_id: str = "main",
+        query: str = "",
+        recent_messages=None,
+        max_tokens: int = 1500,
+        max_entries: int = 20,
+    ):
+        """世界书检索（openviking-context-service SearchWorldInfo）。
+
+        失败静默降级返回 []（世界书不可用时不影响主流程）。
+        """
+        if openviking_context_pb2 is None:
+            return []
+        try:
+            request = openviking_context_pb2.SearchWorldInfoRequest(
+                user_id=user_id,
+                agent_id=agent_id or "main",
+                query=query or "",
+                recent_messages=list(recent_messages or []),
+                max_tokens=int(max_tokens or 0),
+                max_entries=int(max_entries or 0),
+            )
+            response = self._get_stub().SearchWorldInfo(
+                request,
+                timeout=config.CONTEXT_TIMEOUT_SECONDS,
+            )
+            if getattr(response, "error", ""):
+                debug_log(f"SearchWorldInfo returned error: {response.error}")
+                return []
+            hits = []
+            for hit in response.hits:
+                hits.append({
+                    "entry_id": hit.entry_id,
+                    "keys": list(hit.keys),
+                    "content": hit.content,
+                    "priority": hit.priority,
+                    "constant": hit.constant,
+                    "token_count": hit.token_count,
+                })
+            return hits
+        except Exception as exc:
+            debug_log(f"SearchWorldInfo failed: {exc}")
+            return []
+
     def append_turn(
         self,
         user_id: str,

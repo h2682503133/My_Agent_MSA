@@ -70,6 +70,32 @@ message AddSkillDocumentResponse {
   string error = 5;
 }
 
+// ─── 世界书（World Info）检索 ─────────────────────────────────
+// 纯本地文件 + 关键词匹配，不依赖 OpenViking server / embedding。
+
+message SearchWorldInfoRequest {
+  string user_id = 1;
+  string agent_id = 2;
+  string query = 3;                    // 当前用户消息
+  repeated string recent_messages = 4; // 最近消息（触发源）
+  int32 max_tokens = 5;                // 注入 token 预算
+  int32 max_entries = 6;               // 最多注入条数
+}
+
+message WorldInfoHit {
+  string entry_id = 1;
+  repeated string keys = 2;
+  string content = 3;
+  int32 priority = 4;
+  bool constant = 5;
+  int32 token_count = 6;
+}
+
+message SearchWorldInfoResponse {
+  repeated WorldInfoHit hits = 1;
+  string error = 2;
+}
+
 message AppendTurnRequest {
   string user_id = 1;
   string session_id = 2;
@@ -115,4 +141,5 @@ service OpenVikingContext {
   rpc AppendTurn(AppendTurnRequest) returns (AppendTurnResponse);
   rpc ListSkillDocs(ListSkillDocsRequest) returns (ListSkillDocsResponse);
   rpc ReadSkillDoc(ReadSkillDocRequest) returns (ReadSkillDocResponse);
+  rpc SearchWorldInfo(SearchWorldInfoRequest) returns (SearchWorldInfoResponse);
 }

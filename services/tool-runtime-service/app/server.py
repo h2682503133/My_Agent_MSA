@@ -26,6 +26,7 @@ from app import mnt_access
 from app.process_runtime import init as process_init
 from app.process_runtime import remove as process_remove
 from app.process_runtime import write as process_write
+from app.worldinfo_runtime import write as worldinfo_write
 from app.skill_runtime import skill_runtime
 from app.workspace import (
     append_text,
@@ -389,6 +390,33 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 config.PROCESS_DIR,
                 kwargs.get("user_id") or "default",
                 kwargs.get("agent_id") or "main",
+            )
+
+        # 世界书（World Info）：智能体自动更新长期设定（scope 默认当前 agent，无全局）
+        # 仅保留 write：系统自动查重（同 scope 关键词已存在 → 返回"该词条已经存在"），
+        # 删除/修改由用户在 dashboard 手动管理（worldinfo-remove/list 已移除）
+        if name == "worldinfo-write":
+            keys_str = kwargs.get("keys") or (args[0] if args else "")
+            content = (
+                kwargs.get("content")
+                or kwargs.get("text")
+                or (args[1] if len(args) > 1 else "")
+            )
+            priority = kwargs.get("priority") or (args[2] if len(args) > 2 else "0")
+            scope = kwargs.get("scope") or (args[3] if len(args) > 3 else "")
+            constant = kwargs.get("constant") or (args[4] if len(args) > 4 else "false")
+            regex = kwargs.get("regex") or (args[5] if len(args) > 5 else "false")
+            match_mode = kwargs.get("match_mode") or (args[6] if len(args) > 6 else "or")
+            return worldinfo_write(
+                config.WORLD_INFO_PATH,
+                kwargs.get("agent_id") or "main",
+                keys_str,
+                content,
+                priority,
+                scope,
+                constant,
+                regex,
+                match_mode,
             )
 
         # Shell 执行

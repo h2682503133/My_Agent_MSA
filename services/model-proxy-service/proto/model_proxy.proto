@@ -29,6 +29,7 @@ message ChatCompletionResponse {
   string provider = 4;
   string model = 5;
   string error = 6;
+  string reasoning = 7; // 模型原生思考（deepseek reasoning_content / ollama thinking），供 orchestrator 两阶段世界书
 }
 
 message EmbeddingRequest {

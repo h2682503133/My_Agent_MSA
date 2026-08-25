@@ -33,3 +33,13 @@ MOCK_VIKING = os.getenv("MOCK_VIKING", "false").lower() == "true"
 DEFAULT_MAX_MESSAGES = int(os.getenv("DEFAULT_MAX_MESSAGES", "6"))
 DEFAULT_TOKEN_BUDGET = int(os.getenv("DEFAULT_TOKEN_BUDGET", "3000"))
 USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://user-service.agent.svc.cluster.local:5204")
+
+# ─── 世界书（World Info）──────────────────────────────────────
+# 世界书是纯本地文件 + 关键词匹配，不依赖 OpenViking server / embedding。
+# 挂载路径：openviking-context-service 挂载整个 config 根（无 subPath），
+# 故 world_info 位于 config/orchestrator/config/world_info/ 时容器内路径为：
+#   /app/config/orchestrator/config/world_info/world_info.json
+WORLD_INFO_PATH = Path(os.getenv("WORLD_INFO_PATH", "/app/config/orchestrator/config/world_info/world_info.json"))
+WORLD_INFO_GROUPS_PATH = Path(os.getenv("WORLD_INFO_GROUPS_PATH", "/app/config/orchestrator/config/world_info/groups.json"))
+WORLD_INFO_MAX_TOKENS = int(os.getenv("WORLD_INFO_MAX_TOKENS", "1500"))
+WORLD_INFO_MAX_ENTRIES = int(os.getenv("WORLD_INFO_MAX_ENTRIES", "20"))

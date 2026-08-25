@@ -163,29 +163,99 @@ class ProviderClient:
 
         return headers
 
+    # ── 统一采样参数（canonical）：用户只需在 model_params 顶层写这些键，
+    #    按 provider 自动适配重排（ollama → options 嵌套；openai → 顶层）──
+    _CANONICAL_FLOAT_KEYS = {
+        "temperature", "top_p", "min_p", "tfs_z",
+        "repetition_penalty", "presence_penalty", "frequency_penalty",
+        "mirostat_tau", "mirostat_eta",
+    }
+    _CANONICAL_INT_KEYS = {
+        "max_tokens", "num_ctx", "num_predict",
+        "top_k", "repeat_last_n", "mirostat", "seed",
+    }
+    _CANONICAL_ALIASES = {"repeat_penalty": "repetition_penalty"}  # 兼容 ollama 旧写法
+    _OLLAMA_SAMPLE_KEYS = {
+        "temperature", "top_p", "top_k", "min_p", "tfs_z",
+        "repetition_penalty", "repeat_last_n",
+        "mirostat", "mirostat_tau", "mirostat_eta",
+        "num_ctx", "num_predict", "seed",
+    }
+    _OPENAI_SAMPLE_KEYS = {
+        "temperature", "top_p",
+        "presence_penalty", "frequency_penalty",
+        "max_tokens", "seed",
+    }
+
+    def _coerce_sampling_value(self, key: str, value: Any) -> Any:
+        """canonical 采样键统一转数值类型（gRPC params 是字符串，model_params 是 JSON 原生类型）。"""
+        if key in self._CANONICAL_FLOAT_KEYS:
+            try:
+                return float(value)
+            except Exception:
+                return value
+        if key in self._CANONICAL_INT_KEYS:
+            try:
+                return int(float(value))
+            except Exception:
+                return value
+        return value
+
+    def _collect_sampling(self, body: dict) -> dict:
+        """从 body 顶层 + 旧 options 包装收集 canonical 采样键（options 值优先，兼容 ollama 原始写法）。"""
+        sampling: dict[str, Any] = {}
+        nested = body.pop("options", None)
+        sources = [body] + ([nested] if isinstance(nested, dict) else [])
+        for src in sources:
+            for key in list(src.keys()):
+                value = src[key]
+                k = self._CANONICAL_ALIASES.get(key, key)
+                if k in self._CANONICAL_FLOAT_KEYS or k in self._CANONICAL_INT_KEYS:
+                    sampling.setdefault(k, value)
+                    if src is body:
+                        body.pop(key, None)
+        return sampling
+
+    def _rearrange_sampling(self, profile: dict, body: dict, sampling: dict) -> dict:
+        """按 provider 重排采样键：ollama → body.options；openai → 顶层；双向转换 max_tokens/num_predict。"""
+        is_ollama = profile.get("provider") in {"ollama", "ollama_chat"}
+        if is_ollama:
+            # OpenAI 习惯写 max_tokens → ollama 用 num_predict
+            if "max_tokens" in sampling and "num_predict" not in sampling:
+                sampling["num_predict"] = sampling["max_tokens"]
+            options = {k: v for k, v in sampling.items() if k in self._OLLAMA_SAMPLE_KEYS}
+            body["options"] = options
+        else:
+            # ollama 习惯写 num_predict → OpenAI 用 max_tokens
+            if "num_predict" in sampling and "max_tokens" not in sampling:
+                sampling["max_tokens"] = sampling["num_predict"]
+            for k, v in sampling.items():
+                if k in self._OPENAI_SAMPLE_KEYS:
+                    body[k] = v
+                else:
+                    debug_log(f"model_proxy: 参数 {k} 不被 openai_compatible 支持，已忽略")
+        return body
+
     def _merge_params(self, profile: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         body = {}
         body.update(profile.get("model_params", {}) or {})
 
-        # profile 默认值
+        # profile 顶层默认（向后兼容）
         if "temperature" in profile:
-            body["temperature"] = profile["temperature"]
+            body.setdefault("temperature", profile["temperature"])
         if "max_tokens" in profile:
-            body["max_tokens"] = profile["max_tokens"]
+            body.setdefault("max_tokens", profile["max_tokens"])
 
-        # request 覆盖值
+        # request 覆盖值（类型转换）
         for key, value in params.items():
-            if key in {"temperature", "top_p"}:
-                try:
-                    body[key] = float(value)
-                except Exception:
-                    body[key] = value
-            elif key in {"max_tokens", "num_ctx", "num_predict"}:
-                body[key] = _parse_int(value)
-            elif key == "stream":
+            if key == "stream":
                 body[key] = _to_bool(value)
             else:
-                body[key] = value
+                body[key] = self._coerce_sampling_value(key, value)
+
+        # 统一采样适配 + 重排（非 canonical 键原样保留）
+        sampling = self._collect_sampling(body)
+        body = self._rearrange_sampling(profile, body, sampling)
 
         body["stream"] = False
         return body
@@ -220,6 +290,18 @@ class ProviderClient:
             data = response.json()
             text, finish_reason, tool_text = self._parse_openai_compatible(data)
 
+        # 透传模型原生思考（deepseek reasoning_content 等），供 orchestrator 两阶段世界书使用；
+        # 不影响 text/重发逻辑。
+        reasoning = ""
+        try:
+            choices = data.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                _msg = choices[0].get("message") or {}
+                if isinstance(_msg, dict):
+                    reasoning = str(_msg.get("reasoning_content") or _msg.get("thinking") or "").strip()
+        except Exception:
+            reasoning = ""
+
         if tool_text and not text:
             text = tool_text
         elif not text and finish_reason == "content_filter":
@@ -230,6 +312,7 @@ class ProviderClient:
         return {
             "ok": True,
             "text": text,
+            "reasoning": reasoning,
             "prompt_tokens": _parse_int(usage.get("prompt_tokens", 0)),
             "completion_tokens": _parse_int(usage.get("completion_tokens", 0)),
             "provider": profile.get("provider", "openai_compatible"),
@@ -347,19 +430,24 @@ class ProviderClient:
 
         if "message" in data:
             msg = data["message"]
+            reasoning = str(msg.get("reasoning_content", "") or msg.get("thinking", "") or "").strip()
             text = msg.get("content", "")
             if not text:
-                text = msg.get("reasoning_content", "") or msg.get("thinking", "")
+                text = reasoning
         elif "response" in data:
             text = data.get("response", "")
+            reasoning = ""
         elif "text" in data:
             text = data.get("text", "")
+            reasoning = ""
         else:
             text = str(data)
+            reasoning = ""
 
         return {
             "ok": True,
             "text": text,
+            "reasoning": reasoning,
             "prompt_tokens": _parse_int(data.get("prompt_eval_count", 0)),
             "completion_tokens": _parse_int(data.get("eval_count", 0)),
             "provider": profile.get("provider", "ollama"),

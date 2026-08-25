@@ -45,3 +45,18 @@ SYSTEM_SETTINGS_PATH = Path(
 
 # PROCESS 长期事件记录存储（按 <user_id>/<agent_id>.json 分片）
 PROCESS_DIR = Path(os.getenv("PROCESS_DIR", str(BASE_DIR / "config" / "process")))
+
+# ─── 世界书（World Info）──────────────────────────────────────
+# 与 PROCESS 同级：/app/config/world_info/（NFS config/orchestrator/config/world_info/）
+# - world_info.json：条目（scope 默认当前 agent，无全局）
+# - groups.json：agent_id : 群组id 映射（"agent_groups" 字段）
+# orchestrator 挂载可写；管理命令（世界书:add 等）与 tool-runtime 的
+# worldinfo-* 工具直接原子写这里。
+WORLD_INFO_DIR = Path(os.getenv("WORLD_INFO_DIR", str(BASE_DIR / "config" / "world_info")))
+WORLD_INFO_PATH = Path(os.getenv("WORLD_INFO_PATH", str(WORLD_INFO_DIR / "world_info.json")))
+WORLD_INFO_GROUPS_PATH = Path(os.getenv("WORLD_INFO_GROUPS_PATH", str(WORLD_INFO_DIR / "groups.json")))
+# 注入预算（与 search_context 的 max_tokens 互不影响）
+WORLD_INFO_MAX_TOKENS = int(os.getenv("WORLD_INFO_MAX_TOKENS", "1500"))
+WORLD_INFO_MAX_ENTRIES = int(os.getenv("WORLD_INFO_MAX_ENTRIES", "20"))
+# 世界书注入总开关（默认开启）
+WORLD_INFO_ENABLED = os.getenv("WORLD_INFO_ENABLED", "true").lower() == "true"

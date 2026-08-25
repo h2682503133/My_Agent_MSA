@@ -46,6 +46,11 @@
 - `process-write|index|title|content`（index=-1 追加，1..N 覆写）
 - `process-remove|index` / `process-init`
 
+### 世界书（World Info）长期设定（scope 默认当前 agent，无全局）
+
+- `worldinfo-write|关键词1,关键词2|内容|优先级|scope|constant|regex`（scope 省略=当前 agent；群组用 `group:群组id`；同 scope 同关键词覆写）
+- `worldinfo-remove|条目id` / `worldinfo-list`（模型自查已有哪些设定）
+
 ### 代码 / 系统
 
 - `shell` / `run-shell` / `command`：执行命令（默认关闭，`ENABLE_SHELL_TOOLS=true` 启用）

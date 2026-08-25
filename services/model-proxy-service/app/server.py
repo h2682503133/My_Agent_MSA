@@ -48,6 +48,7 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
             return model_proxy_pb2.ChatCompletionResponse(
                 ok=True,
                 text=result["text"],
+                reasoning=result.get("reasoning", ""),
                 usage=model_proxy_pb2.Usage(
                     prompt_tokens=result.get("prompt_tokens", 0),
                     completion_tokens=result.get("completion_tokens", 0),
