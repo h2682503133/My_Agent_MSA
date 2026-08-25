@@ -98,11 +98,15 @@ def add(
     constant: str = "false",
     regex: str = "false",
     match_mode: str = "or",
+    exclude: str = "",
 ) -> str:
     """添加条目。scope 省略时默认当前 agent（agent 写只对自己）。
 
     系统自动查重：同 scope 且关键词集合完全相同的条目 → 返回"该词条已经存在"，
     不新增不覆写（删除/修改由用户在 dashboard 手动管理）。
+
+    exclude：例外集（与 scope 作差），逗号/顿号分隔的 agent_id 或 group:群组id，
+    命中任一例外的智能体不注入该条目（如 IDENTITY 已自带设定不想重复注入）。
     """
     keys = _split_keys(keys_str)
     if not keys:
@@ -118,6 +122,7 @@ def add(
     constant_val = str(constant or "").strip().lower() in ("true", "1", "yes", "常驻")
     regex_val = str(regex or "").strip().lower() in ("true", "1", "yes")
     match_mode_val = _normalize_match_mode(match_mode)
+    exclude_val = _split_keys(exclude) if str(exclude or "").strip() else []
 
     path = config.WORLD_INFO_PATH
     data = _load(path)
@@ -147,6 +152,7 @@ def add(
         "constant": constant_val,
         "regex": regex_val,
         "match_mode": match_mode_val,
+        "exclude": exclude_val,
         "enabled": True,
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
@@ -154,7 +160,8 @@ def add(
     _save(path, data)
     scope_desc = f"（scope={scope_val}）" if scope_val != agent_id else "（仅当前智能体）"
     mode_desc = "，and 全部命中" if match_mode_val == "and" else ""
-    return f"已添加世界书条目 {entry_id}，关键词：{'、'.join(keys)}{scope_desc}{mode_desc}"
+    exclude_desc = f"，排除：{'、'.join(exclude_val)}" if exclude_val else ""
+    return f"已添加世界书条目 {entry_id}，关键词：{'、'.join(keys)}{scope_desc}{mode_desc}{exclude_desc}"
 
 
 def list_all(agent_id: str = "") -> str:
@@ -182,7 +189,9 @@ def list_all(agent_id: str = "") -> str:
         if int(entry.get("priority", 0) or 0):
             flags.append(f"优先级{entry.get('priority')}")
         flag_str = f" [{'|'.join(flags)}]" if flags else ""
-        lines.append(f"{index}. {entry_id}（scope={scope}）{flag_str}\n   关键词：{keys}\n   内容：{content}")
+        exclude = [str(x) for x in (entry.get("exclude") or []) if str(x)]
+        exclude_desc = f"（排除：{'、'.join(exclude)}）" if exclude else ""
+        lines.append(f"{index}. {entry_id}（scope={scope}）{flag_str}{exclude_desc}\n   关键词：{keys}\n   内容：{content}")
     return "\n".join(lines)
 
 

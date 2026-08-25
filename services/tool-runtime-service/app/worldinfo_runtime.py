@@ -96,6 +96,7 @@ def write(
     constant: str = "false",
     regex: str = "false",
     match_mode: str = "or",
+    exclude: str = "",
 ) -> str:
     path = Path(world_info_path)
     keys = _split_keys(keys_str)
@@ -112,6 +113,7 @@ def write(
     constant_val = str(constant or "").strip().lower() in ("true", "1", "yes", "常驻")
     regex_val = str(regex or "").strip().lower() in ("true", "1", "yes")
     match_mode_val = _normalize_match_mode(match_mode)
+    exclude_val = _split_keys(exclude) if str(exclude or "").strip() else []
 
     data = _load(path)
     entries = data.setdefault("entries", [])
@@ -140,6 +142,7 @@ def write(
         "constant": constant_val,
         "regex": regex_val,
         "match_mode": match_mode_val,
+        "exclude": exclude_val,
         "enabled": True,
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
@@ -147,7 +150,8 @@ def write(
     _save(path, data)
     scope_desc = f"（scope={scope_val}）" if scope_val != str(agent_id or "") else "（仅当前智能体）"
     mode_desc = "，and 全部命中" if match_mode_val == "and" else ""
-    return f"已添加世界书条目 {entry_id}，关键词：{'、'.join(keys)}{scope_desc}{mode_desc}"
+    exclude_desc = f"，排除：{'、'.join(exclude_val)}" if exclude_val else ""
+    return f"已添加世界书条目 {entry_id}，关键词：{'、'.join(keys)}{scope_desc}{mode_desc}{exclude_desc}"
 
 
 def remove(world_info_path: str, entry_id: str) -> str:

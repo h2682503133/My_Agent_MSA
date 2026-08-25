@@ -218,6 +218,7 @@ class WorldInfoEntry(BaseModel):
     constant: bool = False
     regex: bool = False
     match_mode: str = "or"
+    exclude: list[str] = []
     enabled: bool = True
 
 class WorldInfoGroups(BaseModel):
@@ -255,6 +256,7 @@ async def world_info_add(body: WorldInfoEntry):
         "constant": bool(body.constant),
         "regex": bool(body.regex),
         "match_mode": body.match_mode if body.match_mode in ("or", "and") else "or",
+        "exclude": [str(x).strip() for x in (body.exclude or []) if str(x).strip()],
         "enabled": bool(body.enabled),
         "created_at": now,
         "updated_at": now,
@@ -306,6 +308,7 @@ async def world_info_update(entry_id: str, body: WorldInfoEntry):
     entry["constant"] = bool(body.constant)
     entry["regex"] = bool(body.regex)
     entry["match_mode"] = body.match_mode if body.match_mode in ("or", "and") else "or"
+    entry["exclude"] = [str(x).strip() for x in (body.exclude or []) if str(x).strip()]
     entry["enabled"] = bool(body.enabled)
     entry["updated_at"] = _now_iso()
     _save_world_info(data)

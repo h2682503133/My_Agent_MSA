@@ -103,6 +103,7 @@ class AgentRuntime:
         self.config = {}
         self.system_prompt: list[dict[str, str]] = []
         self._identity_system_indexes: list[int] = []
+        self._soul_message_content: str = ""  # SOUL.md 原文，两阶段阶段1 构建时剔除（避免角色代入干扰列词）
         self.load_config()
         self.build_system_prompt()
 
@@ -568,6 +569,8 @@ class AgentRuntime:
 
         system_messages = []
         identity_indexes: list[int] = []
+        self._soul_message_content = ""
+        self._world_info_override_content = ""
 
         if global_setting.exists():
             content = global_setting.read_text(encoding="utf-8").strip()
@@ -579,7 +582,17 @@ class AgentRuntime:
                 # PROCESS 变体不读 md：内容由结构化存储注入（见 _build_process_message）
                 continue
             if str(filename).strip().lower() in _WORLD_INFO_FILE_NAMES:
-                # world_info.md 为声明式开关（虚假文件），不读取内容
+                # world_info.md 普通轮仍为声明式开关（不注入内容）；
+                # 其内容作为两阶段阶段1 的「职责变更指令」，取代 SOUL.md 注入位置。
+                # 文件名大小写不敏感：磁盘上可能是 WORLD_INFO.md（配置声明 world_info.md 也认）。
+                wi_path = prompt_dir / filename
+                if not wi_path.exists():
+                    for _candidate in prompt_dir.iterdir():
+                        if _candidate.name.lower() == "world_info.md":
+                            wi_path = _candidate
+                            break
+                if wi_path.exists():
+                    self._world_info_override_content = wi_path.read_text(encoding="utf-8").strip()
                 continue
             file_path = prompt_dir / filename
             if not file_path.exists():
@@ -590,6 +603,9 @@ class AgentRuntime:
                 # 记录 main 的 IDENTITY.md 位置，供杂项开关在调用模型前拦截
                 if self.id == "main" and filename.lower() == "identity.md":
                     identity_indexes.append(len(system_messages) - 1)
+                # 记录 SOUL.md 原文，两阶段阶段1 构建时剔除（避免角色代入干扰关键词提取）
+                if filename.lower() == "soul.md":
+                    self._soul_message_content = content
 
         self.system_prompt = system_messages
         self._identity_system_indexes = identity_indexes
@@ -756,14 +772,31 @@ class AgentRuntime:
         - 阶段1 失败 / 无输出 → 降级单次调用，但**用户消息关键词仍触发世界书**（不浪费 query）
         - 阶段2 失败 → 返回 None（调用方降级为纯单次调用）
         - 触发源 = 【概念词】清单 ∪ 阶段1 输出全文（模型直接生成闲聊时也扫描）∪ 用户消息
+        - 阶段1 head 剔除 SOUL.md（避免角色代入干扰列词），若 world_info.md 写了
+          「职责变更指令」则取代 SOUL 位置注入；阶段2 恢复完整 head（含 SOUL，角色扮演）
         """
-        phase1_messages = head + tail + [{
+        # 阶段1：职责变更 —— 剔除 SOUL.md；world_info.md 内容（职责变更指令）置于其位置
+        soul_content = getattr(self, "_soul_message_content", "") or ""
+        wi_override = getattr(self, "_world_info_override_content", "") or ""
+        phase1_head: list[dict[str, str]] = []
+        if wi_override:
+            phase1_head.append({"role": "system", "content": wi_override})
+        if soul_content:
+            phase1_head.extend(
+                m for m in head
+                if not (isinstance(m, dict) and m.get("content") == soul_content)
+            )
+        else:
+            phase1_head.extend(head)
+
+        phase1_messages = phase1_head + tail + [{
             "role": "system",
             "content": (
-                "这是一个准备步骤，不要写回复正文，不要输出任何协议指令。\n"
-                "只列出你本次回复中将使用的关键名词/概念（如地名、人物、组织、物品、专属名词）。\n"
+                "这是一个准备步骤：禁止输出回复正文，禁止角色扮演，禁止输出任何协议指令。\n"
+                "无论消息是询问、陈述、动作还是闲聊，你的唯一输出必须是概念词清单。\n"
+                "先分析消息中涉及的关键名词/概念（地名、人物、组织、物品、专属名词等），再列出。\n"
                 "格式：第一行必须是【概念词】词1、词2、词3\n"
-                "若不需要任何世界概念，输出：【概念词】无\n"
+                "若确认本次回复不需要任何世界概念，输出：【概念词】无\n"
                 "系统将根据这些词注入相关世界设定，确保你的回复符合世界设定。"
             ),
         }]
@@ -788,12 +821,20 @@ class AgentRuntime:
             hits = self._search_world_info_hits(task, user_query, [])
             return self._single_call_with_hits(task, head, tail, model_profile, params, hits)
 
-        # 触发源：概念词清单 + 阶段1全文（reasoning 与正文都扫，模型直接生成闲聊也覆盖）+ 用户消息（query 已含）
+        # 触发源构建（v73 起按阶段1 输出质量分流）：
+        # - 模型正确输出【概念词】行（词清单或"无"）→ 只用概念词清单 + 用户消息（query 已含）。
+        #   此时 thinking 段巨大且基本是角色思考（噪音），不塞进触发源。
+        # - 模型未遵守（输出回复正文等）→ thinking + 全文兜底（模型开演时 thinking 较短，
+        #   扫描成本低，且能救回命中）。
         concepts = self._extract_concepts(phase1_text or thinking)
-        trigger_sources = [thinking]
-        if phase1_text and phase1_text != thinking:
-            trigger_sources.append(phase1_text)
-        trigger_sources.extend(concepts)
+        has_concept_line = bool(re.search(r"【概念词】", phase1_text or ""))
+        if has_concept_line:
+            trigger_sources = list(concepts)
+        else:
+            trigger_sources = [thinking]
+            if phase1_text and phase1_text != thinking:
+                trigger_sources.append(phase1_text)
+            trigger_sources.extend(concepts)
         hits = self._search_world_info_hits(task, user_query, trigger_sources)
         # 注入去重：内容已在该智能体自身常驻提示（identity 等）中的条目跳过
         hits = self._dedup_identity_hits(hits, head)
@@ -1168,7 +1209,7 @@ class AgentRuntime:
 
         if action == "add":
             if len(args) < 2:
-                return "世界书:add 用法：世界书:add|关键词1,关键词2|内容|优先级|scope|constant|regex|match_mode"
+                return "世界书:add 用法：世界书:add|关键词1,关键词2|内容|优先级|scope|constant|regex|match_mode|exclude"
             keys_str = args[0]
             content = args[1]
             priority = args[2] if len(args) > 2 else "0"
@@ -1176,6 +1217,7 @@ class AgentRuntime:
             constant = args[4] if len(args) > 4 else "false"
             regex = args[5] if len(args) > 5 else "false"
             match_mode = args[6] if len(args) > 6 else "or"
+            exclude = args[7] if len(args) > 7 else ""
             return world_info_manager.add(
                 agent_id=agent_id,
                 keys_str=keys_str,
@@ -1185,6 +1227,7 @@ class AgentRuntime:
                 constant=constant,
                 regex=regex,
                 match_mode=match_mode,
+                exclude=exclude,
             )
 
         if action == "update":

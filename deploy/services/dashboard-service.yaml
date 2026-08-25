@@ -20,7 +20,7 @@ spec:
       serviceAccountName: dashboard-sa
       containers:
         - name: dashboard-service
-          image: docker.io/agent/dashboard-service:v26
+          image: docker.io/agent/dashboard-service:v27
           imagePullPolicy: Always
           ports:
             - name: http

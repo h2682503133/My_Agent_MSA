@@ -256,6 +256,10 @@ label.file-item:hover { color: var(--accent); }
           <input id="wi-keys" placeholder="王都,皇城" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;margin-top:4px;">
         </div>
         <div style="margin-bottom:8px;">
+          <label style="font-size:0.8rem;color:var(--dim);">排除例外（与 scope 作差；逗号分隔 agent_id 或 group:群组id，如 lilith,group:lust）</label>
+          <input id="wi-exclude" placeholder="lilith,group:lust" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;margin-top:4px;">
+        </div>
+        <div style="margin-bottom:8px;">
           <label style="font-size:0.8rem;color:var(--dim);">内容</label>
           <textarea id="wi-content" style="min-height:140px;margin-top:4px;" placeholder="世界设定内容..."></textarea>
         </div>
@@ -762,7 +766,7 @@ async function wiLoad() {
               <button class="btn danger" style="padding:2px 8px;font-size:0.75rem;" onclick="wiDelete('${esc(e.id)}')">删除</button>
             </span>
           </div>
-          <div style="font-size:0.85rem;color:var(--accent-bright);margin-top:4px;font-weight:500;">关键词：${esc((e.keys||[]).join('、'))} ${e.constant ? '<span class="status running">常驻</span>' : ''} ${e.regex ? '<span class="status pending">正则</span>' : ''} ${(e.match_mode||'or')==='and' ? '<span class="status running">AND</span>' : ''} ${e.priority ? '<span style="color:var(--dim);">pri=' + e.priority + '</span>' : ''}</div>
+          <div style="font-size:0.85rem;color:var(--accent-bright);margin-top:4px;font-weight:500;">关键词：${esc((e.keys||[]).join('、'))} ${e.constant ? '<span class="status running">常驻</span>' : ''} ${e.regex ? '<span class="status pending">正则</span>' : ''} ${(e.match_mode||'or')==='and' ? '<span class="status running">AND</span>' : ''} ${(e.exclude||[]).length ? '<span style="color:var(--red);font-weight:bold;">排除:' + esc((e.exclude||[]).join('、')) + '</span>' : ''} ${e.priority ? '<span style="color:var(--dim);">pri=' + e.priority + '</span>' : ''}</div>
           <div style="font-size:0.8rem;margin-top:4px;color:var(--text);white-space:pre-wrap;">${esc(e.content)}</div>
         </div>`).join('');
     }
@@ -783,6 +787,7 @@ function wiResetForm() {
   document.getElementById('wi-form-title').textContent = '添加条目';
   document.getElementById('wi-scope').value = '';
   document.getElementById('wi-keys').value = '';
+  document.getElementById('wi-exclude').value = '';
   document.getElementById('wi-content').value = '';
   document.getElementById('wi-priority').value = '0';
   document.getElementById('wi-constant').checked = false;
@@ -799,6 +804,7 @@ function wiEdit(id) {
     document.getElementById('wi-form-title').textContent = '编辑条目 ' + id;
     document.getElementById('wi-scope').value = e.scope || '';
     document.getElementById('wi-keys').value = (e.keys || []).join(',');
+    document.getElementById('wi-exclude').value = (e.exclude || []).join(',');
     document.getElementById('wi-content').value = e.content || '';
     document.getElementById('wi-priority').value = e.priority || 0;
     document.getElementById('wi-constant').checked = !!e.constant;
@@ -813,6 +819,7 @@ async function wiSave() {
   const payload = {
     scope: document.getElementById('wi-scope').value.trim(),
     keys: document.getElementById('wi-keys').value.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
+    exclude: document.getElementById('wi-exclude').value.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
     content: document.getElementById('wi-content').value,
     priority: parseInt(document.getElementById('wi-priority').value) || 0,
     constant: document.getElementById('wi-constant').checked,
@@ -846,7 +853,7 @@ async function wiToggle(id, enabled) {
     body: JSON.stringify({
       scope: e.scope, keys: e.keys, content: e.content,
       priority: e.priority, constant: e.constant, regex: e.regex,
-      match_mode: e.match_mode || 'or', enabled: enabled
+      match_mode: e.match_mode || 'or', exclude: e.exclude || [], enabled: enabled
     })
   });
   wiLoad();

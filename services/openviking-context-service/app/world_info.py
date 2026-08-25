@@ -11,6 +11,7 @@
   - 空 / 缺失        ：不参与匹配（视为无效条目；管理命令/工具写入时自动填 scope）
 - 触发：constant 常驻条目全部入选；其余按 query + recent_messages 做关键词子串/正则匹配
 - match_mode：条目级 or（任一关键词命中即触发，默认）/ and（全部关键词命中才触发）
+- exclude：条目级例外集（与 scope 作差）——[agent_id 或 group:群组id]，命中任一的智能体不注入
 - 排序：priority 降序，同优先级 updated_at 新者在前
 - 裁剪：max_entries 上限 + max_tokens 预算（自高优先级起累计）
 
@@ -129,6 +130,22 @@ def search_world_info(
             continue
         scope = str(entry.get("scope") or "").strip()
         if not _scope_matches(scope, agent_id, agent_groups):
+            continue
+
+        # exclude 例外集（与 scope 作差）：列表元素为 agent_id 或 group:群组id，
+        # 当前 agent 命中任一例外 → 该条目不注入（如 IDENTITY 已自带设定、不想重复注入的）
+        exclude_raw = entry.get("exclude") or []
+        if not isinstance(exclude_raw, list):
+            exclude_raw = [exclude_raw]
+        excluded = False
+        for ex in exclude_raw:
+            ex = str(ex or "").strip()
+            if not ex:
+                continue
+            if ex == agent_id or _scope_matches(ex, agent_id, agent_groups):
+                excluded = True
+                break
+        if excluded:
             continue
 
         is_constant = bool(entry.get("constant", False))

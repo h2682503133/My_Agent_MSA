@@ -407,6 +407,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             constant = kwargs.get("constant") or (args[4] if len(args) > 4 else "false")
             regex = kwargs.get("regex") or (args[5] if len(args) > 5 else "false")
             match_mode = kwargs.get("match_mode") or (args[6] if len(args) > 6 else "or")
+            exclude = kwargs.get("exclude") or (args[7] if len(args) > 7 else "")
             return worldinfo_write(
                 config.WORLD_INFO_PATH,
                 kwargs.get("agent_id") or "main",
@@ -417,6 +418,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 constant,
                 regex,
                 match_mode,
+                exclude,
             )
 
         # Shell 执行

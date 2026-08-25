@@ -485,27 +485,62 @@ class OpenVikingServerBackend:
                 max_messages or config.DEFAULT_MAX_MESSAGES,
             )
 
-            # Semantic search for query-relevant memories
+            # Semantic search for query-relevant memories：
+            # 主路径 find（纯向量，无 LLM，target_uri 限定本会话）；session 内无结果时
+            # 才用 search 做全库兜底（内部 IntentAnalyzer 会调一次大模型做意图分析，低频）
             if query and top_k > 0:
                 try:
+                    session_threshold = config.CONTEXT_SIMILARITY_THRESHOLD
+                    global_threshold = config.GLOBAL_SIMILARITY_THRESHOLD
                     hits: list[dict[str, Any]] = []
+                    # 1) 本会话内纯向量检索：find + target_uri 限定 session 目录 + 服务端阈值
                     find_method = getattr(client, "find", None)
                     if find_method is not None:
-                        find_result = await self._maybe_await(find_method(query=query, limit=top_k))
+                        session_uri = f"viking://user/{user_id}/sessions/{full_session_id}"
+                        try:
+                            find_result = await self._maybe_await(find_method(
+                                query=query,
+                                target_uri=session_uri,
+                                limit=top_k,
+                                score_threshold=session_threshold,
+                            ))
+                        except TypeError:
+                            find_result = await self._maybe_await(find_method(
+                                query=query,
+                                target_uri=session_uri,
+                                limit=top_k,
+                            ))
                         if isinstance(find_result, dict):
                             hits = list(find_result.get("memories", []) or [])
-                    if not hits:
-                        search_result = await self._maybe_await(client.search(
-                            query=query,
-                            session_id=full_session_id,
-                            limit=top_k,
-                        ))
-                        if isinstance(search_result, dict):
-                            hits = list(search_result.get("memories", []) or [])
 
+                    # 2) 本会话无结果 → 全库 search 兜底（带 session 上下文的意图分析，
+                    #    检索全库，严格阈值；低频触发）
+                    if not hits:
+                        search_method = getattr(client, "search", None)
+                        if search_method is not None:
+                            try:
+                                search_result = await self._maybe_await(search_method(
+                                    query=query,
+                                    session_id=full_session_id,
+                                    limit=top_k,
+                                    score_threshold=global_threshold,
+                                ))
+                            except TypeError:
+                                search_result = await self._maybe_await(search_method(
+                                    query=query,
+                                    session_id=full_session_id,
+                                    limit=top_k,
+                                ))
+                            if isinstance(search_result, dict):
+                                hits = list(search_result.get("memories", []) or [])
+
+                    # 3) 本地防御性再过滤（覆盖未传阈值成功的降级路径）
                     seen_contents = {m.get("content", "") for m in memories}
                     for hit in hits:
                         if not isinstance(hit, dict):
+                            continue
+                        score = float(hit.get("score", 0.0) or 0.0)
+                        if session_threshold > 0 and score < session_threshold:
                             continue
                         content = self._hit_to_content(hit)
                         if content and content not in seen_contents:
@@ -513,11 +548,24 @@ class OpenVikingServerBackend:
                             memories.append({
                                 "memory_id": hit.get("id", "") or hit.get("memory_id", "") or hit.get("uri", ""),
                                 "content": content,
-                                "score": float(hit.get("score", 0.0) or 0.0),
+                                "score": score,
                                 "token_count": int(hit.get("token_count", 0) or 0),
                             })
                 except Exception as exc:
                     debug_log(f"semantic search failed (non-fatal): {exc}")
+
+            # 达到阈值的相关记忆最多 MAX_MEMORY_HITS 条
+            memories = memories[: config.MAX_MEMORY_HITS]
+            # 兜底：全部未达阈值（或无可检索记忆）时，保底输出最近一条消息，
+            # 保证模型至少有最近对话上下文（score=-1 标记，不参与排序）
+            if not memories and messages:
+                _last = messages[-1]
+                memories.append({
+                    "memory_id": "",
+                    "content": _last.get("content", ""),
+                    "score": -1.0,
+                    "token_count": 0,
+                })
 
             return {
                 "session_summary": session_summary,

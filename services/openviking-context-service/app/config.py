@@ -32,6 +32,13 @@ OPENVIKING_FILE_FALLBACK = os.getenv("OPENVIKING_FILE_FALLBACK", "false").lower(
 MOCK_VIKING = os.getenv("MOCK_VIKING", "false").lower() == "true"
 DEFAULT_MAX_MESSAGES = int(os.getenv("DEFAULT_MAX_MESSAGES", "6"))
 DEFAULT_TOKEN_BUDGET = int(os.getenv("DEFAULT_TOKEN_BUDGET", "3000"))
+# ─── 记忆语义检索相似度阈值 ──────────────────────────────────
+# session 内检索：score 低于该值丢弃（默认 0.4，滤掉明显噪音）
+# 全局兜底检索（search，跨 session 意图分析）：阈值更严（默认 0.5）
+CONTEXT_SIMILARITY_THRESHOLD = float(os.getenv("CONTEXT_SIMILARITY_THRESHOLD", "0.4"))
+GLOBAL_SIMILARITY_THRESHOLD = float(os.getenv("GLOBAL_SIMILARITY_THRESHOLD", "0.5"))
+# 达到阈值进入上下文的记忆条数上限（默认 5）；未达阈值时保底输出最近一条消息
+MAX_MEMORY_HITS = int(os.getenv("MAX_MEMORY_HITS", "5"))
 USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://user-service.agent.svc.cluster.local:5204")
 
 # ─── 世界书（World Info）──────────────────────────────────────
