@@ -702,11 +702,24 @@ class OpenVikingServerBackend:
                     role_id=user_id,
                 )
 
+            # assistant 段：存储拼 <agent_id>: 前缀。
+            # 模型回复可能自带自写前缀（模仿群聊格式）：
+            # - 与真实 agent_id 一致（<alice>: ...）→ 去重只留一个前缀
+            # - 不一致（冒充其他角色 <lilith>: ...）→ 保留原样（保住模型表达的视角）
+            _assistant_raw = str(assistant_message or "")
+            _assistant_body = _assistant_raw
+            for _pfx in (
+                f"<{agent_id or 'main'}>:", f"{agent_id or 'main'}:",
+                f"<{agent_id or 'main'}>：", f"{agent_id or 'main'}：",
+            ):
+                if _assistant_raw.startswith(_pfx):
+                    _assistant_body = _assistant_raw[len(_pfx):].strip()
+                    break
             await self._add_message_compat(
                 add_message,
                 session_id=full_session_id,
                 role="assistant",
-                content=f"<{agent_id or 'main'}>: {assistant_message}",
+                content=f"<{agent_id or 'main'}>: {_assistant_body}",
                 role_id=agent_id or "main",
             )
 
