@@ -213,13 +213,17 @@ label.file-item:hover { color: var(--accent); }
 
   <!-- System Prompt -->
   <div id="tab-sprompt" class="tab">
-    <h2>System Prompt 管理</h2>
+    <h2>System Prompt 管理 <span style="font-size:0.8rem;color:var(--dim);">(分组仅用于展示归类，不影响磁盘存储结构)</span></h2>
     <div class="grid2">
       <div class="card">
         <h3>智能体</h3>
         <div style="margin-bottom:8px;display:flex;gap:8px;">
           <input id="sp-agent-input" placeholder="新智能体名称" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;">
           <button class="btn green" onclick="spAddAgent()">添加</button>
+        </div>
+        <div style="margin-bottom:8px;display:flex;gap:8px;">
+          <input id="sp-group-input" placeholder="新分组名称" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;" onkeydown="if(event.key==='Enter')spAddGroup()">
+          <button class="btn green" onclick="spAddGroup()">新建组</button>
         </div>
         <div id="sp-agent-list"></div>
       </div>
@@ -244,6 +248,11 @@ label.file-item:hover { color: var(--accent); }
     <div class="grid2">
       <div class="card">
         <h3>条目列表</h3>
+        <div class="session-toolbar" style="margin-bottom:8px;">
+          <span style="color:var(--dim);">筛选：</span>
+          <select id="wi-filter" style="min-width:220px;" onchange="wiRender()"></select>
+          <span id="wi-filter-count" style="color:var(--dim);font-size:0.8rem;"></span>
+        </div>
         <div id="wi-list" style="max-height:520px;overflow-y:auto;"></div>
       </div>
       <div class="card">
@@ -696,10 +705,23 @@ function stopStream() {
 
 // ─── System Prompt ─────────────────────────────────────────
 let spAgent = '', spFile = '';
+let spGroups = {}; // {组名: [agent,...]}，仅展示用
+let spCollapsedGroups = new Set(JSON.parse(localStorage.getItem('sp_collapsed_groups') || '[]'));
+let spCollapsedAgents = new Set(JSON.parse(localStorage.getItem('sp_collapsed_agents') || '[]'));
+
+function spSaveCollapseState() {
+  localStorage.setItem('sp_collapsed_groups', JSON.stringify([...spCollapsedGroups]));
+  localStorage.setItem('sp_collapsed_agents', JSON.stringify([...spCollapsedAgents]));
+}
 
 async function spRefresh() {
-  const data = await fetch('/api/system_prompt').then(r => r.json());
+  const [data, grp] = await Promise.all([
+    fetch('/api/system_prompt').then(r => r.json()),
+    fetch('/api/system_prompt/groups').then(r => r.json())
+  ]);
+  spGroups = grp.groups || {};
   const list = document.getElementById('sp-agent-list');
+  const allAgents = data.agents || [];
   let html = '';
   if (data.global_files && data.global_files.length > 0) {
     html += '<div style="padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:8px;">';
@@ -710,18 +732,148 @@ async function spRefresh() {
     });
     html += '</div>';
   }
-  html += data.agents.map(a => {
-    const files = a.files.map(f =>
-      `<div style="cursor:pointer;padding:2px 0 2px 16px;font-size:0.8rem;color:var(--dim)"
-            onclick="spLoad('${a.name}','${f.name}')">${f.name} (${f.size}B)</div>`).join('');
-    return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span style="cursor:pointer;color:var(--accent-bright);font-weight:bold;"
-              onclick="spSelectAgent('${a.name}')">${a.name}</span>
-        <button class="btn danger" style="padding:2px 8px;font-size:0.7rem;" onclick="spDeleteAgent('${a.name}')">删除</button>
-      </div>${files}</div>`;
-  }).join('') || '<div style="color:var(--dim);">暂无智能体</div>';
+  // 组装分组：组名 -> 该组实际存在的智能体
+  const grouped = {};
+  const inGroup = new Set();
+  Object.keys(spGroups).forEach(g => {
+    grouped[g] = [];
+    (spGroups[g] || []).forEach(a => {
+      const agent = allAgents.find(x => x.name === a);
+      if (agent) { grouped[g].push(agent); inGroup.add(a); }
+    });
+  });
+  const ungrouped = allAgents.filter(a => !inGroup.has(a.name));
+  Object.keys(grouped).forEach(g => { html += spRenderGroup(g, grouped[g]); });
+  if (ungrouped.length) html += spRenderGroup('__ungrouped__', ungrouped);
+  if (!Object.keys(grouped).length && !ungrouped.length) {
+    html += '<div style="color:var(--dim);">暂无智能体</div>';
+  }
   list.innerHTML = html;
+}
+
+function spRenderGroup(groupKey, agents) {
+  const isUngrouped = groupKey === '__ungrouped__';
+  const displayName = isUngrouped ? '未分组' : groupKey;
+  const collapsed = spCollapsedGroups.has(groupKey);
+  const arrow = collapsed ? '▶' : '▼';
+  let html = `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="cursor:pointer;color:var(--dim);font-size:0.75rem;" onclick="spToggleGroup('${esc(groupKey)}')">${arrow}</span>
+      <span style="cursor:pointer;color:${isUngrouped ? 'var(--yellow)' : 'var(--text)'};font-weight:bold;"
+            onclick="spToggleGroup('${esc(groupKey)}')">${displayName}</span>
+      <span style="color:var(--dim);font-size:0.7rem;">(${agents.length})</span>`;
+  if (!isUngrouped) {
+    html += `<span style="margin-left:auto;display:flex;gap:4px;">
+      <button class="btn" style="padding:1px 6px;font-size:0.7rem;" onclick="spRenameGroup('${esc(groupKey)}')">重命名</button>
+      <button class="btn danger" style="padding:1px 6px;font-size:0.7rem;" onclick="spDeleteGroup('${esc(groupKey)}')">删除</button>
+    </span>`;
+  }
+  html += '</div>';
+  if (!collapsed) {
+    if (agents.length) {
+      agents.forEach(a => { html += spRenderAgent(a, groupKey); });
+    } else {
+      html += '<div style="color:var(--dim);font-size:0.8rem;padding:2px 0 2px 20px;">（空组）</div>';
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+function spRenderAgent(a, currentGroup) {
+  const collapsed = spCollapsedAgents.has(a.name);
+  const files = a.files || [];
+  const arrow = collapsed ? '▶' : '▼';
+  const moveOptions = ['<option value="">移动▾</option>']
+    .concat(Object.keys(spGroups).map(g =>
+      `<option value="${esc(g)}" ${g === currentGroup ? 'selected' : ''}>${esc(g)}</option>`))
+    .concat(`<option value="__ungrouped__" ${currentGroup === '__ungrouped__' ? 'selected' : ''}>未分组</option>`)
+    .join('');
+  let html = `<div style="padding:2px 0;">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="cursor:pointer;color:var(--dim);font-size:0.75rem;" onclick="spToggleAgent('${esc(a.name)}')">${arrow}</span>
+      <span style="cursor:pointer;color:var(--accent-bright);font-weight:bold;" onclick="spSelectAgent('${esc(a.name)}')">${esc(a.name)}</span>
+      <span style="color:var(--dim);font-size:0.7rem;">(${files.length}文件)</span>
+      <select style="margin-left:auto;font-size:0.7rem;padding:1px 4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:110px;"
+              onchange="spMoveAgent('${esc(a.name)}', this.value)">
+        ${moveOptions}
+      </select>
+      <button class="btn danger" style="padding:1px 6px;font-size:0.7rem;" onclick="spDeleteAgent('${esc(a.name)}')">删除</button>
+    </div>`;
+  if (!collapsed) {
+    html += files.map(f =>
+      `<div style="cursor:pointer;padding:2px 0 2px 20px;font-size:0.8rem;color:var(--dim)"
+            onclick="spLoad('${esc(a.name)}','${esc(f.name)}')">${esc(f.name)} (${f.size}B)</div>`).join('');
+  }
+  html += '</div>';
+  return html;
+}
+
+function spToggleGroup(name) {
+  if (spCollapsedGroups.has(name)) spCollapsedGroups.delete(name); else spCollapsedGroups.add(name);
+  spSaveCollapseState();
+  spRefresh();
+}
+
+function spToggleAgent(name) {
+  if (spCollapsedAgents.has(name)) spCollapsedAgents.delete(name); else spCollapsedAgents.add(name);
+  spSaveCollapseState();
+  spRefresh();
+}
+
+async function spSaveGroups() {
+  await fetch('/api/system_prompt/groups', {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({groups: spGroups})
+  });
+  spRefresh();
+}
+
+async function spAddGroup() {
+  const name = document.getElementById('sp-group-input').value.trim();
+  if (!name) return;
+  if (spGroups[name]) { toast('分组已存在', false); return; }
+  spGroups[name] = [];
+  document.getElementById('sp-group-input').value = '';
+  await spSaveGroups();
+}
+
+async function spRenameGroup(name) {
+  const nv = prompt('新的分组名称：', name);
+  if (!nv) return;
+  const nn = nv.trim();
+  if (!nn || nn === name) return;
+  if (spGroups[nn]) { toast('分组名已存在', false); return; }
+  spGroups[nn] = spGroups[name] || [];
+  delete spGroups[name];
+  if (spCollapsedGroups.has(name)) {
+    spCollapsedGroups.delete(name);
+    spCollapsedGroups.add(nn);
+    spSaveCollapseState();
+  }
+  await spSaveGroups();
+}
+
+async function spDeleteGroup(name) {
+  const count = (spGroups[name] || []).length;
+  const msg = '删除分组「' + name + '」？' + (count ? ' 组内 ' + count + ' 个智能体将回到「未分组」。' : '');
+  if (!confirm(msg)) return;
+  delete spGroups[name];
+  spCollapsedGroups.delete(name);
+  spSaveCollapseState();
+  await spSaveGroups();
+}
+
+async function spMoveAgent(name, targetGroup) {
+  if (!targetGroup) return;
+  Object.keys(spGroups).forEach(g => {
+    spGroups[g] = (spGroups[g] || []).filter(a => a !== name);
+  });
+  if (targetGroup !== '__ungrouped__') {
+    if (!spGroups[targetGroup]) spGroups[targetGroup] = [];
+    spGroups[targetGroup].push(name);
+  }
+  await spSaveGroups();
 }
 
 async function spLoadGlobal(file) {
@@ -756,8 +908,15 @@ async function spAddAgent() {
 async function spDeleteAgent(name) {
   if (!confirm('删除 ' + name + ' 及其所有文件?')) return;
   await fetch('/api/system_prompt/agent/' + name, {method:'DELETE'});
+  // 同步清理分组引用
+  let changed = false;
+  Object.keys(spGroups).forEach(g => {
+    const before = spGroups[g].length;
+    spGroups[g] = (spGroups[g] || []).filter(a => a !== name);
+    if (spGroups[g].length !== before) changed = true;
+  });
   if (spAgent === name) { spAgent = ''; spFile = ''; document.getElementById('sp-editor').value = ''; }
-  spRefresh();
+  if (changed) await spSaveGroups(); else spRefresh();
 }
 
 async function spAddFile() {
@@ -770,6 +929,9 @@ async function spAddFile() {
     body: JSON.stringify({agent:spAgent, filename:name, content:''})
   });
   document.getElementById('sp-file-input').value = '';
+  // 添加文件后自动展开该智能体，便于看到新文件
+  spCollapsedAgents.delete(spAgent);
+  spSaveCollapseState();
   spRefresh();
   spLoad(spAgent, name);
 }
@@ -796,6 +958,9 @@ async function spDeleteFile() {
 
 // ─── 世界书管理 ────────────────────────────────────────────
 let wiEditingId = '';
+let wiEntries = [];
+let wiAgentGroups = {};
+let wiFilter = '__all__';
 
 function esc(s) {
   return String(s == null ? '' : s)
@@ -806,27 +971,71 @@ function esc(s) {
 async function wiLoad() {
   try {
     const data = await fetch('/api/world_info').then(r => r.json());
-    const list = document.getElementById('wi-list');
-    const entries = data.entries || [];
-    if (!entries.length) {
-      list.innerHTML = '<div style="color:var(--dim);padding:12px;">世界书为空（0 条）</div>';
-    } else {
-      list.innerHTML = entries.map(e => `
-        <div style="border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px;${e.enabled ? '' : 'opacity:0.5;'}">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span style="font-size:0.75rem;color:var(--dim);">${esc(e.id)} <span style="color:var(--yellow);">scope=${esc(e.scope)}</span></span>
-            <span>
-              <button class="btn" style="padding:2px 8px;font-size:0.75rem;" onclick="wiEdit('${esc(e.id)}')">编辑</button>
-              <button class="btn ${e.enabled ? 'danger' : 'green'}" style="padding:2px 8px;font-size:0.75rem;" onclick="wiToggle('${esc(e.id)}', ${!e.enabled})">${e.enabled ? '禁用' : '启用'}</button>
-              <button class="btn danger" style="padding:2px 8px;font-size:0.75rem;" onclick="wiDelete('${esc(e.id)}')">删除</button>
-            </span>
-          </div>
-          <div style="font-size:0.85rem;color:var(--accent-bright);margin-top:4px;font-weight:500;">关键词：${esc((e.keys||[]).join('、'))} ${e.constant ? '<span class="status running">常驻</span>' : ''} ${e.regex ? '<span class="status pending">正则</span>' : ''} ${(e.match_mode||'or')==='and' ? '<span class="status running">AND</span>' : ''} ${(e.exclude||[]).length ? '<span style="color:var(--red);font-weight:bold;">排除:' + esc((e.exclude||[]).join('、')) + '</span>' : ''} ${e.priority ? '<span style="color:var(--dim);">pri=' + e.priority + '</span>' : ''}</div>
-          <div style="font-size:0.8rem;margin-top:4px;color:var(--text);white-space:pre-wrap;">${esc(e.content)}</div>
-        </div>`).join('');
-    }
+    wiEntries = data.entries || [];
     wiLoadGroups();
+    wiBuildFilter();
+    wiRender();
   } catch(e) { toast('世界书加载失败: ' + e, false); }
+}
+
+function wiBuildFilter() {
+  const sel = document.getElementById('wi-filter');
+  // 反向映射：群组id -> 组内 agent
+  const groupToAgents = {};
+  Object.keys(wiAgentGroups).forEach(agent => {
+    (wiAgentGroups[agent] || []).forEach(g => {
+      if (!groupToAgents[g]) groupToAgents[g] = [];
+      groupToAgents[g].push(agent);
+    });
+  });
+  const scopes = new Set(wiEntries.map(e => e.scope || 'main'));
+  let html = '<option value="__all__">全部</option>';
+  html += '<optgroup label="scope 筛选">';
+  html += [...scopes].sort().map(s => `<option value="scope:${esc(s)}">${esc(s)}</option>`).join('');
+  html += '</optgroup>';
+  html += '<optgroup label="按群组筛选">';
+  html += Object.keys(groupToAgents).sort().map(g =>
+    `<option value="group:${esc(g)}">${esc(g + ' (' + groupToAgents[g].join(', ') + ')')}</option>`).join('');
+  html += '</optgroup>';
+  sel.innerHTML = html;
+  // 保留原筛选（若选项仍存在）
+  const exists = [...sel.options].some(o => o.value === wiFilter);
+  sel.value = exists ? wiFilter : '__all__';
+  wiFilter = sel.value;
+}
+
+function wiRender() {
+  wiFilter = document.getElementById('wi-filter').value;
+  const list = document.getElementById('wi-list');
+  const countEl = document.getElementById('wi-filter-count');
+  let entries = wiEntries;
+  if (wiFilter.startsWith('scope:')) {
+    const s = wiFilter.slice(6);
+    entries = wiEntries.filter(e => (e.scope || 'main') === s);
+  } else if (wiFilter.startsWith('group:')) {
+    const g = wiFilter.slice(6);
+    const agents = Object.keys(wiAgentGroups).filter(a => (wiAgentGroups[a] || []).includes(g));
+    const scopes = new Set(['group:' + g, ...agents]);
+    entries = wiEntries.filter(e => scopes.has(e.scope || 'main'));
+  }
+  countEl.textContent = `共 ${entries.length} 条`;
+  if (!entries.length) {
+    list.innerHTML = '<div style="color:var(--dim);padding:12px;">无匹配条目（0 条）</div>';
+    return;
+  }
+  list.innerHTML = entries.map(e => `
+    <div style="border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px;${e.enabled ? '' : 'opacity:0.5;'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span style="font-size:0.75rem;color:var(--dim);">${esc(e.id)} <span style="color:var(--yellow);">scope=${esc(e.scope)}</span></span>
+        <span>
+          <button class="btn" style="padding:2px 8px;font-size:0.75rem;" onclick="wiEdit('${esc(e.id)}')">编辑</button>
+          <button class="btn ${e.enabled ? 'danger' : 'green'}" style="padding:2px 8px;font-size:0.75rem;" onclick="wiToggle('${esc(e.id)}', ${!e.enabled})">${e.enabled ? '禁用' : '启用'}</button>
+          <button class="btn danger" style="padding:2px 8px;font-size:0.75rem;" onclick="wiDelete('${esc(e.id)}')">删除</button>
+        </span>
+      </div>
+      <div style="font-size:0.85rem;color:var(--accent-bright);margin-top:4px;font-weight:500;">关键词：${esc((e.keys||[]).join('、'))} ${e.constant ? '<span class="status running">常驻</span>' : ''} ${e.regex ? '<span class="status pending">正则</span>' : ''} ${(e.match_mode||'or')==='and' ? '<span class="status running">AND</span>' : ''} ${(e.exclude||[]).length ? '<span style="color:var(--red);font-weight:bold;">排除:' + esc((e.exclude||[]).join('、')) + '</span>' : ''} ${e.priority ? '<span style="color:var(--dim);">pri=' + e.priority + '</span>' : ''}</div>
+      <div style="font-size:0.8rem;margin-top:4px;color:var(--text);white-space:pre-wrap;">${esc(e.content)}</div>
+    </div>`).join('');
 }
 
 function wiSetMode(mode) {
@@ -924,11 +1133,11 @@ async function wiDelete(id) {
 async function wiLoadGroups() {
   try {
     const data = await fetch('/api/world_info/groups').then(r => r.json());
-    const ag = data.agent_groups || {};
+    wiAgentGroups = data.agent_groups || {};
     const box = document.getElementById('wi-groups');
     box.innerHTML = '';
-    Object.keys(ag).forEach(agent => wiAppendGroupRow(agent, ag[agent]));
-    if (!Object.keys(ag).length) wiAppendGroupRow('', []);
+    Object.keys(wiAgentGroups).forEach(agent => wiAppendGroupRow(agent, wiAgentGroups[agent]));
+    if (!Object.keys(wiAgentGroups).length) wiAppendGroupRow('', []);
   } catch(e) { toast('群组加载失败: ' + e, false); }
 }
 
@@ -961,6 +1170,8 @@ async function wiSaveGroups() {
   }).then(r => r.json());
   toast('群组已保存');
   wiLoadGroups();
+  wiBuildFilter();
+  wiRender();
 }
 
 

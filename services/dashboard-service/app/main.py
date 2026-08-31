@@ -554,6 +554,44 @@ async def delete_sp(agent: str, filename: str):
     return {"ok": True}
 
 
+# ═══ System Prompt 分组（仅展示用，不影响存储结构）═══════════
+# 存储：orchestrator/system_prompt/.sp_groups.json（点文件，列表/编排器均忽略）
+# 结构：{"groups": {"组名": ["agent1", ...]}}
+
+SP_GROUPS_PATH = SYSTEM_PROMPT_ROOT / ".sp_groups.json"
+
+class SpGroups(BaseModel):
+    groups: dict[str, list[str]] = {}
+
+def _load_sp_groups() -> dict[str, list[str]]:
+    if SP_GROUPS_PATH.exists():
+        try:
+            data = json.loads(SP_GROUPS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("groups"), dict):
+                return data["groups"]
+        except Exception:
+            pass
+    return {}
+
+@app.get("/api/system_prompt/groups")
+async def sp_groups_get():
+    return {"groups": _load_sp_groups()}
+
+@app.put("/api/system_prompt/groups")
+async def sp_groups_put(body: SpGroups):
+    groups = {}
+    for name, agents in body.groups.items():
+        n = str(name).strip()
+        if not n:
+            continue
+        groups[n] = [str(a).strip() for a in agents if str(a).strip()]
+    SP_GROUPS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SP_GROUPS_PATH.with_name(SP_GROUPS_PATH.name + ".tmp")
+    tmp.write_text(json.dumps({"groups": groups}, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(SP_GROUPS_PATH)
+    return {"ok": True, "groups": groups}
+
+
 # ═══ 二维码 ═════════════════════════════════════════════════
 
 QRCODE_TIME_FILE = STATIC_DIR / "qrcode_time.txt"
