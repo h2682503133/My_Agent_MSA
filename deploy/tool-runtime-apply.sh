@@ -1,8 +1,8 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v55}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v57}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -16,20 +16,20 @@ CLAW_EXTERNAL_VM_USER="${CLAW_EXTERNAL_VM_USER:-$(id -un)}"
 CLAW_EXTERNAL_VM_SKILL_ROOT_DIR="${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR:-/srv/nfs/my-agent/workspace/skill}"
 CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING="${CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING:-false}"
 
-# 鍔熻兘寮€鍏筹細鏄惁瀹夎/浣跨敤 clawhub锛堟妧鑳芥墽琛岋級涓?codex锛堜唬鐮佺敓鎴愶級锛岄粯璁ら兘鍚敤
+# 功能开关：是否安装/使用 clawhub（技能执行）�?codex（代码生成），默认都启用
 ENABLE_CLAWHUB="${ENABLE_CLAWHUB:-true}"
 ENABLE_CODEX="${ENABLE_CODEX:-true}"
-# 鎶€鑳界煡璇嗗簱锛圤penViking锛夊紑鍏筹細deploy-all.ps1 鏈嬀閫?openviking-server 鏃剁疆 false
+# 技能知识库（OpenViking）开关：deploy-all.ps1 未勾�?openviking-server 时置 false
 ENABLE_OPENVIKING="${ENABLE_OPENVIKING:-true}"
 
-# 澶勭悊 sudo 鍦烘櫙锛氫繚瀛樼湡瀹炵敤鎴蜂俊鎭紝閬垮厤 root 鐜涓嬫壘涓嶅埌 nvm/ssh key
+# 处理 sudo 场景：保存真实用户信息，避免 root 环境下找不到 nvm/ssh key
 REAL_USER="${SUDO_USER:-$(id -un)}"
 REAL_HOME="$(eval echo ~"$REAL_USER")"
 
 MY_AGENT_SSH_KEY_FILE="${MY_AGENT_SSH_KEY_FILE:-$REAL_HOME/.ssh/my_agent_tool_runtime_ed25519}"
 MY_AGENT_CLAWHUB_WRAPPER="${MY_AGENT_CLAWHUB_WRAPPER:-$REAL_HOME/.local/bin/my-agent-clawhub}"
 
-# 鍥惧簥澶栭儴 URL锛氶€氳繃 host.docker.internal 瑙ｆ瀽瀹夸富鏈?IP
+# 图床外部 URL：通过 host.docker.internal 解析宿主�?IP
 export IMAGE_BASE_URL="http://localhost:5102/assets"
 
 sudo_cmd() {
@@ -43,7 +43,7 @@ sudo_cmd() {
 require_command() {
   local name="$1"
   if ! command -v "$name" >/dev/null 2>&1; then
-    echo "缂哄皯鍛戒护: $name"
+    echo "缺少命令: $name"
     exit 1
   fi
 }
@@ -70,7 +70,7 @@ detect_clawhub_real_bin() {
     echo "${CLAW_REAL_CLAWHUB_BIN}"
     return
   fi
-  # 浼樺厛鐢ㄧ湡瀹炵敤鎴风殑 PATH 鏌ユ壘锛坰udo 涓?command -v 鎵句笉鍒?nvm 閲岀殑鍛戒护锛?  if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v clawhub >/dev/null 2>&1; then
+  # 优先用真实用户的 PATH 查找（sudo �?command -v 找不�?nvm 里的命令�?  if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v clawhub >/dev/null 2>&1; then
     sudo -u "$REAL_USER" command -v clawhub
     return
   fi
@@ -89,7 +89,7 @@ detect_codex_real_bin() {
     echo "${CODEX_REAL_BIN}"
     return
   fi
-  # 浼樺厛鐢ㄧ湡瀹炵敤鎴风殑 PATH 鏌ユ壘锛坰udo 涓?command -v 鎵句笉鍒?nvm 閲岀殑鍛戒护锛?  if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v codex >/dev/null 2>&1; then
+  # 优先用真实用户的 PATH 查找（sudo �?command -v 找不�?nvm 里的命令�?  if [ "$(id -un)" != "$REAL_USER" ] && sudo -u "$REAL_USER" command -v codex >/dev/null 2>&1; then
     sudo -u "$REAL_USER" command -v codex
     return
   fi
@@ -119,7 +119,7 @@ detect_node_bin() {
 }
 
 ensure_clawhub_wrapper() {
-  echo "妫€鏌?clawhub 杩滅▼鎵ц鍖呰鍣?.."
+  echo "检�?clawhub 远程执行包装�?.."
 
   local real_clawhub
   local node_bin
@@ -129,14 +129,14 @@ ensure_clawhub_wrapper() {
   node_bin="$(detect_node_bin || true)"
 
   if [ -z "$real_clawhub" ] || [ ! -x "$real_clawhub" ]; then
-    echo "鏈壘鍒板彲鎵ц鐨?clawhub"
-    echo "璇峰厛鍦ㄥ綋鍓?WSL / VM 瀹夎 clawhub锛屽苟纭 command -v clawhub 鏈夎緭鍑?
+    echo "未找到可执行�?clawhub"
+    echo "请先在当�?WSL / VM 安装 clawhub，并确认 command -v clawhub 有输�?
     exit 1
   fi
 
   if [ -z "$node_bin" ] || [ ! -x "$node_bin" ]; then
-    echo "鏈壘鍒板彲鎵ц鐨?node"
-    echo "clawhub 鏄?Node 鑴氭湰锛岃繙绋?SSH 鎵ц鏃跺繀椤昏兘鎵惧埌 node"
+    echo "未找到可执行�?node"
+    echo "clawhub �?Node 脚本，远�?SSH 执行时必须能找到 node"
     exit 1
   fi
 
@@ -155,8 +155,8 @@ EOF
   CLAW_EXTERNAL_VM_CLAWHUB_BIN="$MY_AGENT_CLAWHUB_WRAPPER"
   export CLAW_EXTERNAL_VM_CLAWHUB_BIN
 
-  echo "clawhub 鍖呰鍣? $CLAW_EXTERNAL_VM_CLAWHUB_BIN"
-  echo "鐪熷疄 clawhub: $real_clawhub"
+  echo "clawhub 包装�? $CLAW_EXTERNAL_VM_CLAWHUB_BIN"
+  echo "真实 clawhub: $real_clawhub"
   echo "node: $node_bin"
 }
 
@@ -164,7 +164,7 @@ EOF
 MY_AGENT_CODEX_WRAPPER="${MY_AGENT_CODEX_WRAPPER:-$REAL_HOME/.local/bin/my-agent-codex}"
 
 ensure_codex_wrapper() {
-  echo "妫€鏌?codex 杩滅▼鎵ц鍖呰鍣?.."
+  echo "检�?codex 远程执行包装�?.."
 
   local real_codex
   local node_bin
@@ -174,14 +174,14 @@ ensure_codex_wrapper() {
   node_bin="$(detect_node_bin || true)"
 
   if [ -z "$real_codex" ] || [ ! -x "$real_codex" ]; then
-    echo "鏈壘鍒板彲鎵ц鐨?codex"
-    echo "璇峰厛鍦ㄥ綋鍓?WSL / VM 瀹夎 codex锛屽苟纭 command -v codex 鏈夎緭鍑?
+    echo "未找到可执行�?codex"
+    echo "请先在当�?WSL / VM 安装 codex，并确认 command -v codex 有输�?
     exit 1
   fi
 
   if [ -z "$node_bin" ] || [ ! -x "$node_bin" ]; then
-    echo "鏈壘鍒板彲鎵ц鐨?node"
-    echo "codex 鏄?Node 鑴氭湰锛岃繙绋?SSH 鎵ц鏃跺繀椤昏兘鎵惧埌 node"
+    echo "未找到可执行�?node"
+    echo "codex �?Node 脚本，远�?SSH 执行时必须能找到 node"
     exit 1
   fi
 
@@ -200,8 +200,8 @@ EOF
   CODEX_BIN_PATH="$MY_AGENT_CODEX_WRAPPER"
   export CODEX_BIN_PATH
 
-  echo "codex 鍖呰鍣? $CODEX_BIN_PATH"
-  echo "鐪熷疄 codex: $real_codex"
+  echo "codex 包装�? $CODEX_BIN_PATH"
+  echo "真实 codex: $real_codex"
   echo "node: $node_bin"
 }
 
@@ -210,18 +210,18 @@ ensure_sshd_installed() {
     return 0
   fi
 
-  echo "鏈娴嬪埌 sshd锛屾鍦ㄥ畨瑁?openssh-server..."
+  echo "未检测到 sshd，正在安�?openssh-server..."
   if command -v apt-get >/dev/null 2>&1; then
     sudo_cmd apt-get update
     sudo_cmd apt-get install -y openssh-server
   else
-    echo "褰撳墠绯荤粺鏈壘鍒?apt-get锛岃鎵嬪姩瀹夎 openssh-server"
+    echo "当前系统未找�?apt-get，请手动安装 openssh-server"
     exit 1
   fi
 }
 
 ensure_sshd_running() {
-  echo "妫€鏌ュ苟鍚姩 sshd..."
+  echo "检查并启动 sshd..."
 
   sudo_cmd mkdir -p /run/sshd
 
@@ -243,20 +243,20 @@ ensure_sshd_running() {
   fi
 
   if ! ss -lnt 2>/dev/null | grep -q ":${CLAW_EXTERNAL_VM_PORT} "; then
-    echo "sshd 鏈兘鍦ㄧ鍙?${CLAW_EXTERNAL_VM_PORT} 鍚姩"
-    echo "璇锋鏌? sudo service ssh status"
+    echo "sshd 未能在端�?${CLAW_EXTERNAL_VM_PORT} 启动"
+    echo "请检�? sudo service ssh status"
     exit 1
   fi
 }
 
 ensure_ssh_key_authorized() {
-  echo "妫€鏌?My_Agent 涓撶敤 SSH key..."
+  echo "检�?My_Agent 专用 SSH key..."
 
   mkdir -p "$REAL_HOME/.ssh"
   chmod 700 "$REAL_HOME/.ssh"
 
   if [ ! -f "$MY_AGENT_SSH_KEY_FILE" ]; then
-    echo "鐢熸垚 SSH key: $MY_AGENT_SSH_KEY_FILE"
+    echo "生成 SSH key: $MY_AGENT_SSH_KEY_FILE"
     ssh-keygen -t ed25519 -f "$MY_AGENT_SSH_KEY_FILE" -N "" -C "my-agent-tool-runtime"
   fi
 
@@ -267,7 +267,7 @@ ensure_ssh_key_authorized() {
   touch "$REAL_HOME/.ssh/authorized_keys"
 
   if ! grep -qxF "$(cat "${MY_AGENT_SSH_KEY_FILE}.pub")" "$REAL_HOME/.ssh/authorized_keys"; then
-    echo "鍐欏叆 authorized_keys"
+    echo "写入 authorized_keys"
     cat "${MY_AGENT_SSH_KEY_FILE}.pub" >> "$REAL_HOME/.ssh/authorized_keys"
   fi
 
@@ -277,29 +277,29 @@ ensure_ssh_key_authorized() {
 }
 
 ensure_skill_root_dir() {
-  echo "妫€鏌ュ閮?VM / WSL skill 鐩綍..."
+  echo "检查外�?VM / WSL skill 目录..."
 
   mkdir -p "$CLAW_EXTERNAL_VM_SKILL_ROOT_DIR" || {
-    echo "鏃犳硶鍒涘缓鐩綍: $CLAW_EXTERNAL_VM_SKILL_ROOT_DIR"
-    echo "璇锋鏌ュ綋鍓嶇敤鎴锋槸鍚︽湁鏉冮檺锛屾垨鍏堟墜鍔ㄥ垱寤?NFS 鍏变韩鐩綍"
+    echo "无法创建目录: $CLAW_EXTERNAL_VM_SKILL_ROOT_DIR"
+    echo "请检查当前用户是否有权限，或先手动创�?NFS 共享目录"
     exit 1
   }
 
   if [ ! -w "$CLAW_EXTERNAL_VM_SKILL_ROOT_DIR" ]; then
-    echo "褰撳墠鐢ㄦ埛瀵?skill 鐩綍娌℃湁鍐欐潈闄? $CLAW_EXTERNAL_VM_SKILL_ROOT_DIR"
-    echo "璇锋墽琛岀被浼煎懡浠や慨澶嶏細"
+    echo "当前用户�?skill 目录没有写权�? $CLAW_EXTERNAL_VM_SKILL_ROOT_DIR"
+    echo "请执行类似命令修复："
     echo "sudo chown -R ${CLAW_EXTERNAL_VM_USER}:${CLAW_EXTERNAL_VM_USER} ${CLAW_EXTERNAL_VM_SKILL_ROOT_DIR}"
     exit 1
   fi
 }
 
 verify_local_ssh_login() {
-  echo "楠岃瘉鏈満 SSH 鐧诲綍..."
+  echo "验证本机 SSH 登录..."
 
   local ssh_log
   ssh_log="$(mktemp)" || ssh_log="/tmp/my_agent_ssh_check_$$.log"
 
-  # 鎸夊姛鑳藉紑鍏虫嫾鎺ュ緟楠岃瘉鍛戒护锛堣烦杩囨湭鍚敤鐨?clawhub/codex锛?  local check_cmds="whoami"
+  # 按功能开关拼接待验证命令（跳过未启用�?clawhub/codex�?  local check_cmds="whoami"
   if [ "${ENABLE_CLAWHUB:-true}" = "true" ]; then
     check_cmds="${check_cmds} && ${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V"
   fi
@@ -307,7 +307,7 @@ verify_local_ssh_login() {
     check_cmds="${check_cmds} && ${CODEX_BIN_PATH} --version"
   fi
 
-  # 浠ョ湡瀹炵敤鎴疯韩浠芥墽琛?SSH 娴嬭瘯锛堥伩鍏?root 鐨?known_hosts 骞叉壈锛?  if [ "$(id -un)" != "$REAL_USER" ]; then
+  # 以真实用户身份执�?SSH 测试（避�?root �?known_hosts 干扰�?  if [ "$(id -un)" != "$REAL_USER" ]; then
     sudo -u "$REAL_USER" ssh -i "$MY_AGENT_SSH_KEY_FILE" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o ConnectTimeout=5 -p "$CLAW_EXTERNAL_VM_PORT" "${CLAW_EXTERNAL_VM_USER}@127.0.0.1" "$check_cmds" >"$ssh_log" 2>&1
   else
     ssh -i "$MY_AGENT_SSH_KEY_FILE" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o ConnectTimeout=5 -p "$CLAW_EXTERNAL_VM_PORT" "${CLAW_EXTERNAL_VM_USER}@127.0.0.1" "$check_cmds" >"$ssh_log" 2>&1
@@ -315,21 +315,21 @@ verify_local_ssh_login() {
 
   local ssh_rc=$?
   if [ $ssh_rc -ne 0 ]; then
-    echo "SSH 鐧诲綍鎴?clawhub/codex 妫€娴嬪け璐ワ紙閫€鍑虹爜: $ssh_rc锛?
-    echo "璇︾粏杈撳嚭锛?
+    echo "SSH 登录�?clawhub/codex 检测失败（退出码: $ssh_rc�?
+    echo "详细输出�?
     cat "$ssh_log"
     rm -f "$ssh_log"
     echo
-    echo "甯歌鍘熷洜锛?
-    echo "  1. sshd 鏈惎鍔細sudo service ssh start"
-    echo "  2. 瀵嗛挜鏈巿鏉冿細纭繚 ${MY_AGENT_SSH_KEY_FILE}.pub 鍦?${REAL_HOME}/.ssh/authorized_keys 涓?
-    echo "  3. 闃茬伀澧欓樆姝細妫€鏌ョ鍙?${CLAW_EXTERNAL_VM_PORT}"
-    echo "  4. PasswordAuthentication 鏈叧闂鑷村瘑閽ヨ璇佸け璐?
+    echo "常见原因�?
+    echo "  1. sshd 未启动：sudo service ssh start"
+    echo "  2. 密钥未授权：确保 ${MY_AGENT_SSH_KEY_FILE}.pub �?${REAL_HOME}/.ssh/authorized_keys �?
+    echo "  3. 防火墙阻止：检查端�?${CLAW_EXTERNAL_VM_PORT}"
+    echo "  4. PasswordAuthentication 未关闭导致密钥认证失�?
     exit 1
   fi
 
   rm -f "$ssh_log"
-  echo "鏈満 SSH 鐧诲綍楠岃瘉閫氳繃"
+  echo "本机 SSH 登录验证通过"
 }
 
 main() {
@@ -342,8 +342,8 @@ main() {
   CLAW_EXTERNAL_VM_HOST="${CLAW_EXTERNAL_VM_HOST:-$(detect_host_ip)}"
 
   if [ -z "$CLAW_EXTERNAL_VM_HOST" ]; then
-    echo "鏃犳硶鑷姩鑾峰彇褰撳墠 WSL / VM 鐨?IPv4"
-    echo "鍙互鎵嬪姩鎵ц锛歟xport CLAW_EXTERNAL_VM_HOST=<浣犵殑WSL鎴朧M IP>"
+    echo "无法自动获取当前 WSL / VM �?IPv4"
+    echo "可以手动执行：export CLAW_EXTERNAL_VM_HOST=<你的WSL或VM IP>"
     exit 1
   fi
 
@@ -354,17 +354,17 @@ main() {
   if [ "${ENABLE_CLAWHUB}" = "true" ]; then
     ensure_clawhub_wrapper
   else
-    echo "ENABLE_CLAWHUB=false锛岃烦杩?clawhub 瀹夎"
+    echo "ENABLE_CLAWHUB=false，跳�?clawhub 安装"
   fi
   if [ "${ENABLE_CODEX}" = "true" ]; then
     ensure_codex_wrapper
   else
-    echo "ENABLE_CODEX=false锛岃烦杩?codex 瀹夎"
+    echo "ENABLE_CODEX=false，跳�?codex 安装"
   fi
   verify_local_ssh_login
 
   echo
-  echo "灏嗗簲鐢ㄤ互涓嬮厤缃細"
+  echo "将应用以下配置："
   echo "  NAMESPACE: ${NAMESPACE}"
   echo "  TOOL_RUNTIME_IMAGE: ${TOOL_RUNTIME_IMAGE}"
   echo "  OPENVIKING_SERVER_URL: ${OPENVIKING_SERVER_URL}"
@@ -593,13 +593,13 @@ spec:
 YAML
 
   echo
-  echo "tool-runtime-service external-vm + OpenViking 閰嶇疆宸插簲鐢?
+  echo "tool-runtime-service external-vm + OpenViking 配置已应�?
   echo
-  echo "楠岃瘉 Pod 鍒板綋鍓?WSL / VM 鐨?clawhub锛?
+  echo "验证 Pod 到当�?WSL / VM �?clawhub�?
   echo "kubectl -n ${NAMESPACE} exec deploy/tool-runtime-service -- ssh -i /app/secrets/claw-external-vm/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${CLAW_EXTERNAL_VM_PORT} ${CLAW_EXTERNAL_VM_USER}@${CLAW_EXTERNAL_VM_HOST} '${CLAW_EXTERNAL_VM_CLAWHUB_BIN} -V'"
   echo "kubectl -n ${NAMESPACE} exec deploy/tool-runtime-service -- ssh -i /app/secrets/claw-external-vm/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${CLAW_EXTERNAL_VM_PORT} ${CLAW_EXTERNAL_VM_USER}@${CLAW_EXTERNAL_VM_HOST} '${CODEX_BIN_PATH} --version'"
   echo
-  echo "楠岃瘉 OpenViking 鐜鍙橀噺锛?
+  echo "验证 OpenViking 环境变量�?
   echo "kubectl -n ${NAMESPACE} exec deploy/tool-runtime-service -- sh -lc 'echo account=\$OPENVIKING_ACCOUNT user=\$OPENVIKING_USER agent=\$OPENVIKING_AGENT; test -n \"\$OPENVIKING_API_KEY\" && echo OPENVIKING_API_KEY is set'"
 }
 

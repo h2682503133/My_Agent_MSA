@@ -742,6 +742,98 @@ async def memory_search(user: str = Query(""), query: str = Query(""), limit: in
     return {"hits": hits, "total": result.get("total", len(hits))}
 
 
+# ═══ 长期事件（PROCESS）管理 ═════════════════════════════════
+# 运行文件：orchestrator/config/process/<user_id>/<agent_id>.json
+# 模板：    orchestrator/config/process/process_templates#/<agent_id>.json
+#（process_templates# 目录名含 '#'，user_id 经 _safe_segment 生成不了含 '#' 的段名，
+#  防止"邪门用户"占用模板目录；dashboard 直读直写，process-init 工具读模板载入）
+
+PROCESS_ROOT = CONFIG_ROOT / "orchestrator" / "config" / "process"
+PROCESS_TPL_DIR = PROCESS_ROOT / "process_templates#"
+
+class ProcessFile(BaseModel):
+    content: str
+
+def _process_users() -> list[str]:
+    if not PROCESS_ROOT.exists():
+        return []
+    return sorted(d.name for d in PROCESS_ROOT.iterdir()
+                  if d.is_dir() and not d.name.startswith(".") and d.name != "process_templates#")
+
+def _process_agents(user_id: str) -> list[str]:
+    d = PROCESS_ROOT / user_id
+    if not d.exists():
+        return []
+    return sorted(f.stem for f in d.iterdir() if f.is_file() and f.suffix == ".json")
+
+def _read_json_text(path: Path) -> str:
+    if not path.exists():
+        raise HTTPException(404, "文件不存在")
+    return path.read_text(encoding="utf-8")
+
+def _write_json_text(path: Path, content: str) -> None:
+    # 校验合法 JSON，避免写入损坏数据
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"JSON 解析失败：{e}")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "JSON 顶层必须是对象")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        except Exception:
+            pass
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+@app.get("/api/process/users")
+async def process_users_list():
+    return {"users": _process_users()}
+
+@app.get("/api/process/agents")
+async def process_agents_list(user: str = Query("")):
+    if not user:
+        raise HTTPException(400, "缺少 user 参数")
+    return {"user": user, "agents": _process_agents(user)}
+
+@app.get("/api/process/file")
+async def process_file_get(user: str = Query(""), agent: str = Query("")):
+    if not user or not agent:
+        raise HTTPException(400, "缺少 user/agent 参数")
+    path = PROCESS_ROOT / user / f"{agent}.json"
+    return {"user": user, "agent": agent, "content": _read_json_text(path)}
+
+@app.put("/api/process/file")
+async def process_file_put(user: str = Query(""), agent: str = Query(""), body: ProcessFile | None = None):
+    if not user or not agent:
+        raise HTTPException(400, "缺少 user/agent 参数")
+    content = body.content if body is not None else ""
+    path = PROCESS_ROOT / user / f"{agent}.json"
+    _write_json_text(path, content)
+    return {"ok": True, "path": str(path.relative_to(CONFIG_ROOT)).replace("\\", "/")}
+
+@app.get("/api/process/template")
+async def process_template_get(agent: str = Query("")):
+    if not agent:
+        raise HTTPException(400, "缺少 agent 参数")
+    path = PROCESS_TPL_DIR / f"{agent}.json"
+    if not path.exists():
+        return {"agent": agent, "exists": False, "content": "{\n  \"turn\": 0,\n  \"items\": [],\n  \"vars\": {},\n  \"aliases\": {}\n}"}
+    return {"agent": agent, "exists": True, "content": _read_json_text(path)}
+
+@app.put("/api/process/template")
+async def process_template_put(agent: str = Query(""), body: ProcessFile | None = None):
+    if not agent:
+        raise HTTPException(400, "缺少 agent 参数")
+    content = body.content if body is not None else ""
+    path = PROCESS_TPL_DIR / f"{agent}.json"
+    _write_json_text(path, content)
+    return {"ok": True, "path": str(path.relative_to(CONFIG_ROOT)).replace("\\", "/")}
+
+
 # ─── 静态页面 ────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)

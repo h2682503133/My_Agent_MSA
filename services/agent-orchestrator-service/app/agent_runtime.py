@@ -671,6 +671,32 @@ class AgentRuntime:
             lines.append(f"{index}. {entry}")
         return {"role": "system", "content": "\n".join(lines)}
 
+    def _build_vars_message(self) -> dict | None:
+        """从 PROCESS 存储读取 vars 数值段（与事件段分离，独立注入）。
+
+        - 只显示存储 key=value 平铺（aliases 别名映射不注入，避免模型看到别名）
+        - 插入位置：用户对话前、世界书后（由调用方决定）
+        - 无 vars 或无 PROCESS 文件 → 返回 None（不注入空段）
+        """
+        user_seg = _safe_process_segment(self.user_id)
+        agent_seg = _safe_process_segment(self.id)
+        path = config.PROCESS_DIR / user_seg / f"{agent_seg}.json"
+        if not path.exists():
+            return None
+        try:
+            store = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(store, dict):
+            return None
+        vars_map = store.get("vars")
+        if not isinstance(vars_map, dict) or not vars_map:
+            return None
+        lines = ["【当前状态变量】"]
+        for vkey, vval in vars_map.items():
+            lines.append(f"- {vkey} = {vval}")
+        return {"role": "system", "content": "\n".join(lines)}
+
     def _world_info_enabled(self) -> bool:
         """files 含 world_info.md → 启用两阶段世界书（否则完全跳过）。"""
         return _world_info_mode_from_files(self.config.get("files", []))
@@ -945,17 +971,24 @@ class AgentRuntime:
                     {"role": "user", "content": user_content},
                 ]
 
+        # 数值段（vars）插在用户对话前、世界书后：
+        # - messages 组装时放 current_input 前面
+        # - base_tail 同样前置 vars，世界书注入时 tail=[世界书块]+tail → 世界书→vars→用户对话
+        vars_message = self._build_vars_message()
+        vars_list = [vars_message] if vars_message else []
+
         messages = (
             system_prompt_messages
             + long_context_message
             + task_memory_messages
             + user_input_messages
+            + vars_list
             + current_input_messages
         )
         # 世界书注入段插在 current_input（"以下为本次单轮对话内容"）上方：
-        # base_head = 到 user_input 为止，base_tail = current_input
+        # base_head = 到 user_input 为止，base_tail = vars + current_input
         base_head = system_prompt_messages + long_context_message + task_memory_messages + user_input_messages
-        base_tail = current_input_messages
+        base_tail = vars_list + current_input_messages
 
         model_profile = self.config.get("model_profile") or self.config.get("model") or self.id
         base_model_profile = model_profile

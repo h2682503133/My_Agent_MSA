@@ -24,7 +24,10 @@ from app import fetch_tools
 from app.logger import log, debug
 from app import mnt_access
 from app.process_runtime import init as process_init
+from app.process_runtime import modify as process_modify
 from app.process_runtime import remove as process_remove
+from app.process_runtime import var_list as process_var_list
+from app.process_runtime import var_remove as process_var_remove
 from app.process_runtime import write as process_write
 from app.worldinfo_runtime import write as worldinfo_write
 from app.skill_runtime import skill_runtime
@@ -392,6 +395,34 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 kwargs.get("agent_id") or "main",
             )
 
+        # vars 变量（按 key 修改：严格匹配 → 别名匹配 → 脱靶新建）
+        if name == "process-modify":
+            key = kwargs.get("key") or (args[0] if args else "")
+            op = kwargs.get("op") or kwargs.get("value") or (args[1] if len(args) > 1 else "")
+            return process_modify(
+                config.PROCESS_DIR,
+                kwargs.get("user_id") or "default",
+                kwargs.get("agent_id") or "main",
+                key,
+                op,
+            )
+
+        if name == "process-var-remove":
+            key = kwargs.get("key") or (args[0] if args else "")
+            return process_var_remove(
+                config.PROCESS_DIR,
+                kwargs.get("user_id") or "default",
+                kwargs.get("agent_id") or "main",
+                key,
+            )
+
+        if name == "process-var-list":
+            return process_var_list(
+                config.PROCESS_DIR,
+                kwargs.get("user_id") or "default",
+                kwargs.get("agent_id") or "main",
+            )
+
         # 世界书（World Info）：智能体自动更新长期设定（scope 默认当前 agent，无全局）
         # 仅保留 write：系统自动查重（同 scope 关键词已存在 → 返回"该词条已经存在"），
         # 删除/修改由用户在 dashboard 手动管理（worldinfo-remove/list 已移除）
@@ -741,7 +772,10 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 - send-message: text (执行过程中立即向用户推送文本消息)
 - process-write: index|title|content (index=-1 追加到末尾，1..N 覆写对应条目)
 - process-remove: index (按 1 起始删除对应条目)
-- process-init: 重置 PROCESS 为初始状态（清空条目、轮次归零）
+- process-init: 重置 PROCESS（有模板 process_templates#/<agent>.json 则载入模板，无则清空条目/轮次归零）
+- process-modify: key|op (修改 vars 变量，op=+N/-N/=N；严格匹配→别名匹配→脱靶新建，脱靶新建存符号数值)
+- process-var-remove: key (删除 vars 变量，严格匹配→别名匹配)
+- process-var-list: 列出全部 vars 变量
 
 skill tools:
 - clawhub-search: keyword

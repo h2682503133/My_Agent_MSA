@@ -138,6 +138,7 @@ label.file-item:hover { color: var(--accent); }
     <button data-tab="logs">日志查看</button>
     <button data-tab="sprompt">System Prompt</button>
     <button data-tab="worldinfo">世界书</button>
+    <button data-tab="process">长期事件</button>
     <button data-tab="session">Session 管理</button>
     <button data-tab="qrcode">二维码</button>
     <button data-tab="misc">杂项</button>
@@ -285,6 +286,59 @@ label.file-item:hover { color: var(--accent); }
       <div style="display:flex;gap:8px;margin-top:8px;">
         <button class="btn" onclick="wiAddGroupRow()">添加 agent</button>
         <button class="btn green" onclick="wiSaveGroups()">保存群组</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 长期事件管理（PROCESS） -->
+  <div id="tab-process" class="tab">
+    <h2>长期事件管理 <span style="font-size:0.8rem;color:var(--dim);">(orchestrator/config/process，事件段 + 数值段 vars + 初始化模板)</span></h2>
+
+    <div class="card">
+      <div class="session-toolbar">
+        <span style="color:var(--dim);">运行数据：</span>
+        <select id="proc-user-select" onchange="procLoadAgents()">
+          <option value="">-- 选择 user_id --</option>
+        </select>
+        <select id="proc-agent-select" onchange="procLoadFile()">
+          <option value="">-- 选择 agent_id --</option>
+        </select>
+        <span id="proc-path-info" style="color:var(--dim);font-size:0.8rem;"></span>
+        <span style="flex:1;"></span>
+        <button class="btn" onclick="procReloadUsers()">刷新用户</button>
+        <button class="btn green" onclick="procSaveFile()">保存运行数据</button>
+      </div>
+      <textarea id="proc-editor" spellcheck="false" placeholder="选择 user_id + agent_id 后查看 process/<user>/<agent>.json 原文（可直接编辑保存）..."
+                style="width:100%;min-height:260px;font-family:monospace;font-size:0.85rem;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:10px;box-sizing:border-box;"></textarea>
+    </div>
+
+    <div class="card">
+      <div class="session-toolbar">
+        <span style="color:var(--dim);">初始化模板：</span>
+        <select id="proc-tpl-agent-select" onchange="procLoadTemplate()">
+          <option value="">-- 选择 agent_id --</option>
+        </select>
+        <span style="color:var(--dim);font-size:0.8rem;">(process/process_templates#/&lt;agent&gt;.json，process-init 时载入)</span>
+        <span style="flex:1;"></span>
+        <button class="btn green" onclick="procSaveTemplate()">保存模板</button>
+      </div>
+      <textarea id="proc-tpl-editor" spellcheck="false" placeholder="初始化模板：items=事件段预置、vars=数值段预置、aliases=别名反向映射 {别名: 存储key}..."
+                style="width:100%;min-height:220px;font-family:monospace;font-size:0.85rem;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:10px;box-sizing:border-box;"></textarea>
+    </div>
+
+    <div class="card">
+      <h3>别名解析工具 <span style="font-size:0.8rem;color:var(--dim);">(为模板 aliases 生成反向映射：左栏存储 key + 右栏多个别名)</span></h3>
+      <div class="session-toolbar">
+        <input id="proc-ali-key" type="text" placeholder="存储 key，如 玩家HP"
+               style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);">
+        <input id="proc-ali-values" type="text" placeholder="别名，逗号分隔，如 hp, HP, 生命值, 血量"
+               style="flex:2;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);">
+        <button class="btn green" onclick="procAliasParse()">生成映射</button>
+      </div>
+      <div id="proc-ali-output" style="margin-top:10px;font-family:monospace;font-size:0.85rem;color:var(--dim);"></div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+        <button class="btn" onclick="procAliasAppend()">追加到模板 aliases</button>
+        <span id="proc-ali-status" style="color:var(--dim);font-size:0.8rem;"></span>
       </div>
     </div>
   </div>
@@ -500,6 +554,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     if (btn.dataset.tab === 'session') sessLoadUsers();
     if (btn.dataset.tab === 'sprompt') spRefresh();
     if (btn.dataset.tab === 'worldinfo') wiLoad();
+    if (btn.dataset.tab === 'process') procLoadUsers();
     if (btn.dataset.tab === 'qrcode') refreshQrcode();
     if (btn.dataset.tab === 'misc') loadMiscSettings();
   });
@@ -906,6 +961,147 @@ async function wiSaveGroups() {
   }).then(r => r.json());
   toast('群组已保存');
   wiLoadGroups();
+}
+
+
+// ═══ 长期事件管理（PROCESS）═══
+
+let procPendingAlias = null; // 别名解析结果 {alias: storeKey}，待追加到模板
+
+async function procLoadUsers() {
+  const sel = document.getElementById('proc-user-select');
+  const tplSel = document.getElementById('proc-tpl-agent-select');
+  sel.innerHTML = '<option value="">-- 加载中 --</option>';
+  try {
+    const data = await fetch('/api/process/users').then(r => r.json());
+    sel.innerHTML = '<option value="">-- 选择 user_id --</option>' +
+      (data.users || []).map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
+    // 模板侧的 agent 下拉复用"每个 user 下出现过的 agent + 模板已有 agent"，
+    // 简单起见加载第一个有数据的 user 的 agent 列表
+    await procRefreshTplAgents();
+  } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
+}
+
+async function procReloadUsers() {
+  await procLoadUsers();
+  toast('用户列表已刷新');
+}
+
+async function procLoadAgents() {
+  const user = document.getElementById('proc-user-select').value;
+  const sel = document.getElementById('proc-agent-select');
+  sel.innerHTML = '<option value="">-- 加载中 --</option>';
+  document.getElementById('proc-editor').value = '';
+  document.getElementById('proc-path-info').textContent = '';
+  if (!user) { sel.innerHTML = '<option value="">-- 选择 agent_id --</option>'; return; }
+  try {
+    const data = await fetch('/api/process/agents?user=' + encodeURIComponent(user)).then(r => r.json());
+    sel.innerHTML = '<option value="">-- 选择 agent_id --</option>' +
+      (data.agents || []).map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  } catch(e) { sel.innerHTML = '<option value="">-- 加载失败 --</option>'; }
+}
+
+async function procLoadFile() {
+  const user = document.getElementById('proc-user-select').value;
+  const agent = document.getElementById('proc-agent-select').value;
+  const ed = document.getElementById('proc-editor');
+  ed.value = '';
+  document.getElementById('proc-path-info').textContent = '';
+  if (!user || !agent) return;
+  try {
+    const data = await fetch(`/api/process/file?user=${encodeURIComponent(user)}&agent=${encodeURIComponent(agent)}`).then(r => r.json());
+    ed.value = data.content;
+    document.getElementById('proc-path-info').textContent = `process/${user}/${agent}.json`;
+  } catch(e) { toast('读取失败: ' + e, false); }
+}
+
+async function procSaveFile() {
+  const user = document.getElementById('proc-user-select').value;
+  const agent = document.getElementById('proc-agent-select').value;
+  if (!user || !agent) { toast('请先选择 user_id 和 agent_id', false); return; }
+  try {
+    const r = await fetch(`/api/process/file?user=${encodeURIComponent(user)}&agent=${encodeURIComponent(agent)}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: document.getElementById('proc-editor').value})
+    });
+    const data = await r.json();
+    if (data.ok) { toast('已保存 ' + data.path); procReloadUsers(); }
+    else toast('保存失败', false);
+  } catch(e) { toast('保存失败: ' + e, false); }
+}
+
+// ─── 模板 ───
+
+async function procRefreshTplAgents() {
+  const sel = document.getElementById('proc-tpl-agent-select');
+  // 从第一个有 process 数据的 user 收集 agent 名；模板可能独立存在，也补上模板目录里的 agent
+  const users = await fetch('/api/process/users').then(r => r.json()).catch(() => ({users: []}));
+  const agents = new Set();
+  for (const u of (users.users || []).slice(0, 5)) {
+    const d = await fetch('/api/process/agents?user=' + encodeURIComponent(u)).then(r => r.json()).catch(() => ({agents: []}));
+    (d.agents || []).forEach(a => agents.add(a));
+  }
+  sel.innerHTML = '<option value="">-- 选择 agent_id --</option>' +
+    [...agents].sort().map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+}
+
+async function procLoadTemplate() {
+  const agent = document.getElementById('proc-tpl-agent-select').value;
+  const ed = document.getElementById('proc-tpl-editor');
+  ed.value = '';
+  if (!agent) return;
+  try {
+    const data = await fetch('/api/process/template?agent=' + encodeURIComponent(agent)).then(r => r.json());
+    ed.value = data.content;
+  } catch(e) { toast('读取模板失败: ' + e, false); }
+}
+
+async function procSaveTemplate() {
+  const agent = document.getElementById('proc-tpl-agent-select').value;
+  if (!agent) { toast('请先选择 agent_id', false); return; }
+  try {
+    const r = await fetch('/api/process/template?agent=' + encodeURIComponent(agent), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: document.getElementById('proc-tpl-editor').value})
+    });
+    const data = await r.json();
+    if (data.ok) { toast('模板已保存 ' + data.path); }
+    else toast('模板保存失败', false);
+  } catch(e) { toast('模板保存失败: ' + e, false); }
+}
+
+// ─── 别名解析工具 ───
+
+function procAliasParse() {
+  const key = document.getElementById('proc-ali-key').value.trim();
+  const raw = document.getElementById('proc-ali-values').value;
+  const aliases = raw.split(/[,，、\s]+/).map(s => s.trim()).filter(Boolean);
+  const out = document.getElementById('proc-ali-output');
+  const status = document.getElementById('proc-ali-status');
+  if (!key) { out.textContent = '请先输入存储 key'; procPendingAlias = null; return; }
+  if (!aliases.length) { out.textContent = '请输入至少一个别名'; procPendingAlias = null; return; }
+  const map = {};
+  for (const a of aliases) map[a] = key;
+  procPendingAlias = map;
+  out.textContent = JSON.stringify(map, null, 2);
+  status.textContent = `${aliases.length} 个别名 → 存储 key「${key}」`;
+}
+
+async function procAliasAppend() {
+  if (!procPendingAlias) { toast('请先生成映射', false); return; }
+  const agent = document.getElementById('proc-tpl-agent-select').value;
+  if (!agent) { toast('请先选择 agent_id', false); return; }
+  let data;
+  try {
+    const r = await fetch('/api/process/template?agent=' + encodeURIComponent(agent)).then(r => r.json());
+    data = JSON.parse(r.content);
+  } catch(e) { toast('模板读取失败: ' + e, false); return; }
+  if (!data.aliases) data.aliases = {};
+  Object.assign(data.aliases, procPendingAlias);
+  document.getElementById('proc-tpl-editor').value = JSON.stringify(data, null, 2);
+  toast('已追加到模板 aliases（点击「保存模板」生效）');
 }
 
 
