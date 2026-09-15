@@ -5,6 +5,7 @@ FastAPI 后端 + 静态前端
 
 import json
 import os
+import re
 import subprocess
 import shutil
 import asyncio
@@ -20,11 +21,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
+from app import tool_catalog
+
 app = FastAPI(title="My_Agent Dashboard")
 
 # ─── 配置 ───────────────────────────────────────────────────
 CONFIG_ROOT = Path(os.environ.get("CONFIG_ROOT", "/app/config"))
 STATIC_DIR = Path(__file__).parent.parent / "static"
+# 前端静态资源：css / 各标签页 html 分片 / 各标签页 js 模块（见 static/assets 目录）
+ASSETS_DIR = STATIC_DIR / "assets"
 NAMESPACE = os.environ.get("NAMESPACE", "agent")
 SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/user"))
 OPENVIKING_SERVER_URL = os.environ.get("OPENVIKING_SERVER_URL", "http://openviking.agent.svc.cluster.local:1933")
@@ -42,6 +47,10 @@ DEFAULT_MISC_SETTINGS = {
     "mnt_write_restriction_enabled": False,
     "mnt_write_allowed_users": [],
 }
+
+# 静态资源挂载（css / js / tabs 分片）；目录不存在时跳过，便于本地只有 index.html 的场景
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 # ─── Pydantic models ────────────────────────────────────────
 
@@ -71,6 +80,19 @@ class MiscSettingsUpdate(BaseModel):
     shell_allowed_users: list[str] | None = None
     mnt_write_restriction_enabled: bool | None = None
     mnt_write_allowed_users: list[str] | None = None
+
+class ToolGenerateRequest(BaseModel):
+    """按 TOOL.json 勾选结果生成智能体 TOOL.md。
+
+    - `sections` / `tools`：前端勾选结果（推荐；规则由 app/tool_catalog.py 统一实现）
+    - `options`：直接给选项块（高级用法，给了就以它为准）
+    """
+    options: dict | None = None
+    sections: list[str] | None = None
+    tools: list[str] | None = None
+    body: str = ""
+    show_title: bool | None = None
+    body_position: str | None = None
 
 
 # ─── 密码管理 ────────────────────────────────────────────────
@@ -465,23 +487,49 @@ SYSTEM_PROMPT_ROOT = CONFIG_ROOT / "orchestrator" / "system_prompt"
 async def list_sp():
     agents = []
     global_files = []
+    _, tool_summary, tool_json_error = _load_tool_summary()
     if SYSTEM_PROMPT_ROOT.exists():
         # 根目录下的直接文件（全局通用提示词）；.bak 备份不展示，避免误编辑
         for f in sorted(SYSTEM_PROMPT_ROOT.iterdir()):
             if f.is_file() and not f.name.startswith(".") and not f.name.endswith(".bak"):
-                global_files.append({"name": f.name, "size": f.stat().st_size})
+                global_files.append({
+                    "name": f.name,
+                    "size": f.stat().st_size,
+                    "kind": "tool_catalog" if f.name.lower() == tool_catalog.CATALOG_FILENAME.lower() else "global",
+                })
         for d in sorted(SYSTEM_PROMPT_ROOT.iterdir()):
             if d.is_dir() and d.name == "global":
                 for f in sorted(d.iterdir()):
                     if f.is_file() and not f.name.startswith(".") and not f.name.endswith(".bak"):
-                        global_files.append({"name": f.name, "size": f.stat().st_size})
+                        global_files.append({"name": f.name, "size": f.stat().st_size, "kind": "global"})
             elif d.is_dir() and not d.name.startswith("."):
                 files = []
                 for f in sorted(d.iterdir()):
                     if f.is_file() and not f.name.startswith(".") and not f.name.endswith(".bak"):
-                        files.append({"name": f.name, "size": f.stat().st_size})
-                agents.append({"name": d.name, "files": files})
-    return {"agents": agents, "global_files": global_files}
+                        entry = {"name": f.name, "size": f.stat().st_size, "kind": "prompt"}
+                        if f.name.lower() == "tool.md":
+                            # 选项式（有 tool-inject 块）还是老式手写原文，列表里直接标出来
+                            try:
+                                options, _ = tool_catalog.parse_tool_md(f.read_text(encoding="utf-8"))
+                            except Exception:
+                                options = None
+                            entry["kind"] = "tool_options" if options is not None else "tool_legacy"
+                        files.append(entry)
+                agents.append({
+                    "name": d.name,
+                    "files": files,
+                    "declares_tool_md": _tool_md_declared(d.name),
+                })
+    return {
+        "agents": agents,
+        "global_files": global_files,
+        "tool_catalog": {
+            "exists": TOOL_CATALOG_PATH.exists(),
+            "json_error": tool_json_error,
+            "section_count": tool_summary.get("section_count", 0),
+            "tool_count": tool_summary.get("tool_count", 0),
+        },
+    }
 
 @app.post("/api/system_prompt/agent")
 async def sp_add_agent(name: str = Query("")):
@@ -518,7 +566,7 @@ async def read_sp(agent: str, filename: str):
 @app.put("/api/system_prompt/file")
 async def write_sp(body: SystemPromptFile):
     # agent 为空或 "global" 时写全局文件：优先写回文件原有位置（根目录 > global/ 子目录），
-    # 两处都不存在时写根目录（orchestrator 只读根目录的 GLOBAL_SETTING.md 等）。
+    # 两处都不存在时写根目录（orchestrator 只读根目录的 GLOBAL_SETTING.md / TOOL.json 等）。
     if body.agent and body.agent != "global":
         fp = SYSTEM_PROMPT_ROOT / body.agent / body.filename
     else:
@@ -532,7 +580,15 @@ async def write_sp(body: SystemPromptFile):
             fp = root_fp
     fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(body.content, encoding="utf-8")
-    return {"ok": True}
+    # .json（如全局工具目录 TOOL.json）：写法照存，但校验一下并回报，
+    # 避免写坏 JSON 后 orchestrator 静默降级、排查困难。
+    json_error = ""
+    if fp.suffix.lower() == ".json":
+        try:
+            json.loads(body.content)
+        except json.JSONDecodeError as exc:
+            json_error = f"JSON 解析失败：{exc}"
+    return {"ok": True, "json_error": json_error}
 
 @app.delete("/api/system_prompt/file/{agent}/{filename:path}")
 async def delete_sp(agent: str, filename: str):
@@ -552,6 +608,138 @@ async def delete_sp(agent: str, filename: str):
         raise HTTPException(404, "文件不存在")
     fp.unlink()
     return {"ok": True}
+
+
+# ═══ 工具目录（TOOL.json）→ 智能体 TOOL.md 勾选生成 ═══════════
+# 目录：orchestrator/system_prompt/TOOL.json（全局）
+# 智能体侧：orchestrator/system_prompt/<agent>/TOOL.md 只存注入选项 + 正文补充
+
+TOOL_CATALOG_PATH = SYSTEM_PROMPT_ROOT / tool_catalog.CATALOG_FILENAME
+AGENT_LIST_PATH = CONFIG_ROOT / "orchestrator" / "config" / "agent_list.json"
+
+
+def _load_tool_summary() -> tuple[dict, dict, str]:
+    """读取 TOOL.json，返回 (catalog, summary, json_error)。"""
+    catalog, json_error = tool_catalog.load_catalog(TOOL_CATALOG_PATH)
+    return catalog, tool_catalog.summarize_catalog(catalog), json_error
+
+
+def _tool_md_declared(agent_id: str) -> bool | None:
+    """agent_list.json 里该智能体的 files 是否声明了 TOOL.md / TOOL.json。
+
+    返回 None 表示无法判断（配置缺失或损坏）。只做展示提醒，不影响注入。
+    """
+    try:
+        if not AGENT_LIST_PATH.exists():
+            return None
+        data = json.loads(AGENT_LIST_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    found = False
+
+    def _scan(agents) -> None:
+        nonlocal found
+        if not isinstance(agents, dict):
+            return
+        entry = agents.get(agent_id)
+        if isinstance(entry, dict) and isinstance(entry.get("files"), list):
+            for name in entry["files"]:
+                if str(name).strip().lower() in ("tool.md", "tool.json"):
+                    found = True
+
+    if "default" not in data and "users" not in data:
+        _scan(data)  # 旧平铺格式
+    else:
+        default_cfg = data.get("default") or {}
+        _scan(default_cfg.get("agents") if isinstance(default_cfg.get("agents"), dict) else default_cfg)
+        users_cfg = data.get("users") or {}
+        if isinstance(users_cfg, dict):
+            for user_cfg in users_cfg.values():
+                if isinstance(user_cfg, dict):
+                    _scan(user_cfg.get("agents") if isinstance(user_cfg.get("agents"), dict) else user_cfg)
+    return found
+
+
+@app.get("/api/tool/catalog")
+async def tool_catalog_get():
+    """全局工具目录的解析结果（段 / 工具 / 分组 / 是否默认注入）。"""
+    catalog, summary, json_error = _load_tool_summary()
+    return {
+        "exists": TOOL_CATALOG_PATH.exists(),
+        "path": str(TOOL_CATALOG_PATH.relative_to(CONFIG_ROOT)).replace("\\", "/"),
+        "json_error": json_error,
+        "summary": summary,
+        "groups": tool_catalog.collect_groups(summary),
+        "catalog": catalog,
+    }
+
+
+@app.get("/api/tool/options")
+async def tool_options_get(agent: str = Query("")):
+    """取某智能体 TOOL.md 的当前状态：options（选项式）/ legacy（老式原文）/ missing。"""
+    if not agent:
+        raise HTTPException(400, "缺少 agent 参数")
+    path = SYSTEM_PROMPT_ROOT / agent / "TOOL.md"
+    _, summary, _ = _load_tool_summary()
+    payload = {
+        "agent": agent,
+        "declares_tool_md": _tool_md_declared(agent),
+        "default_options": tool_catalog.default_options(summary),
+    }
+    if not path.exists():
+        return {**payload, "mode": "missing", "options": None, "body": "", "warnings": []}
+
+    text = path.read_text(encoding="utf-8")
+    options, body = tool_catalog.parse_tool_md(text)
+    if options is None:
+        return {
+            **payload,
+            "mode": "legacy",
+            "options": None,
+            "body": body,
+            "warnings": ["当前是手写原文式 TOOL.md：没有选项块，整份原文照旧注入"],
+        }
+    picked_sections, picked_tools = tool_catalog.selection_from_options(summary, options)
+    return {
+        **payload,
+        "mode": "options",
+        "options": options,
+        "body": body,
+        "picked_sections": sorted(picked_sections),
+        "picked_tools": sorted(picked_tools),
+        "warnings": tool_catalog.validate_options(summary, options),
+    }
+
+
+@app.post("/api/tool/generate")
+async def tool_generate(body: ToolGenerateRequest):
+    """按勾选生成 TOOL.md 全文 + 注入预览（不落盘，前端确认后再保存）。"""
+    catalog, summary, json_error = _load_tool_summary()
+
+    if body.sections is not None:
+        # 勾选模式：勾选 → 选项块的规则统一在 tool_catalog.options_from_selection
+        options = tool_catalog.options_from_selection(
+            summary, set(body.sections or []), set(body.tools or []), body=body.body
+        )
+        if options.get("enabled") is not False:
+            if body.show_title is False:
+                options.setdefault("show_title", False)
+            if str(body.body_position or "after").strip().lower() == "before":
+                options["body_position"] = "before"
+    else:
+        options = body.options or {}
+
+    return {
+        "ok": True,
+        "content": tool_catalog.build_tool_md(options, body.body),
+        "preview": tool_catalog.build_injection(catalog, options, body.body),
+        "options": options,
+        "warnings": tool_catalog.validate_options(summary, options),
+        "json_error": json_error,
+    }
 
 
 # ═══ System Prompt 分组（仅展示用，不影响存储结构）═══════════
@@ -873,12 +1061,37 @@ async def process_template_put(agent: str = Query(""), body: ProcessFile | None 
 
 
 # ─── 静态页面 ────────────────────────────────────────────────
+# 页面骨架在 static/index.html，各标签页的标记在 static/assets/tabs/<tab>.html，
+# 由 index.html 里的 `<!-- @include: tabs/xxx.html -->` 占位在返回时拼进去。
+# 手写 include（不引模板引擎依赖）：分片按上方标签页拆分，改了不用重启服务。
+
+_INCLUDE_RE = re.compile(r"^([ \t]*)<!--\s*@include:\s*([0-9A-Za-z_./-]+)\s*-->[ \t]*$", re.MULTILINE)
+
+
+def _render_index() -> str:
+    """读取 index.html 并把 @include 占位替换成标签页分片内容。
+
+    分片路径相对 `static/assets/`（如 `tabs/pods.html`）；越界路径一律拒绝。
+    """
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    root = ASSETS_DIR.resolve()
+
+    def _replace(match: re.Match) -> str:
+        indent, name = match.group(1), match.group(2)
+        path = (ASSETS_DIR / name).resolve()
+        # 只允许取 assets 目录内的分片，避免 @include 变成任意文件读取
+        if not str(path).startswith(str(root)) or not path.is_file():
+            return f"{indent}<!-- @include 分片不存在: {name} -->"
+        lines = path.read_text(encoding="utf-8").rstrip("\n").splitlines()
+        return "\n".join(indent + line if line.strip() else line for line in lines)
+
+    return _INCLUDE_RE.sub(_replace, html)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    index_file = STATIC_DIR / "index.html"
-    if index_file.exists():
-        return index_file.read_text(encoding="utf-8")
+    if (STATIC_DIR / "index.html").exists():
+        return _render_index()
     return "<h1>Dashboard</h1><p>index.html not found</p>"
 
 

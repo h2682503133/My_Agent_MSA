@@ -1,0 +1,334 @@
+{
+  "version": 1,
+  "title": "# 工具及技能调用设置",
+  "sections": [
+    {
+      "id": "调用格式",
+      "title": "## 调用格式",
+      "text": "当需要调用工具（技能也是一种工具）时，在回答末尾输出：\n工具调用:工具名|参数1|参数2|参数3...\n- 无参数时，参数位置留空。\n- 一次只输出一个调用，不使用代码块、Markdown 或任何多余符号。"
+    },
+    {
+      "id": "内置工具",
+      "title": "## 内置工具",
+      "tools": [
+        {
+          "name": "shell",
+          "args": "命令",
+          "desc": "执行 shell 命令",
+          "groups": [
+            "执行"
+          ]
+        },
+        {
+          "name": "list-workspace",
+          "desc": "列出工作空间所有文件",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "dir-list",
+          "args": "目录|通配符",
+          "desc": "列出目录内容，可用 *.py|recursive=true 递归 等过滤",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "fetch",
+          "args": "url|method|data",
+          "desc": "发送 HTTP 请求",
+          "groups": [
+            "网络"
+          ],
+          "notes": [
+            "不确定页面结构或要概览 → data 留空（fetch|url|GET|），大页面返回带编号【N】的章节大纲；需要某章节完整内容时，再调用 fetch|url|GET|N（章节序号）或 fetch|url|GET|章节名",
+            "直接查具体信息 → fetch|url|GET|要查找的内容（多关键词用空格分隔，如：灵梦 能力）",
+            "POST 请求 → fetch|url|POST|请求体JSON（data=请求体，返回即结果）"
+          ]
+        },
+        {
+          "name": "download",
+          "args": "url|目标路径",
+          "desc": "下载 URL 并保存为工作区文件（不传目标路径则用 URL 文件名）",
+          "groups": [
+            "网络",
+            "文件"
+          ]
+        },
+        {
+          "name": "port-expose",
+          "args": "端口",
+          "desc": "声明对外开放端口（范围 5800-5899）",
+          "groups": [
+            "网络"
+          ]
+        },
+        {
+          "name": "web-search",
+          "args": "关键词|条数",
+          "desc": "搜索网页（条数可选，默认10，最多50）",
+          "groups": [
+            "网络"
+          ]
+        },
+        {
+          "name": "file-read",
+          "args": "文件路径",
+          "desc": "读取文件",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "file-write",
+          "args": "文件路径|内容",
+          "desc": "写入文件（覆盖）",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "file-append",
+          "args": "文件路径|内容",
+          "desc": "追加写入文件末尾",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "file-copy",
+          "args": "源路径|目标路径",
+          "desc": "复制文件/目录",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "file-move",
+          "args": "源路径|目标路径",
+          "desc": "移动或重命名文件/目录",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "windows-file-copy",
+          "args": "源路径|目标路径",
+          "desc": "与windows宿主机复制文件/目录",
+          "groups": [
+            "文件",
+            "宿主机"
+          ]
+        },
+        {
+          "name": "windows-file-move",
+          "args": "源路径|目标路径",
+          "desc": "与windows宿主机移动或重命名文件/目录",
+          "groups": [
+            "文件",
+            "宿主机"
+          ]
+        },
+        {
+          "name": "file-tail",
+          "args": "文件路径|行数",
+          "desc": "读取文件末尾 N 行（默认50）",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "file-search",
+          "args": "关键词|路径|条数",
+          "desc": "在文件内容中搜索（支持正则）",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "delete-file",
+          "args": "文件路径",
+          "desc": "删除文件或空目录",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "unzip",
+          "args": "压缩包路径|目标目录",
+          "desc": "解压 zip 到工作区（默认解压到同名目录）",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "codex",
+          "args": "工作目录|需求",
+          "desc": "生成代码",
+          "groups": [
+            "生成"
+          ]
+        },
+        {
+          "name": "get-image-url-from-local",
+          "args": "文件路径",
+          "desc": "获取本地图片的 URL",
+          "groups": [
+            "图片"
+          ]
+        },
+        {
+          "name": "send-image-by-url",
+          "args": "url",
+          "desc": "通过 URL 发送图片给用户",
+          "groups": [
+            "图片"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "技能管理工具",
+      "title": "## 技能管理工具",
+      "tools": [
+        {
+          "name": "clawhub-search",
+          "args": "关键词",
+          "desc": "搜索可下载技能（关键词限英文）",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "clawhub-install",
+          "args": "技能名",
+          "desc": "从 ClawHub 下载并安装技能",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "add-skill-to-viking",
+          "args": "技能名",
+          "desc": "将本地技能加入知识库（ClawHub 下载的技能会自动添加）",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "skill-list",
+          "desc": "查看知识库所有技能名称及描述",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "skill-list-simple",
+          "desc": "仅查看技能名称",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "skill-delete",
+          "args": "技能名",
+          "desc": "从知识库删除技能",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "skill-abstract",
+          "args": "技能名",
+          "desc": "查看技能功能简介",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "skill-overview",
+          "args": "技能名",
+          "desc": "查看技能简要使用说明",
+          "groups": [
+            "技能"
+          ]
+        },
+        {
+          "name": "skill-manual",
+          "args": "技能名",
+          "desc": "查看技能完整手册",
+          "groups": [
+            "技能"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "优先级与路径规则",
+      "title": "## 优先级与路径规则",
+      "text": "1. 优先寻找知识库中可使用的已有的本地技能达成目的，其次思考能否使用内置工具达成目的；不到最后不主动使用 web-search。\n2. 使用web-search获取的信息，请回复时附带该信息来源的url。\n3. 未指定路径时，均视为当前工作空间相对路径。用户工作目录为 `/app/workspace/users/<user_id>`，无需手动指定绝对地址。\n4. 下载或使用某技能前，先通过 `skill-list-simple` 或相关工具确认知识库中是否已有。\n5.对于图片发送，对于有url的图片可以直接使用`send-image-by-url`发送,对于没有的需要将其下载到本地再`get-image-url-from-local`得到url，得到url后就可以使用`send-image-by-url`发送。**不要反复尝试获取图片的url，特别是在返回“该图片的url是xxx的时候”**\n6. 访问宿主机（Windows 主机）上的服务（如 Ollama 的 11434）时，容器内可直接使用 host.docker.internal 作为宿主机地址。"
+    },
+    {
+      "id": "技能补充说明",
+      "title": "## 关于技能的补充说明",
+      "text": "- **不要反复查看已有skill**\n- 本设置未列出的工具即视为技能，可使用相同 `工具调用:技能名|参数` 的格式调用。\n- 若调用后返回的是技能介绍，说明该技能无法被直接调用，请按返回内容指示操作。\n- 所有技能搜索与下载均通过 clawhub 完成。\n- 本地skill可通过`add-skill-to-viking`加载"
+    },
+    {
+      "id": "扩展指令",
+      "title": "## 扩展指令（按需启用）",
+      "enabled": false,
+      "note": "默认不注入。某智能体需要时，在它自己 TOOL.md 的 sections 里写上 \"扩展指令\"（或把具体工具名写进 tools.include）即可。",
+      "tools": [
+        {
+          "name": "send-message",
+          "args": "文本",
+          "desc": "执行过程中立即向用户推送一条文本消息"
+        },
+        {
+          "name": "file-upload",
+          "args": "文件路径|base64内容",
+          "desc": "以 base64 写入文件（大文件上传）"
+        },
+        {
+          "name": "process-write",
+          "args": "序号|标题|内容",
+          "desc": "写入长期事件记录（序号 -1 表示追加到末尾，1..N 表示覆写对应条目）"
+        },
+        {
+          "name": "process-remove",
+          "args": "序号",
+          "desc": "删除长期事件记录中对应条目"
+        },
+        {
+          "name": "process-modify",
+          "args": "key|op",
+          "desc": "修改状态变量。op 支持 +N / -N / =N（命中时加减或赋值；key 脱靶则自动新建）"
+        },
+        {
+          "name": "process-var-remove",
+          "args": "key",
+          "desc": "删除状态变量"
+        },
+        {
+          "name": "process-var-list",
+          "desc": "列出当前状态变量"
+        },
+        {
+          "name": "process-init",
+          "desc": "重置长期事件记录为初始状态（清空条目、轮次归零）"
+        },
+        {
+          "name": "worldinfo-write",
+          "args": "关键词1,关键词2|内容|优先级|scope|constant|regex|match_mode|exclude",
+          "desc": "写入世界书（scope 默认当前智能体，regex 可选 and / or）"
+        },
+        {
+          "name": "echo",
+          "args": "文本",
+          "desc": "原样返回文本（调试用）"
+        }
+      ]
+    }
+  ]
+}

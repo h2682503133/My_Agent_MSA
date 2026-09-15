@@ -1,14 +1,12 @@
-import json
 import re
 import threading
-import time
 from collections import OrderedDict
-from pathlib import Path
 from typing import Callable
 
 from app import config
 from app import world_info_manager
 from app.agent_config import load_agent_config
+from app.context_builder import ContextBuilder, image_receive_enabled, load_system_settings
 from app.context_client import ContextClient
 from app.events import TaskEventDTO, DeliveryTarget, new_event_id
 from app.logger import chat_log, debug_log
@@ -17,47 +15,6 @@ from app.response_parser import parse_model_response
 from app.syntax_parser import parse_syntax
 from app.tool_runtime_client import ToolRuntimeClient
 from app.timer_task_client import TimerTaskClient
-
-
-# PROCESS 长期事件记录：文件名即模式声明（PROCESS.md=不报时 / PROCESS_turn.md=轮次计数 / PROCESS_clock.md=时钟）
-_PROCESS_FILE_NAMES = {"process.md", "process_turn.md", "process_clock.md"}
-# 世界书（World Info）两阶段：files 含 world_info.md 即声明启用（虚假文件，不读取内容，与 PROCESS 同款机制）
-_WORLD_INFO_FILE_NAMES = {"world_info.md"}
-
-
-def _process_mode_from_files(files) -> str:
-    """取 files 中第一个 PROCESS 变体对应的模式：turn / clock / none / ""（未配置）。"""
-    for filename in files or []:
-        stem = str(filename).strip().lower()
-        if stem in _PROCESS_FILE_NAMES:
-            if "turn" in stem:
-                return "turn"
-            if "clock" in stem:
-                return "clock"
-            return "none"
-    return ""
-
-
-def _world_info_mode_from_files(files) -> bool:
-    """files 含 world_info.md → 启用两阶段世界书（否则完全跳过世界书）。"""
-    for filename in files or []:
-        if str(filename).strip().lower() in _WORLD_INFO_FILE_NAMES:
-            return True
-    return False
-
-
-def _safe_process_segment(value: str, default: str = "default") -> str:
-    """user_id / agent_id 转安全目录名，避免路径逃逸。"""
-    raw = str(value or default).strip() or default
-    safe = re.sub(r"[^0-9A-Za-z_.@-]+", "_", raw).strip("._") or default
-    return "default" if safe in {".", ".."} else safe
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
 
 
 class AgentRuntime:
@@ -72,6 +29,7 @@ class AgentRuntime:
     - tool_log / main_log / main_memory
 
     拆出去的职责：
+    - 上下文拼接（system prompt / messages / 世界书注入）由 app/context_builder.py 负责
     - OpenViking 由 openviking-context-service 提供
     - 模型调用由 model-proxy-service 提供
     - 工具执行由 tool-runtime-service 提供
@@ -104,8 +62,21 @@ class AgentRuntime:
         self.system_prompt: list[dict[str, str]] = []
         self._identity_system_indexes: list[int] = []
         self._soul_message_content: str = ""  # SOUL.md 原文，两阶段阶段1 构建时剔除（避免角色代入干扰列词）
+        self._world_info_override_content: str = ""  # world_info.md 原文，阶段1 的职责变更指令
         self.load_config()
         self.build_system_prompt()
+
+    def build_system_prompt(self):
+        """构建 system prompt（GLOBAL_SETTING / files 声明 / PROCESS / TOOL / 世界书）。
+
+        具体拼接逻辑见 app/context_builder.py；这里只把结果存到实例上，
+        供 send() 组装 messages 时使用。
+        """
+        parts = ContextBuilder(self).build_system_prompt()
+        self.system_prompt = parts.messages
+        self._identity_system_indexes = parts.identity_indexes
+        self._soul_message_content = parts.soul_content
+        self._world_info_override_content = parts.world_info_override
 
     @staticmethod
     def _is_user_object(target, task) -> bool:
@@ -319,32 +290,9 @@ class AgentRuntime:
         return cls._continue_task(task, emit)
 
     @classmethod
-    def _load_system_settings(cls) -> dict:
-        """读取 dashboard「杂项」写入的 system_settings.json，失败返回空字典。"""
-        try:
-            path = config.SYSTEM_SETTINGS_PATH
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            pass
-        return {}
-
-    @classmethod
-    def _image_receive_enabled(cls) -> bool:
-        """图像接收开关，默认开启。"""
-        return bool(cls._load_system_settings().get("image_receive_enabled", True))
-
-    @classmethod
-    def _identity_read_enabled(cls) -> bool:
-        """main 是否读取 IDENTITY.md，默认开启。"""
-        return bool(cls._load_system_settings().get("main_read_identity", True))
-
-    @classmethod
     def _shell_allowed(cls, user_id: str) -> bool:
         """shell 白名单校验：未开启限制时所有用户可用。"""
-        data = cls._load_system_settings()
+        data = load_system_settings()
         if not bool(data.get("shell_restriction_enabled", False)):
             return True
         allowed = data.get("shell_allowed_users") or []
@@ -362,7 +310,7 @@ class AgentRuntime:
     @classmethod
     def _mnt_write_allowed(cls, user_id: str) -> bool:
         """/mnt 写白名单校验：未开启限制时所有用户可用。"""
-        data = cls._load_system_settings()
+        data = load_system_settings()
         if not bool(data.get("mnt_write_restriction_enabled", False)):
             return True
         allowed = data.get("mnt_write_allowed_users") or []
@@ -563,437 +511,29 @@ class AgentRuntime:
             agent_id=self.id,
         )
 
-    def build_system_prompt(self):
-        prompt_dir = config.SYSTEM_PROMPT_DIR / self.id
-        global_setting = config.SYSTEM_PROMPT_DIR / "GLOBAL_SETTING.md"
-
-        system_messages = []
-        identity_indexes: list[int] = []
-        self._soul_message_content = ""
-        self._world_info_override_content = ""
-
-        if global_setting.exists():
-            content = global_setting.read_text(encoding="utf-8").strip()
-            if content:
-                system_messages.append({"role": "system", "content": content})
-
-        for filename in self.config.get("files", []):
-            if str(filename).strip().lower() in _PROCESS_FILE_NAMES:
-                # PROCESS 变体不读 md：内容由结构化存储注入（见 _build_process_message）
-                continue
-            if str(filename).strip().lower() in _WORLD_INFO_FILE_NAMES:
-                # world_info.md 普通轮仍为声明式开关（不注入内容）；
-                # 其内容作为两阶段阶段1 的「职责变更指令」，取代 SOUL.md 注入位置。
-                # 文件名大小写不敏感：磁盘上可能是 WORLD_INFO.md（配置声明 world_info.md 也认）。
-                wi_path = prompt_dir / filename
-                if not wi_path.exists():
-                    for _candidate in prompt_dir.iterdir():
-                        if _candidate.name.lower() == "world_info.md":
-                            wi_path = _candidate
-                            break
-                if wi_path.exists():
-                    self._world_info_override_content = wi_path.read_text(encoding="utf-8").strip()
-                continue
-            file_path = prompt_dir / filename
-            if not file_path.exists():
-                continue
-            content = file_path.read_text(encoding="utf-8").strip()
-            if content:
-                system_messages.append({"role": "system", "content": content})
-                # 记录 main 的 IDENTITY.md 位置，供杂项开关在调用模型前拦截
-                if self.id == "main" and filename.lower() == "identity.md":
-                    identity_indexes.append(len(system_messages) - 1)
-                # 记录 SOUL.md 原文，两阶段阶段1 构建时剔除（避免角色代入干扰关键词提取）
-                if filename.lower() == "soul.md":
-                    self._soul_message_content = content
-
-        self.system_prompt = system_messages
-        self._identity_system_indexes = identity_indexes
-
-    def _build_process_message(self, count_turn: bool = True) -> dict | None:
-        """按 config files 里的 PROCESS 变体，从结构化存储构造 PROCESS system 消息。
-
-        - turn 模式：count_turn=True（用户请求首次 send）时 turn+1 并落盘，
-          注入「现在时间是 第N轮对话」；工具回执/智能体转交等内部回调不计数
-        - clock / none 模式：不报时（框架请求自带时间戳）
-        - 无条目时返回 None（不注入空段）
-        """
-        mode = _process_mode_from_files(self.config.get("files", []))
-        if not mode:
-            return None
-
-        user_seg = _safe_process_segment(self.user_id)
-        agent_seg = _safe_process_segment(self.id)
-        path = config.PROCESS_DIR / user_seg / f"{agent_seg}.json"
-
-        store: dict = {}
-        if path.exists():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    store = loaded
-            except Exception:
-                store = {}
-        else:
-            # 配置了 PROCESS 但存储不存在：自动创建空白文件
-            store = {"items": []}
-            _atomic_write_text(path, json.dumps(store, ensure_ascii=False, indent=2))
-
-        items = store.get("items")
-        if not isinstance(items, list):
-            items = []
-            store["items"] = items
-
-        header = "以下是你的长期事件记录（PROCESS）"
-        if mode == "turn":
-            try:
-                turn = int(store.get("turn") or 0)
-            except (TypeError, ValueError):
-                turn = 0
-            if count_turn:
-                turn += 1
-                store["turn"] = turn
-                _atomic_write_text(path, json.dumps(store, ensure_ascii=False, indent=2))
-            header += f"，现在时间是 第{turn}轮对话"
-        header += "，请参考："
-
-        if not items:
-            return None
-
-        lines = [header]
-        for index, item in enumerate(items, 1):
-            if isinstance(item, dict):
-                title = str(item.get("title") or "").strip()
-                content = str(item.get("content") or "").strip()
-                entry = f"{title}：{content}" if title else content
-            else:
-                entry = str(item)
-            lines.append(f"{index}. {entry}")
-        return {"role": "system", "content": "\n".join(lines)}
-
-    def _build_vars_message(self) -> dict | None:
-        """从 PROCESS 存储读取 vars 数值段（与事件段分离，独立注入）。
-
-        - 只显示存储 key=value 平铺（aliases 别名映射不注入，避免模型看到别名）
-        - 插入位置：用户对话前、世界书后（由调用方决定）
-        - 无 vars 或无 PROCESS 文件 → 返回 None（不注入空段）
-        """
-        user_seg = _safe_process_segment(self.user_id)
-        agent_seg = _safe_process_segment(self.id)
-        path = config.PROCESS_DIR / user_seg / f"{agent_seg}.json"
-        if not path.exists():
-            return None
-        try:
-            store = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-        if not isinstance(store, dict):
-            return None
-        vars_map = store.get("vars")
-        if not isinstance(vars_map, dict) or not vars_map:
-            return None
-        lines = ["【当前状态变量】"]
-        for vkey, vval in vars_map.items():
-            lines.append(f"- {vkey} = {vval}")
-        return {"role": "system", "content": "\n".join(lines)}
-
-    def _world_info_enabled(self) -> bool:
-        """files 含 world_info.md → 启用两阶段世界书（否则完全跳过）。"""
-        return _world_info_mode_from_files(self.config.get("files", []))
-
-    def _extract_concepts(self, thinking: str) -> list[str]:
-        """从阶段1输出中提取【概念词】清单；无清单返回 []。"""
-        if not thinking:
-            return []
-        m = re.search(r"【概念词】\s*(.+)", thinking)
-        if not m:
-            m = re.search(r"概念词\s*[:：]\s*(.+)", thinking)
-        if not m:
-            return []
-        line = m.group(1).strip().rstrip("。.！!？?")
-        if line in ("无", "无概念词", "无。", "none", "None", "NONE"):
-            return []
-        words = []
-        for part in re.split(r"[、，,;；/|\\\s]+", line):
-            w = part.strip()
-            if w and w not in words:
-                words.append(w)
-        return words
-
-    def _format_world_info_block(self, hits) -> str:
-        """命中条目拼成【世界设定】注入段。"""
-        lines = ["【世界设定】"]
-        for hit in hits:
-            keys = "、".join(hit.get("keys") or [])
-            tag = f"[{keys}]" if keys else ""
-            lines.append(f"- {tag} {hit.get('content', '')}".strip())
-        return "\n".join(lines)
-
-    def _dedup_identity_hits(self, hits, head) -> list:
-        """世界书注入去重：条目内容已存在于该智能体自身常驻内容（identity 等系统提示）中则跳过。
-
-        解决"某词条已常驻在 A 的 identity.md，同时又作为世界书给群组里其他智能体"的场景：
-        词条 scope 照常填群组，A 命中后检测到内容重复自动跳过，无需对 A 单独做例外。
-        规则对所有智能体统一生效（谁的常驻内容里已有就跳过谁的）。
-        """
-        if not hits or not head:
-            return hits
-        head_text = re.sub(r"\s+", "", " ".join(
-            str(m.get("content") or "") for m in head if isinstance(m, dict)
-        ))
-        if not head_text:
-            return hits
-        kept = []
-        for hit in hits:
-            content = str(hit.get("content") or "").strip()
-            if not content:
-                kept.append(hit)
-                continue
-            norm = re.sub(r"\s+", "", content)
-            if norm and norm in head_text:
-                debug_log(f"[{self.user_id}] world_info 跳过重复条目（内容已在自身常驻提示中）: {norm[:30]}")
-                continue
-            kept.append(hit)
-        return kept
-
-    def _search_world_info_hits(self, task, user_query: str, trigger_sources) -> list:
-        """搜索世界书命中；失败静默降级返回 []。"""
-        try:
-            return self.context_client.search_world_info(
-                user_id=task.user.id,
-                agent_id=self.id,
-                query=user_query or "",
-                recent_messages=trigger_sources or [],
-                max_tokens=int(self.config.get("world_info_max_tokens", 0) or 0)
-                or getattr(config, "WORLD_INFO_MAX_TOKENS", 1500),
-                max_entries=int(self.config.get("world_info_max_entries", 0) or 0)
-                or getattr(config, "WORLD_INFO_MAX_ENTRIES", 20),
-            )
-        except Exception as exc:
-            debug_log(f"[{self.user_id}] world_info 匹配失败: {exc}")
-            return []
-
-    def _single_call_with_hits(self, task, head, tail, model_profile, params, hits):
-        """单次调用（可带世界书注入）；失败返回 None。"""
-        hits = self._dedup_identity_hits(hits, head)
-        if hits:
-            tail = [{"role": "system", "content": self._format_world_info_block(hits)}] + list(tail)
-        try:
-            return self.model_client.chat_completion(
-                task_id=task.task_id,
-                agent_id=self.id,
-                model_profile=model_profile,
-                messages=head + tail,
-                params=params,
-            )
-        except Exception as exc:
-            debug_log(f"[{self.user_id}] world_info 降级单次失败: {exc}")
-            return None
-
-    def _world_info_two_phase_call(self, task, head, tail, model_profile, params, user_query: str):
-        """两阶段世界书：阶段1 让模型列概念词 → 扫描匹配世界书 → 阶段2 注入后生成。
-
-        - 阶段2 messages = head + 【世界设定·命中】 + tail（注入段插在 current_input 上方）
-        - 阶段1 的思考过程不注入（已通过关键词拿到命中，思考全文塞回纯属浪费 token）
-        - 阶段1 失败 / 无输出 → 降级单次调用，但**用户消息关键词仍触发世界书**（不浪费 query）
-        - 阶段2 失败 → 返回 None（调用方降级为纯单次调用）
-        - 触发源 = 【概念词】清单 ∪ 阶段1 输出全文（模型直接生成闲聊时也扫描）∪ 用户消息
-        - 阶段1 head 剔除 SOUL.md（避免角色代入干扰列词），若 world_info.md 写了
-          「职责变更指令」则取代 SOUL 位置注入；阶段2 恢复完整 head（含 SOUL，角色扮演）
-        """
-        # 阶段1：职责变更 —— 剔除 SOUL.md；world_info.md 内容（职责变更指令）置于其位置
-        soul_content = getattr(self, "_soul_message_content", "") or ""
-        wi_override = getattr(self, "_world_info_override_content", "") or ""
-        phase1_head: list[dict[str, str]] = []
-        if wi_override:
-            phase1_head.append({"role": "system", "content": wi_override})
-        if soul_content:
-            phase1_head.extend(
-                m for m in head
-                if not (isinstance(m, dict) and m.get("content") == soul_content)
-            )
-        else:
-            phase1_head.extend(head)
-
-        phase1_messages = phase1_head + tail + [{
-            "role": "system",
-            "content": (
-                "这是一个准备步骤：禁止输出回复正文，禁止角色扮演，禁止输出任何协议指令。\n"
-                "无论消息是询问、陈述、动作还是闲聊，你的唯一输出必须是概念词清单。\n"
-                "先分析消息中涉及的关键名词/概念（地名、人物、组织、物品、专属名词等），再列出。\n"
-                "格式：第一行必须是【概念词】词1、词2、词3\n"
-                "若确认本次回复不需要任何世界概念，输出：【概念词】无\n"
-                "系统将根据这些词注入相关世界设定，确保你的回复符合世界设定。"
-            ),
-        }]
-        try:
-            phase1_resp = self.model_client.chat_completion(
-                task_id=task.task_id,
-                agent_id=self.id,
-                model_profile=model_profile,
-                messages=phase1_messages,
-                params=params,
-            )
-        except Exception as exc:
-            debug_log(f"[{self.user_id}] world_info 阶段1失败，降级单次（用户消息仍触发）: {exc}")
-            phase1_resp = None
-
-        thinking = (phase1_resp.get("reasoning") or "").strip() if phase1_resp else ""
-        phase1_text = (phase1_resp.get("text") or "").strip() if phase1_resp else ""
-        if phase1_resp is None or (not thinking and not phase1_text):
-            # 阶段1无输出（模型不配合，如本地小模型）：降级单次调用，
-            # 但用户消息里的关键词仍可触发世界书注入
-            debug_log(f"[{self.user_id}] world_info 阶段1无输出，降级单次（用户消息仍触发）")
-            hits = self._search_world_info_hits(task, user_query, [])
-            return self._single_call_with_hits(task, head, tail, model_profile, params, hits)
-
-        # 触发源构建（v73 起按阶段1 输出质量分流）：
-        # - 模型正确输出【概念词】行（词清单或"无"）→ 只用概念词清单 + 用户消息（query 已含）。
-        #   此时 thinking 段巨大且基本是角色思考（噪音），不塞进触发源。
-        # - 模型未遵守（输出回复正文等）→ thinking + 全文兜底（模型开演时 thinking 较短，
-        #   扫描成本低，且能救回命中）。
-        concepts = self._extract_concepts(phase1_text or thinking)
-        has_concept_line = bool(re.search(r"【概念词】", phase1_text or ""))
-        if has_concept_line:
-            trigger_sources = list(concepts)
-        else:
-            trigger_sources = [thinking]
-            if phase1_text and phase1_text != thinking:
-                trigger_sources.append(phase1_text)
-            trigger_sources.extend(concepts)
-        hits = self._search_world_info_hits(task, user_query, trigger_sources)
-        # 注入去重：内容已在该智能体自身常驻提示（identity 等）中的条目跳过
-        hits = self._dedup_identity_hits(hits, head)
-
-        # 阶段2：head + 【世界设定·命中】 + tail（无命中则不带注入段）
-        if hits:
-            tail = [{"role": "system", "content": self._format_world_info_block(hits)}] + list(tail)
-        try:
-            return self.model_client.chat_completion(
-                task_id=task.task_id,
-                agent_id=self.id,
-                model_profile=model_profile,
-                messages=head + tail,
-                params=params,
-            )
-        except Exception as exc:
-            debug_log(f"[{self.user_id}] world_info 阶段2失败，降级单次: {exc}")
-            return None
-
-    def _effective_system_prompt(self) -> list[dict[str, str]]:
-        """按杂项开关过滤系统提示词：main 关闭 IDENTITY.md 时跳过对应消息。"""
-        if self.id != "main" or not self._identity_system_indexes:
-            return self.system_prompt
-        if self._identity_read_enabled():
-            return self.system_prompt
-        blocked = set(self._identity_system_indexes)
-        return [m for i, m in enumerate(self.system_prompt) if i not in blocked]
-
     def send(self, task, emit: Callable[[TaskEventDTO], None]):
         content = task.consume_temp_dialog_input() or ""
         dialog_images = task.consume_temp_dialog_images() or []
-        image_receive_enabled = self._image_receive_enabled()
 
-        # 外部群聊调度（agent→agent 轮转）：内容已在共享历史（grp_ session）里，
-        # 抑制 user 输入重复注入，只提示"轮到该角色接话"（suppress_user_input 标记来自 metadata）
-        if task.metadata.get("suppress_user_input"):
-            current_input_messages = [
-                {"role": "system", "content": "以下为本次群聊转场"},
-                {"role": "user", "content": (
-                    f"<{task.metadata.get('speaker_id') or getattr(task.caller, 'id', 'user')}>"
-                    "（请基于共享对话历史继续接话，不要重复此前已输出的内容）"
-                )},
-            ]
-        else:
-            current_input_messages = [
-                {"role": "system", "content": "以下为本次单轮对话内容"},
-                {"role": "user", "content": f"<{getattr(task.caller, 'id', 'user')}>" + str(content)},
-            ]
-        if dialog_images:
-            if self.id == "main" and image_receive_enabled:
-                current_input_messages[1]["images"] = dialog_images
-            elif self.id == "main":
-                current_input_messages[1]["content"] += (
-                    f"\n\n（用户本次回复中附带了 {len(dialog_images)} 张图片，"
-                    "但系统当前未开启图片接收，图片已被忽略。）"
-                )
         chat_log(f"[{self.user_id}] {self.id}收到:\n{content}")
 
-        long_context_message = [
-            {"role": "system", "content": "以下是你和用户的历史对话记录，请根据上下文继续回答"}
-        ] + self.context_client.search_context(
-            user_id=task.user.id,
-            session_id=task.user.session_id,
-            agent_id=self.id,
-            query=content,
-            max_messages=int(self.config.get("max_messages", 6) or 6),
-            max_tokens=int(self.config.get("context_max_tokens", 3000) or 3000),
-            commit_limit=int(self.config.get("commit_limit", 0) or 0),
+        # 上下文拼接（system prompt / 长上下文 / 任务记忆 / 用户输入 / vars / 本轮输入）
+        # 统一交给 context_builder；这里只负责模型档案、采样参数与调用阶段的选择。
+        builder = ContextBuilder(self)
+        context = builder.build_send_context(
+            task,
+            content=content,
+            dialog_images=dialog_images,
+            image_enabled=image_receive_enabled(),
         )
-
-        system_prompt_messages = self._effective_system_prompt()
-
-        # 仅用户请求的首次 send() 计入轮次（caller 为 user 对象）；
-        # 工具回执、智能体转交等内部回调 caller 是智能体，不计时。
-        process_message = self._build_process_message(
-            count_turn=bool(getattr(task, "caller", None) is getattr(task, "user", None))
-        )
-        if process_message:
-            system_prompt_messages = system_prompt_messages + [process_message]
-
-        task_memory_messages = []
-        if self.id == "main":
-            task_memory = "以下是你在本次任务中的记忆:"
-            for item in task.main_memory:
-                task_memory += "\n" + item
-            task_memory_messages = [{"role": "system", "content": task_memory}]
-
-        user_input_messages = []
-        if self.id == "main":
-            task_images = list(task.images or [])
-            user_content = f"<{task.user.id}>" + task.content
-            if task_images and image_receive_enabled:
-                user_input_messages = [
-                    {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
-                    {"role": "user", "content": user_content, "images": task_images},
-                ]
-            elif task_images:
-                user_input_messages = [
-                    {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
-                    {"role": "user", "content": user_content + (
-                        f"\n\n（用户本次发送了 {len(task_images)} 张图片，"
-                        "但系统当前未开启图片接收，图片已被忽略。）"
-                    )},
-                ]
-            else:
-                user_input_messages = [
-                    {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},
-                    {"role": "user", "content": user_content},
-                ]
-
-        # 数值段（vars）插在用户对话前、世界书后：
-        # - messages 组装时放 current_input 前面
-        # - base_tail 同样前置 vars，世界书注入时 tail=[世界书块]+tail → 世界书→vars→用户对话
-        vars_message = self._build_vars_message()
-        vars_list = [vars_message] if vars_message else []
-
-        messages = (
-            system_prompt_messages
-            + long_context_message
-            + task_memory_messages
-            + user_input_messages
-            + vars_list
-            + current_input_messages
-        )
-        # 世界书注入段插在 current_input（"以下为本次单轮对话内容"）上方：
-        # base_head = 到 user_input 为止，base_tail = vars + current_input
-        base_head = system_prompt_messages + long_context_message + task_memory_messages + user_input_messages
-        base_tail = vars_list + current_input_messages
+        messages = context.messages
+        base_head = context.base_head
+        base_tail = context.base_tail
 
         model_profile = self.config.get("model_profile") or self.config.get("model") or self.id
         base_model_profile = model_profile
         # 多模态路由：本次请求带图片时切换到 image_model_profile（如豆包多模态），纯文本保持 model_profile
-        image_count = len(dialog_images or []) + len(list(getattr(task, "images", None) or []))
+        image_count = context.image_count
         if image_count > 0:
             vision_profile = self.config.get("image_model_profile")
             if vision_profile:
@@ -1021,15 +561,10 @@ class AgentRuntime:
                 params[_key] = self.config[_key]
 
         # 两阶段世界书：仅用户请求轮 + files 声明 world_info.md + 无图片（多模态轮保持单次）
-        two_phase = (
-            image_count == 0
-            and self._world_info_enabled()
-            and bool(getattr(task, "caller", None) is getattr(task, "user", None))
-        )
-
+        # 判定在 context_builder.build_send_context 里完成（two_phase_world_info）
         model_response = None
-        if two_phase:
-            model_response = self._world_info_two_phase_call(
+        if context.two_phase_world_info:
+            model_response = builder.world_info_two_phase_call(
                 task, base_head, base_tail, model_profile, params, content or ""
             )
 

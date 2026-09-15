@@ -22,6 +22,15 @@ agent-orchestrator-service
 9. 以 TaskEvent stream 形式返回 scheduler
 ```
 
+模块划分：
+
+```text
+app/agent_runtime.py     模型调用、响应解析、工具与智能体路由（主流程）
+app/context_builder.py   上下文拼接：system prompt 构建 / messages 组装 / 世界书注入 / TOOL 注入
+app/task_runtime.py      TaskRuntime（上下文栈）
+app/context_client.py    持久化上下文（openviking-context-service）
+```
+
 ## 和 task-scheduler-service 的边界
 
 `scheduler` 只保存轻量任务对象：
@@ -86,8 +95,11 @@ TOOL_RUNTIME_TARGET=tool-runtime-service:5303
 
 ## K8s
 
+版本号只维护在 `deploy/services/agent-orchestrator-service.yaml` 的 `image` 字段（`deploy-all.ps1` 会从那里解析 tag 并据此构建）：
+
 ```bash
-kubectl apply -f deploy/services/agent-orchestrator-service.yaml
+docker build -t agent/agent-orchestrator-service:v77 services/agent-orchestrator-service
+kubectl apply -f deploy/services/agent-orchestrator-service.yaml     # 或 kubectl -n agent rollout restart deployment/agent-orchestrator-service
 ```
 
 ## 当前说明
@@ -131,6 +143,22 @@ kubectl apply -f deploy/services/agent-orchestrator-service.yaml
 orchestrator/config       → /app/config          （agent_list.json、system_settings.json、process）
 orchestrator/system_prompt → /app/system_prompt   （各智能体 System Prompt）
 ```
+
+## 工具清单（system_prompt/TOOL.json）
+
+工具清单统一放在 `SYSTEM_PROMPT_DIR/TOOL.json`，各智能体的 `TOOL.md` 只写注入选项（正文可选，作为该智能体补充说明追加）：
+
+````markdown
+```tool-inject
+{"sections": ["*"], "tools": {"include": ["*"], "exclude": ["codex"]}}
+```
+````
+
+- `sections`：段 id 列表（`"*"` 全部，`"!段id"` 排除）
+- `tools`：`{"include": [...], "exclude": [...]}`，token 可写工具名 / 段 id / `groups` 标签
+- 目录里 `"enabled": false` 的段或工具默认不注入，被选项点名才注入
+- 没有选项块的老式 `TOOL.md` → 整份原文照旧注入；`TOOL.json` 缺失 → 只注入 `TOOL.md` 正文
+- 细节见仓库根目录 `上下文管理.md` 第 7 节
 
 ## agent_list.json 按用户选择
 

@@ -1,0 +1,52 @@
+<!-- 长期事件管理（PROCESS） -->
+<div id="tab-process" class="tab">
+  <h2>长期事件管理 <span style="font-size:0.8rem;color:var(--dim);">(orchestrator/config/process，事件段 + 数值段 vars + 初始化模板)</span></h2>
+
+  <div class="card">
+    <div class="session-toolbar">
+      <span style="color:var(--dim);">运行数据：</span>
+      <select id="proc-user-select" onchange="procLoadAgents()">
+        <option value="">-- 选择 user_id --</option>
+      </select>
+      <select id="proc-agent-select" onchange="procLoadFile()">
+        <option value="">-- 选择 agent_id --</option>
+      </select>
+      <span id="proc-path-info" style="color:var(--dim);font-size:0.8rem;"></span>
+      <span style="flex:1;"></span>
+      <button class="btn" onclick="procReloadUsers()">刷新用户</button>
+      <button class="btn green" onclick="procSaveFile()">保存运行数据</button>
+    </div>
+    <textarea id="proc-editor" spellcheck="false" placeholder="选择 user_id + agent_id 后查看 process/<user>/<agent>.json 原文（可直接编辑保存）..."
+              style="width:100%;min-height:260px;font-family:monospace;font-size:0.85rem;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:10px;box-sizing:border-box;"></textarea>
+  </div>
+
+  <div class="card">
+    <div class="session-toolbar">
+      <span style="color:var(--dim);">初始化模板：</span>
+      <select id="proc-tpl-agent-select" onchange="procLoadTemplate()">
+        <option value="">-- 选择 agent_id --</option>
+      </select>
+      <span style="color:var(--dim);font-size:0.8rem;">(process/process_templates#/&lt;agent&gt;.json，process-init 时载入)</span>
+      <span style="flex:1;"></span>
+      <button class="btn green" onclick="procSaveTemplate()">保存模板</button>
+    </div>
+    <textarea id="proc-tpl-editor" spellcheck="false" placeholder="初始化模板：items=事件段预置、vars=数值段预置、aliases=别名反向映射 {别名: 存储key}..."
+              style="width:100%;min-height:220px;font-family:monospace;font-size:0.85rem;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:10px;box-sizing:border-box;"></textarea>
+  </div>
+
+  <div class="card">
+    <h3>别名解析工具 <span style="font-size:0.8rem;color:var(--dim);">(为模板 aliases 生成反向映射：左栏存储 key + 右栏多个别名)</span></h3>
+    <div class="session-toolbar">
+      <input id="proc-ali-key" type="text" placeholder="存储 key，如 玩家HP"
+             style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);">
+      <input id="proc-ali-values" type="text" placeholder="别名，逗号分隔，如 hp, HP, 生命值, 血量"
+             style="flex:2;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);">
+      <button class="btn green" onclick="procAliasParse()">生成映射</button>
+    </div>
+    <div id="proc-ali-output" style="margin-top:10px;font-family:monospace;font-size:0.85rem;color:var(--dim);"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+      <button class="btn" onclick="procAliasAppend()">追加到模板 aliases</button>
+      <span id="proc-ali-status" style="color:var(--dim);font-size:0.8rem;"></span>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,23 @@
+<!-- 日志查看 -->
+<div id="tab-logs" class="tab">
+  <h2>日志查看</h2>
+  <div class="card" style="margin-bottom:12px;">
+    <h3>快捷入口</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn green" onclick="quickLogs('task-scheduler-service')">Scheduler</button>
+      <button class="btn green" onclick="quickLogs('tool-runtime-service')">Tool Runtime</button>
+      <button class="btn green" onclick="quickLogs('agent-orchestrator-service')">Orchestrator</button>
+    </div>
+  </div>
+  <div class="card">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <select id="log-pod-select" onchange="loadLogs()"></select>
+      <select id="log-container-select" onchange="loadLogs()"><option value="">默认容器</option></select>
+      <input type="number" id="log-tail" value="200" min="10" max="5000" style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;">
+      <button class="btn" onclick="loadLogs()">加载</button>
+      <button class="btn green" onclick="streamLogs()">实时跟踪</button>
+      <button class="btn" onclick="stopStream()">停止</button>
+    </div>
+    <pre class="logs" id="log-output" style="margin-top:12px;">选择 Pod 查看日志...</pre>
+  </div>
+</div>

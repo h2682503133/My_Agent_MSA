@@ -1,0 +1,31 @@
+<!-- System Prompt -->
+<div id="tab-sprompt" class="tab">
+  <h2>System Prompt 管理 <span style="font-size:0.8rem;color:var(--dim);">(分组仅用于展示归类，不影响磁盘存储结构)</span></h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>智能体</h3>
+      <div style="margin-bottom:8px;display:flex;gap:8px;">
+        <input id="sp-agent-input" placeholder="新智能体名称" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;">
+        <button class="btn green" onclick="spAddAgent()">添加</button>
+      </div>
+      <div style="margin-bottom:8px;display:flex;gap:8px;">
+        <input id="sp-group-input" placeholder="新分组名称" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;" onkeydown="if(event.key==='Enter')spAddGroup()">
+        <button class="btn green" onclick="spAddGroup()">新建组</button>
+      </div>
+      <div id="sp-agent-list"></div>
+    </div>
+    <div class="card">
+      <h3 id="sp-editor-title">文件</h3>
+      <div style="margin-bottom:8px;display:flex;gap:8px;">
+        <input id="sp-file-input" placeholder="文件名.md / TOOL.json" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px;border-radius:4px;">
+        <button class="btn green" onclick="spAddFile()">添加</button>
+      </div>
+      <div id="sp-tool-panel" style="display:none;"></div>
+      <textarea id="sp-editor" style="min-height:300px;" placeholder="选择文件编辑..."></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <button class="btn green" onclick="spSave()">保存</button>
+        <button class="btn danger" onclick="spDeleteFile()">删除文件</button>
+      </div>
+    </div>
+  </div>
+</div>

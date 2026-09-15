@@ -1,0 +1,18 @@
+<!-- 配置管理 -->
+<div id="tab-config" class="tab">
+  <h2>配置文件</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>文件列表</h3>
+      <div id="config-list"></div>
+    </div>
+    <div class="card">
+      <h3>编辑 <span id="config-filename"></span></h3>
+      <textarea id="config-editor" placeholder="选择左侧文件编辑..."></textarea>
+      <div style="margin-top:12px;display:flex;gap:8px;">
+        <button class="btn green" onclick="saveConfig()">保存</button>
+        <button class="btn" onclick="reloadConfig()">重新加载</button>
+      </div>
+    </div>
+  </div>
+</div>

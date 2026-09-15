@@ -1,0 +1,52 @@
+<!-- Session 管理 -->
+<div id="tab-session" class="tab">
+  <h2>Session 管理 <span style="font-size:0.8rem;color:var(--dim);">(openviking 对话记录)</span></h2>
+  <div class="card">
+    <div class="session-toolbar">
+      <span style="color:var(--dim);">用户：</span>
+      <select id="sess-user-select" onchange="sessLoadSessions()">
+        <option value="">-- 选择用户 --</option>
+      </select>
+      <span style="color:var(--dim);">Session：</span>
+      <select id="sess-select" onchange="sessLoadMessages()">
+        <option value="">-- 选择 Session --</option>
+      </select>
+      <span id="sess-info" style="color:var(--dim);font-size:0.8rem;"></span>
+    </div>
+  </div>
+  <div class="card" id="sess-msg-card" style="display:none;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h3>消息列表 <span id="sess-msg-count" style="color:var(--dim);font-size:0.8rem;"></span></h3>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" onclick="sessToggleAll()">全选/取消</button>
+        <button class="btn danger" onclick="sessDeleteMessages()">删除选中</button>
+        <button class="btn danger" onclick="sessDeleteAgent()">删除整个文件夹</button>
+      </div>
+    </div>
+    <div style="max-height:500px;overflow-y:auto;">
+      <table>
+        <thead><tr><th style="width:40px;">选</th><th style="width:60px;">行号</th><th style="width:80px;">角色</th><th>内容预览</th><th style="width:160px;">时间</th></tr></thead>
+        <tbody id="sess-msg-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="session-toolbar">
+      <span style="color:var(--dim);">长期记忆查询（OpenViking 语义搜索）：</span>
+      <select id="mem-user-select">
+        <option value="">-- 选择用户 --</option>
+      </select>
+      <input id="mem-query" type="text" placeholder="输入问题/关键词，搜索该用户的长期记忆"
+             style="flex:1;min-width:220px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);"
+             onkeydown="if(event.key==='Enter')memSearch();">
+      <button class="btn" onclick="memSearch()">搜索</button>
+      <span id="mem-info" style="color:var(--dim);font-size:0.8rem;"></span>
+    </div>
+    <div style="max-height:420px;overflow-y:auto;">
+      <table>
+        <thead><tr><th style="width:70px;">相似度</th><th style="width:180px;">位置</th><th>记忆内容</th></tr></thead>
+        <tbody id="mem-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
