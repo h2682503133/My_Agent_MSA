@@ -25,6 +25,9 @@ class FrontendMessage(BaseModel):
     metadata: Dict[str, str] = Field(default_factory=dict)
     agent_id: Optional[str] = None
     images: List[str] = Field(default_factory=list)
+    # 投递渠道：默认 web。离线转投其他渠道（如 qq）时显式指定。
+    # 为空时按 "web" 处理，保持原有行为不变。
+    channel: Optional[str] = None
 
 
 class CreateTaskResult(BaseModel):

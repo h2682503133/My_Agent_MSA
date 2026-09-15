@@ -7,6 +7,13 @@ from app.scheduled_task import ScheduledTask
 
 MAX_BUFFER_PER_USER = 200
 
+# 订阅流心跳间隔（秒）：subscribe() 每隔该时间 yield 一次 None（心跳），
+# 让上层（server.SubscribeEvents）有机会检查 context.is_active()。
+# 必须存在：否则客户端断开后 handler 会永久阻塞在 q.get() 上，
+# 逐个泄漏 gRPC 工作线程，最终线程池耗尽导致 CreateTask 等 RPC 全部排队卡死。
+# 只影响"客户端已断开"的检测延迟，不影响正常事件投递（事件到达即立即 yield）。
+SUBSCRIBE_HEARTBEAT_SECONDS = 10.0
+
 
 class EventBus:
     def __init__(self):
@@ -48,10 +55,23 @@ class EventBus:
                         break
         try:
             while True:
-                yield q.get()
+                try:
+                    event = q.get(timeout=SUBSCRIBE_HEARTBEAT_SECONDS)
+                except queue.Empty:
+                    # 心跳：上层收到 None 会检查客户端是否还在，断开则退出并释放线程
+                    yield None
+                    continue
+                yield event
         finally:
             with self._lock:
-                self._subscribers.pop(subscriber_id, None)
+                # 只在「自己仍是当前注册者」时移除订阅。
+                # 关键：客户端重连时用同一个 subscriber_id 覆盖注册新订阅，
+                # 旧 handler 随后退出；若无条件 pop，会把**新订阅**删掉，
+                # 导致之后所有事件都投不出去（只能等下次重连时靠 buffer 回放），
+                # 表现为"消息只在重连瞬间才到、平时收不到"。
+                entry = self._subscribers.get(subscriber_id)
+                if entry is not None and entry[1] is q:
+                    self._subscribers.pop(subscriber_id, None)
 
     def publish(self, event: dict):
         event_channel = event.get("channel", "")

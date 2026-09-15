@@ -1222,6 +1222,17 @@ class AgentRuntime:
                         reply = f"定时任务创建失败：{resp['message']}"
                     task.set_temp_dialog_output(reply)
 
+                # ── 定时任务结果回喂（不要直接作为最终回复发给用户）──
+                # 与 tool_call 同机制：把执行结果压帧，由 _continue_task 弹帧时
+                # 回喂本智能体再跑一轮。这样模型能看到结果并继续决策
+                # （如 query 拿到列表 → 定位 task_id → 再发 delete），
+                # 最终输出面向用户的自然语言时才结束。
+                # 若不压帧，结果会经 user 帧直接 emit 成给用户的回复，
+                # 模型拿不到结果，多步操作（查→删）会中断在半路。
+                task.tool_log.append("定时任务结果:" + str(reply))
+                task.push_context(self, "")
+                task.set_temp_dialog_output("【定时任务执行结果】\n" + str(reply))
+
             elif result["world_info_task"]:
                 wi_task = result["world_info_task"]
                 try:

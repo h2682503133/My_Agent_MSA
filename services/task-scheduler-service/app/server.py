@@ -89,7 +89,14 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
         subscriber_id = request.subscriber_id or f"subscriber-{uuid.uuid4().hex[:12]}"
         for event in event_bus.subscribe(subscriber_id, request.channels):
             if not context.is_active():
+                # 客户端已断开：立即退出循环，让 event_bus.subscribe 的 finally
+                # 清理订阅并释放当前 gRPC 工作线程。
+                # event_bus 的心跳（约 1s 一次返回 None）保证这里能及时被检查到，
+                # 避免线程永久阻塞在 q.get() 上、累积耗尽线程池后所有 RPC 卡死。
                 break
+            if event is None:
+                # 心跳标记：仅用于存活检测，不发送给订阅方
+                continue
             yield self._dict_to_task_event(event)
 
     def _dict_to_task_event(self, event: dict):

@@ -481,11 +481,71 @@ class SkillRuntime:
             if not skill_md_path.exists():
                 return f"❌ 技能 {skill_slug} 不存在，缺少 SKILL.md"
 
-            add_result = self._openviking_add_skill(str(skill_md_path))
+            # 导入前先规范化 SKILL.md（幂等：正常文件无改动）。
+            # ClawHub 分发的技能常见「过度转义」+ CRLF：首行是 \---（而不是 ---）、
+            # 正文里 \## \- \* 与 HTML 实体 &#x20;，
+            # 会让 OpenViking 直接报 "SKILL.md must have YAML frontmatter"，
+            # 于是出现「安装命令已执行，但导入技能失败」——安装好了却用不了。
+            if self._normalize_skill_md(skill_md_path):
+                print(f"[skill] 已规范化 SKILL.md（去转义/CRLF/HTML实体）: {skill_md_path}", flush=True)
+
+            try:
+                add_result = self._openviking_add_skill(str(skill_md_path))
+            except Exception:
+                # 兜底：规范化后仍导入失败时，再规范一次并重试；仍失败才向上抛。
+                if not self._normalize_skill_md(skill_md_path):
+                    raise
+                print(f"[skill] SKILL.md 二次规范化后重试导入: {skill_md_path}", flush=True)
+                add_result = self._openviking_add_skill(str(skill_md_path))
+
             uri = add_result.get("uri", "") if isinstance(add_result, dict) else ""
             return f"✅ 技能导入成功：{skill_slug} | URI: {uri}"
         except Exception as exc:
             return f"❌ 导入技能失败：{exc}"
+
+    # ClawHub 技能里常见的过度转义 → 原文替换表。
+    # 顺序有讲究：长模式在前（\\--- 必须先于 \\-；\\## 必须先于 \\#），
+    # 否则会被短模式先吃掉一半、留下不合法的 frontmatter。
+    _SKILL_MD_FIXES: tuple[tuple[str, str], ...] = (
+        ("\\---", "---"),
+        ("\\##", "##"),
+        ("\\#", "#"),
+        ("\\-", "-"),
+        ("\\*", "*"),
+        ("&#x20;", " "),
+    )
+
+    @classmethod
+    def _normalize_skill_md(cls, path: Path) -> bool:
+        """把被转义/CRLF 污染的 SKILL.md 还原成可被解析的原文；返回是否发生了改动。
+
+        只做「安装即失败」这几类确定性修复，不改动正常技能文件：
+        1. CRLF / CR → LF
+        2. \\--- \\## \\# \\- \\* → 去掉反斜杠
+        3. HTML 实体 &#x20; → 空格
+        """
+        try:
+            original = path.read_bytes().decode("utf-8", errors="replace")
+        except Exception:
+            return False
+
+        fixed = original.replace("\r\n", "\n").replace("\r", "\n")
+        for src, dst in cls._SKILL_MD_FIXES:
+            fixed = fixed.replace(src, dst)
+
+        if fixed == original:
+            return False
+
+        # 修复完仍不是 YAML frontmatter 开头时不做无意义写入
+        if not fixed.lstrip().startswith("---"):
+            return False
+
+        try:
+            path.write_text(fixed, encoding="utf-8")
+        except Exception as exc:
+            print(f"[skill] 规范化 SKILL.md 写入失败 {path}: {exc}", flush=True)
+            return False
+        return True
 
     def clawhub_list(self, timeout: int) -> str:
         return self._run_clawhub(["list"], timeout=timeout)

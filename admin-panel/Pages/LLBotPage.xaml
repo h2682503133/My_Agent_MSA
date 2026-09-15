@@ -85,7 +85,28 @@
                     <TextBlock Text="暂无二维码"
                                x:Name="TxtQrStatus"
                                FontSize="12" Foreground="#999"
-                               TextAlignment="Center" Margin="0,0,0,12"/>
+                               TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <TextBlock x:Name="TxtQrSource"
+                               FontSize="11" Foreground="#666"
+                               TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+                    <Expander Header="WebUI 取码设置" FontSize="12" Foreground="#444"
+                              IsExpanded="False" Margin="0,0,0,8">
+                        <StackPanel Margin="0,6,0,0">
+                            <TextBlock Text="WebUI 地址" FontSize="11" Foreground="#666" Margin="0,0,0,2"/>
+                            <TextBox x:Name="TxtWebuiUrl" Height="26" FontSize="12"
+                                     VerticalContentAlignment="Center"
+                                     TextChanged="TxtWebuiUrl_TextChanged"/>
+                            <TextBlock Text="WebUI 密码（填密码即可，自动转 SHA-256）" FontSize="11"
+                                       Foreground="#666" Margin="0,8,0,2"/>
+                            <TextBox x:Name="TxtWebuiToken" Height="26" FontSize="12"
+                                     VerticalContentAlignment="Center"
+                                     TextChanged="TxtWebuiToken_TextChanged"/>
+                            <TextBlock Text="也可直接填 64 位十六进制的 cookie webui_token。API 可用时优先用 API（带精确过期时间，按实例端口区分）；不可用自动回落 qrcode.png"
+                                       FontSize="10" Foreground="#999" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                        </StackPanel>
+                    </Expander>
+
                     <TextBlock Text="二维码网址："
                                FontSize="11" Foreground="#666" Margin="0,0,0,4"/>
                     <TextBlock x:Name="TxtQrUrl"

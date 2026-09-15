@@ -387,6 +387,26 @@ def _build_timeout_reply(suspended: ScheduledTask) -> ScheduledTask:
     )
 
 
+def _build_offline_reply(suspended: ScheduledTask) -> ScheduledTask:
+    """构造「用户离线」系统代答：用户当前无法回复（消息只能靠推送/转投送达），
+    让模型自行判断与执行、不要再等待用户回复。
+
+    与超时代答的区别只在提示语和 task_id 前缀（便于日志区分触发来源）。
+    """
+    content = "【系统提示】用户当前无法回复，请自行进行判断与执行，不要继续等待用户回复。"
+    return ScheduledTask(
+        task_id=f"offline-{suspended.task_id}",
+        user_id=suspended.user_id,
+        session_id=suspended.session_id,
+        channel=suspended.channel,
+        content=content,
+        client_message_id="",
+        delivery_target=suspended.delivery_target,
+        metadata=dict(suspended.metadata),
+        agent_id=suspended.agent_id,
+    )
+
+
 def _suspend_ttl_sweeper() -> None:
     """扫描超时未回复的挂起任务：系统替用户回复并恢复，让模型自行判断。"""
     while True:
@@ -421,11 +441,43 @@ def submit_task(task: ScheduledTask) -> SubmitResult:
 
     user_id = task.user_id
 
+    # 推送类任务（定时提醒 timer_type=send_message、离线转投 offline_fallback）：
+    # 其 content 是「要发给用户的消息」，不是用户输入。
+    is_push_only = (
+        task.metadata.get("timer_type") == "send_message"
+        or task.metadata.get("offline_fallback") == "1"
+    )
+
     # 挂起恢复路由：该用户存在挂起任务时，本条消息视为对挂起任务的回复，不排队。
     with SUSPENDED_LOCK:
         suspended_entry = SUSPENDED_TASKS.get(user_id)
     if suspended_entry is not None:
-        return _resume_suspended(suspended_entry[0], task)
+        if is_push_only:
+            # 用户当前收不到交互式回复（消息只能靠推送/转投送达 → 人不在可交互渠道上）：
+            # 不能把推送内容当作他的回复（否则模型再提问 → 再次推送转投 → 往复循环）。
+            # 正确做法：系统代答「用户当前无法回复，请自行判断执行」，让模型自己收尾。
+            # 本条推送任务不 return，继续走下面的入队流程照常推送。
+            suspended_task = suspended_entry[0]
+            used = int(suspended_task.metadata.get("_offline_reply_count", "0") or "0")
+            if used < config.MAX_OFFLINE_REPLIES:
+                suspended_task.metadata["_offline_reply_count"] = str(used + 1)
+                threading.Thread(
+                    target=_resume_suspended,
+                    args=(suspended_task, _build_offline_reply(suspended_task)),
+                    daemon=True,
+                ).start()
+                gateway_log(
+                    f"[offline-reply] {user_id} 收到推送类任务且存在挂起任务 "
+                    f"{suspended_task.task_id}，改为系统代答恢复"
+                    f"（第 {used + 1}/{config.MAX_OFFLINE_REPLIES} 次）"
+                )
+            else:
+                gateway_log(
+                    f"[offline-reply] {user_id} 挂起任务 {suspended_task.task_id} "
+                    f"离线代答已达上限 {config.MAX_OFFLINE_REPLIES}，不再代答（推送任务照常发送）"
+                )
+        else:
+            return _resume_suspended(suspended_entry[0], task)
 
     with USER_LOCK:
         if user_id not in USER_QUEUES:

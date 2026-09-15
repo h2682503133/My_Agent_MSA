@@ -24,3 +24,8 @@ USER_QUEUE_SIZE = env_int("SCHEDULER_USER_QUEUE_SIZE", 10)
 SUSPEND_TTL_SECONDS = env_int("SCHEDULER_SUSPEND_TTL_SECONDS", 3600)
 # 挂起超时扫描间隔
 SUSPEND_SWEEP_INTERVAL = env_int("SCHEDULER_SUSPEND_SWEEP_INTERVAL", 30)
+
+# 离线代答上限：用户离线（消息只能靠推送/转投送达）时收到推送类任务，
+# 系统替用户回复「用户当前无法回复，请自行判断执行」以推动挂起任务收尾。
+# 若模型仍反复提问导致再次挂起，最多代答该次数后停止代答，避免往复死循环。
+MAX_OFFLINE_REPLIES = env_int("SCHEDULER_MAX_OFFLINE_REPLIES", 3)

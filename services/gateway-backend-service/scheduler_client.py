@@ -126,14 +126,20 @@ class GrpcSchedulerClient(SchedulerClient):
         return scheduler_pb2, scheduler_pb2_grpc
 
     @staticmethod
+    def _channel(message: FrontendMessage) -> str:
+        """投递渠道：默认 web；离线转投其他渠道（如 qq）时由 message.channel 指定。"""
+        return (message.channel or "web").strip() or "web"
+
+    @staticmethod
     def _session_id(message: FrontendMessage) -> str:
-        agent_id = message.agent_id or "main"  # kept for metadata
-        return message.session_id or f"web_{message.user_id}"
+        channel = GrpcSchedulerClient._channel(message)
+        return message.session_id or f"{channel}_{message.user_id}"
 
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         import grpc
 
         scheduler_pb2, scheduler_pb2_grpc = self._import_proto_modules()
+        channel_name = self._channel(message)
         session_id = self._session_id(message)
         agent_id = message.agent_id or "main"  # kept for metadata
 
@@ -155,12 +161,12 @@ class GrpcSchedulerClient(SchedulerClient):
                 req = scheduler_pb2.CreateTaskRequest(
                     user_id=message.user_id,
                     session_id=session_id,
-                    channel="web",
+                    channel=channel_name,
                     content=message.content,
                     client_message_id=message.client_message_id or "",
                     images=list(message.images or []),
                     delivery_target=scheduler_pb2.DeliveryTarget(
-                        channel="web",
+                        channel=channel_name,
                         user_id=message.user_id,
                         conversation_id=session_id,
                         reply_to=message.client_message_id or "",
@@ -195,6 +201,13 @@ class GrpcSchedulerClient(SchedulerClient):
 
         scheduler_pb2, scheduler_pb2_grpc = self._import_proto_modules()
 
+        # 空闲看门狗：这条订阅流在无任务事件时是静默的（scheduler 不发送心跳）。
+        # TCP 半开/对端静默清理连接时，async for 会永远等不到数据也不抛错 → 永不重连，
+        # 之后所有事件都堆积在 scheduler 的 event_bus buffer 里，web 端收不到任何回复。
+        # 因此：超过 N 秒没有任何事件 → 主动断开本次订阅并重连。
+        # 重连时 scheduler 会回放 buffer 中属于用户渠道的事件，错过的回复自动补发。
+        idle_reconnect = float(os.getenv("SUBSCRIBE_IDLE_RECONNECT_SECONDS", "120"))
+
         while True:
             try:
                 print(
@@ -210,7 +223,25 @@ class GrpcSchedulerClient(SchedulerClient):
                         channels=channels,
                     )
 
-                    async for event in stub.SubscribeEvents(req):
+                    stream = stub.SubscribeEvents(req)
+                    while True:
+                        try:
+                            # 每条事件等待上限：超时视为订阅失活，断开重连
+                            event = await asyncio.wait_for(
+                                stream.read(),
+                                timeout=idle_reconnect,
+                            )
+                        except asyncio.TimeoutError:
+                            print(
+                                "[gateway] scheduler event subscription idle "
+                                f"> {idle_reconnect:.0f}s no event, reconnecting",
+                                flush=True,
+                            )
+                            break
+                        if event is None:
+                            # 流正常结束
+                            break
+
                         delivery_target = None
 
                         if event.delivery_target and event.delivery_target.user_id:
