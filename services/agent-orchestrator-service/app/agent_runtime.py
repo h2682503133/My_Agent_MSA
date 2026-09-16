@@ -61,6 +61,7 @@ class AgentRuntime:
         self.config = {}
         self.system_prompt: list[dict[str, str]] = []
         self._identity_system_indexes: list[int] = []
+        self._when_system_rules: list[tuple[int, str]] = []  # (段下标, @when 取值)
         self._soul_message_content: str = ""  # SOUL.md 原文，两阶段阶段1 构建时剔除（避免角色代入干扰列词）
         self._world_info_override_content: str = ""  # world_info.md 原文，阶段1 的职责变更指令
         self.load_config()
@@ -75,6 +76,7 @@ class AgentRuntime:
         parts = ContextBuilder(self).build_system_prompt()
         self.system_prompt = parts.messages
         self._identity_system_indexes = parts.identity_indexes
+        self._when_system_rules = parts.when_rules
         self._soul_message_content = parts.soul_content
         self._world_info_override_content = parts.world_info_override
 

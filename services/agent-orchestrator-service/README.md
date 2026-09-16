@@ -160,6 +160,40 @@ orchestrator/system_prompt → /app/system_prompt   （各智能体 System Promp
 - 没有选项块的老式 `TOOL.md` → 整份原文照旧注入；`TOOL.json` 缺失 → 只注入 `TOOL.md` 正文
 - 细节见仓库根目录 `上下文管理.md` 第 7 节
 
+## 提示词文件开头的指令区（`@ref=` / `@when=`）
+
+一个提示词文件的**开头**可以是指令区（连续的「指令行或空行」，出现第一行正文即结束）。
+指令行**不进入注入内容**，读取期就被摘掉，下游只看到正文。两条指令都只允许写一行：
+
+````markdown
+@when=single
+@ref=alice
+
+（这里是正文）
+````
+
+| 指令 | 语义 |
+|------|------|
+| `@ref=<agent_id>` | **读取期**把整份内容替换成「另一个智能体的**同名**文件」。整文件替换语义 → 写了它就不能再有正文 |
+| `@when=group` / `@when=single` | 该段**只在群聊** / **只在非群聊**注入 |
+
+规则：
+
+- 指令只能出现在指令区；指令区之后（正文里）再出现 `@ref=` / `@when=` → 报错，避免误写被静默吞掉
+- `@ref=`：目标 agent 目录 / 同名文件不存在、内容为空、指向自己、目标内部再含指令（只允许一层）→ 报错
+- `@when=`：取值只允许 `group` / `single`（大小写与 `=` 两侧空格容错）；目标文件内部含 `@when=` → 报错
+  （注入条件属于**写它的那个 agent**，不随内容共享）
+- 支持范围：`files` 里声明的普通 `.md` 段 + `GLOBAL_SETTING.md`。
+  `process*.md`（内容不读）/ `world_info.md`（内容只作阶段1 指令）/ `TOOL.md` 写了 `@when=` → 报错
+- `@when=` 的判定是**发送期**按 `task.user.session_id` / `task.user.id` 是否以 `grp_` / `qq_g_` 开头
+  （`context_builder.is_group_session`，与 openviking-context-service 的会话共享口径一致）。
+  之所以不在构建期判定：system prompt 在实例创建时构建并被 LRU 缓存复用，而"是否群聊"是**每次请求**的属性
+- 失败一律抛 `PromptRefError`，不做静默降级
+
+**典型用法**：群聊时不要注入用户信息 —— 在 `USER.md` 首行加 `@when=single`。
+
+自测：`python tools/prompt_refs_smoke_test.py`（临时目录造数据，覆盖正常路径与全部报错分支）。
+
 ## agent_list.json 按用户选择
 
 支持新格式：

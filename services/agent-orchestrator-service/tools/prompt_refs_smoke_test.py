@@ -1,7 +1,7 @@
-"""prompt_refs / context_builder 的提示词引用与占位符冒烟测试。
+"""prompt_refs / context_builder 的提示词指令与占位符冒烟测试。
 
 不依赖集群与下游服务：用临时目录造几个假智能体，直接跑
-`@ref=` 跳转解析与 `{agent_id}` 替换，覆盖全部报错分支。
+`@ref=` 跳转、`@when=` 注入条件与 `{agent_id}` 替换，覆盖全部报错分支。
 
 用法：
     python tools/prompt_refs_smoke_test.py
@@ -24,7 +24,7 @@ os.environ["AGENT_CONFIG_PATH"] = str(TMP / "agent_list.json")
 from app import config  # noqa: E402
 from app import prompt_refs  # noqa: E402
 from app.agent_config import load_agent_config  # noqa: E402
-from app.context_builder import ContextBuilder  # noqa: E402
+from app.context_builder import ContextBuilder, is_group_session  # noqa: E402
 from app.prompt_refs import PromptRefError  # noqa: E402
 
 FAILURES: list[str] = []
@@ -56,6 +56,20 @@ def build(agent_id: str):
     return ContextBuilder(agent).build_system_prompt()
 
 
+def filtered(parts, *, is_group: bool):
+    """在假实例上跑发送期过滤，模拟一次群聊 / 非群聊请求。"""
+    agent = SimpleNamespace(
+        id="henry",
+        user_id="default",
+        session_id="qq_g_1" if is_group else "qq_1",
+        config={},
+        system_prompt=list(parts.messages),
+        _identity_system_indexes=[],
+        _when_system_rules=list(parts.when_rules),
+    )
+    return ContextBuilder(agent).effective_system_prompt(is_group=is_group)
+
+
 def expect_error(label: str, fn) -> None:
     try:
         fn()
@@ -79,7 +93,18 @@ def expect_error(label: str, fn) -> None:
     "dave":   {"files": ["SOUL.md"]},
     "erin":   {"files": ["SOUL.md"]},
     "frank":  {"files": ["SOUL.md"]},
-    "grace":  {"files": ["SOUL.md"]}
+    "grace":  {"files": ["SOUL.md"]},
+    "henry":  {"files": ["SOUL.md", "USER.md"]},
+    "ivan":   {"files": ["SOUL.md"]},
+    "jane":   {"files": ["SOUL.md"]},
+    "judy":   {"files": ["SOUL.md"]},
+    "kate":   {"files": ["SOUL.md"]},
+    "leo":    {"files": ["SOUL.md"]},
+    "mona":   {"files": ["SOUL.md", "PROCESS.md"]},
+    "nick":   {"files": ["SOUL.md", "world_info.md"]},
+    "olga":   {"files": ["SOUL.md", "TOOL.md"]},
+    "quinn":  {"files": ["USER.md"]},
+    "rita":   {"files": ["SOUL.md"]}
   }
 }
 """,
@@ -119,6 +144,23 @@ write("erin", "SOUL.md", "@ref=alice IDENTITY.md\n")  # 行内多余内容 → �
 write("frank", "SOUL.md", "@ref=frank\n")  # 自跳 → 报错
 write("grace", "SOUL.md", "@ref=lilith\n")  # 目标也是跳转 → 只允许一层 → 报错
 
+# ── @when= 注入条件 ──────────────────────────────────────────
+HENRY_SOUL = "# 角色设定\nhenry 的 SOUL 正文\n"
+HENRY_USER = "# 用户信息\nhenry 的 USER 正文\n"
+write("henry", "SOUL.md", "@when=group\n" + HENRY_SOUL)  # 仅群聊
+write("henry", "USER.md", "@when=single\n" + HENRY_USER)  # 仅非群聊
+
+write("ivan", "SOUL.md", "@when=group\n@ref=alice\n")  # 与 @ref= 共存（条件在前）
+write("jane", "SOUL.md", "@ref=alice\n@when=single\n")  # 与 @ref= 共存（条件在后）
+write("judy", "SOUL.md", "@when=always\n")  # 取值非法 → 报错
+write("kate", "SOUL.md", "@when=group\n@when=single\n正文\n")  # 重复 → 报错
+write("leo", "SOUL.md", "正文\n@when=group\n")  # 指令不在开头 → 报错
+write("mona", "PROCESS.md", "@when=group\n")  # PROCESS 内容不读 → 报错
+write("nick", "world_info.md", "@when=group\n")  # world_info 不是普通段 → 报错
+write("olga", "TOOL.md", "@when=group\n")  # TOOL 暂不支持 → 报错
+write("quinn", "USER.md", "@ref=henry\n")  # 目标文件含 @when → 报错
+write("rita", "SOUL.md", "@when = GROUP\nrita 的 SOUL\n")  # 容错：空格 + 大写
+
 print("== 正常路径 ==")
 alice = build("alice")
 lilith = build("lilith")
@@ -157,6 +199,71 @@ result = prompt_refs.substitute_placeholders(text, agent_id="lilith")
 check("只替换白名单键", result == "好感度：{好感度：65} 占位：lilith 未知：{user_id} 空：{}", result)
 check("无花括号时零改动", prompt_refs.substitute_placeholders("无占位", agent_id="x") == "无占位")
 check("大小写不敏感找文件", prompt_refs.resolve_named_file(TMP / "alice", "soul.md") is not None)
+
+print("\n== @when= 注入条件：解析与登记 ==")
+henry = build("henry")
+check("指令行不进入内容（SOUL）", "@when" not in henry.messages[1]["content"], repr(henry.messages[1]["content"][:20]))
+check("指令行不进入内容（USER）", "@when" not in henry.messages[2]["content"], repr(henry.messages[2]["content"][:20]))
+check("SOUL 正文完整（首行未被吃掉）", henry.messages[1]["content"] == HENRY_SOUL.strip())
+check("USER 正文完整", henry.messages[2]["content"] == HENRY_USER.strip())
+check("条件已按段下标登记", henry.when_rules == [(1, "group"), (2, "single")], str(henry.when_rules))
+
+print("\n== @when= 注入条件：发送期过滤 ==")
+group_msgs = [m["content"] for m in filtered(henry, is_group=True)]
+single_msgs = [m["content"] for m in filtered(henry, is_group=False)]
+check("群聊：注入 group 段、剔除 single 段（USER.md 不注入）",
+      HENRY_SOUL.strip() in group_msgs and HENRY_USER.strip() not in group_msgs,
+      f"段数={len(group_msgs)}")
+check("非群聊：注入 single 段、剔除 group 段",
+      HENRY_USER.strip() in single_msgs and HENRY_SOUL.strip() not in single_msgs,
+      f"段数={len(single_msgs)}")
+check("无条件段不受影响（GLOBAL_SETTING 两边都在）",
+      len(group_msgs) == 2 and len(single_msgs) == 2)
+
+print("\n== @when= 与 @ref= 共存 ==")
+ivan = build("ivan")
+jane = build("jane")
+check("条件在前：@ref= 仍整文件替换", ivan.messages[1]["content"] == ALICE_SOUL.strip())
+check("条件在前：条件已登记", ivan.when_rules == [(1, "group")], str(ivan.when_rules))
+check("条件在后：@ref= 仍整文件替换", jane.messages[1]["content"] == ALICE_SOUL.strip())
+check("条件在后：条件已登记", jane.when_rules == [(1, "single")], str(jane.when_rules))
+check("共存时正文里没有残留指令",
+      not prompt_refs.has_any_directive(ivan.messages[1]["content"]))
+rita = build("rita")
+check("容错：`@when = GROUP` 归一为 group", rita.when_rules == [(1, "group")], str(rita.when_rules))
+check("容错：大小写与空格不影响正文", rita.messages[1]["content"] == "rita 的 SOUL")
+
+print("\n== @when= 报错分支 ==")
+expect_error("@when= 取值非法 → 报错", lambda: build("judy"))
+expect_error("@when= 写两行 → 报错", lambda: build("kate"))
+expect_error("指令行在正文之后 → 报错", lambda: build("leo"))
+expect_error("PROCESS 声明文件写 @when= → 报错", lambda: build("mona"))
+expect_error("world_info.md 写 @when= → 报错", lambda: build("nick"))
+expect_error("TOOL.md 写 @when= → 报错", lambda: build("olga"))
+expect_error("目标文件内部含 @when= → 报错", lambda: build("quinn"))
+
+print("\n== 群聊判定 is_group_session ==")
+check("qq_g_ 前缀（群）", is_group_session("qq_g_1065434062", "1234567") is True)
+check("grp_ 前缀（群）", is_group_session("grp_abc", None) is True)
+check("私聊 session 不算群", is_group_session("qq_1234567", "1234567") is False)
+check("user_id 带前缀也算群（兜底渠道）", is_group_session("", "qq_g_1") is True)
+check("两者都空不算群", is_group_session(None, None) is False)
+check("前后空格不影响判定", is_group_session("  qq_g_1  ", "") is True)
+
+print("\n== resolve_segment 纯函数层面 ==")
+seg = prompt_refs.resolve_segment(
+    "普通正文", agent_id="x", filename="SOUL.md", system_prompt_dir=TMP)
+check("无指令：原样返回且零拷贝", seg.text == "普通正文" and seg.when == "")
+seg2 = prompt_refs.resolve_segment(
+    "@when=group\n\n正文\n", agent_id="x", filename="SOUL.md", system_prompt_dir=TMP)
+check("摘掉指令与其后空行", seg2.text == "正文" and seg2.when == "group", repr(seg2.text))
+try:
+    prompt_refs.resolve_segment(
+        "@when=group\n正文\n", agent_id="x", filename="TOOL.md",
+        system_prompt_dir=TMP, allow_when=False)
+    check("allow_when=False 遇 @when= → 报错", False, "没有报错")
+except PromptRefError as exc:
+    check("allow_when=False 遇 @when= → 报错", True, str(exc)[:90])
 
 print("\n== 目标文件为空 ==")
 write("alice", "SOUL.md", "   \n")

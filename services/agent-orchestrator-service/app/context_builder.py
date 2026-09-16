@@ -54,16 +54,26 @@ TOOL 注入
 兼容策略：`TOOL.md` 里没有 `tool-inject` 选项块（老式手写文件）或选项块 JSON 非法
 → 整份原文照旧注入，行为与改造前一致。
 
-提示词引用与占位符
-------------------
-除"读文件原文注入"外，每个提示词文件（`GLOBAL_SETTING.md` / 各 agent 的 `.md` / `world_info.md` /
-`TOOL.md`）的内容还支持两种间接形式，实现在 `app/prompt_refs.py`：
+提示词指令（文件开头的指令区）
+------------------------------
+每个提示词文件的**开头**可以是指令区（连续的「指令行或空行」，第一行正文即结束），
+实现在 `app/prompt_refs.py`。指令行**不进入注入内容**（读取期摘掉），下游只看到正文。
 
 - `@ref=<agent_id>`：**读取期**把整份内容替换成「另一个智能体的同名文件」（只允许一层；
-  目标缺失 / 非法 / 目标内部也有 `@ref=` 一律抛 `PromptRefError`，不静默降级）
+  整文件替换语义下不能再有正文；目标缺失 / 非法 / 目标内部也有指令一律抛 `PromptRefError`）
+- `@when=group` / `@when=single`：该段**只在群聊 / 只在非群聊**注入
+  - 条件属于**写它的那个 agent**，与正文来自哪里无关；目标文件里出现 `@when=` 直接报错
+  - 判定在**发送期**：按 `task.user.session_id` / `task.user.id` 是否以 `grp_` / `qq_g_` 开头
+    （`is_group_session`），与 openviking-context-service 的会话共享口径一致
+  - 为什么要放到发送期：system prompt 在实例创建时构建并被 LRU 缓存复用，而"是否群聊"
+    是**每次请求**的属性；因此构建期只记录「第几段、什么条件」，发送期再过滤。
+    与已有的 `main` 读 IDENTITY.md 杂项开关（`identity_indexes`）是同一套机制。
+  - 支持范围：`files` 里声明的普通 `.md` 段（含 `GLOBAL_SETTING.md`）。
+    `process*.md`（内容不读）/ `world_info.md`（内容只作阶段1 指令）/ `TOOL.md`
+    声明 `@when=` 一律显式报错，避免静默失灵
 - `{agent_id}`：**拼接完成后**统一替换为当前请求方的 agent id（白名单键，其余花括号原样保留）
 
-两者放在这一层的原因是不变量：`messages` 里的文本必须与 `soul_content`、`world_info_override`
+这些处理放在这一层的原因是不变量：`messages` 里的文本必须与 `soul_content`、`world_info_override`
 这两个"记录串"完全一致（阶段1 靠 `==` 剔除 SOUL），所以替换一次做完，不让下游看到模板原文。
 """
 
@@ -109,6 +119,10 @@ _OPTION_BLOCK_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# 群聊会话标识前缀：`grp_`（多角色群聊）/ `qq_g_`（QQ 群）
+# 口径与 openviking-context-service 的会话共享判定完全一致（那边只看 session_id）
+GROUP_SESSION_PREFIXES = ("grp_", "qq_g_")
+
 
 # ─── 通用小工具 ──────────────────────────────────────────────
 
@@ -139,6 +153,24 @@ def safe_process_segment(value: str, default: str = "default") -> str:
     raw = str(value or default).strip() or default
     safe = re.sub(r"[^0-9A-Za-z_.@-]+", "_", raw).strip("._") or default
     return "default" if safe in {".", ".."} else safe
+
+
+def is_group_session(session_id=None, user_id=None) -> bool:
+    """是否群聊会话：`session_id` 或 `user_id` 以 `grp_` / `qq_g_` 开头。
+
+    实际取值形态（recon 结论）：
+    - 群聊时 `session_id` = `qq_g_<群号>`，而 `user_id` = 发言人 QQ 号（**不带前缀**）
+      —— 见 qq-llbot-service/app/qq_bridge.py 的 `_session_key`
+    - `grp_` 是多角色群聊的会话 id 前缀
+
+    这里额外接受 `user_id`：现有渠道实测永远不命中，但若有渠道直接把群号当 user_id
+    传入，口径也不会漏（`@when=` 的语义就是"在群聊时"）。
+    """
+    for value in (session_id, user_id):
+        text = str(value or "").strip()
+        if text and text.startswith(GROUP_SESSION_PREFIXES):
+            return True
+    return False
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -177,22 +209,39 @@ def _resolve_prompt_file(prompt_dir: Path, filename: str) -> Path | None:
     return prompt_refs.resolve_named_file(prompt_dir, filename)
 
 
-def _read_prompt_text(path: Path, *, agent_id: str, filename: str) -> str:
-    """读一个提示词文件，并在读取期解析 `@ref=` 跳转（整文件替换为另一 agent 的同名文件）。
+def _read_prompt_segment(
+    path: Path, *, agent_id: str, filename: str, allow_when: bool = True
+) -> tuple[str, str]:
+    """读一个提示词文件并解析开头指令区，返回 `(正文, @when 取值)`。
 
-    解析失败抛 `prompt_refs.PromptRefError`（不静默降级）。
+    - `@ref=` 在读取期整文件替换；`@when=` 摘掉并回传（`""` = 无条件）
+    - `allow_when=False` 时遇到 `@when=` 报错（该文件类型没有条件注入语义）
+    - 解析失败抛 `prompt_refs.PromptRefError`（不静默降级）
     """
     raw = path.read_text(encoding="utf-8")
-    return prompt_refs.resolve_text(
+    resolved = prompt_refs.resolve_segment(
         raw,
         agent_id=agent_id,
         filename=filename,
         system_prompt_dir=config.SYSTEM_PROMPT_DIR,
+        allow_when=allow_when,
     )
+    return resolved.text, resolved.when
+
+
+def _read_prompt_text(path: Path, *, agent_id: str, filename: str) -> str:
+    """只取正文的读取入口（`allow_when=False`）。
+
+    TOOL.md / world_info.md 这类「正文另作他用」或「内容不参与普通段注入」的文件走这条：
+    它们没有条件注入的语义，写了 `@when=` 会直接报错而不是被静默忽略。
+    """
+    return _read_prompt_segment(
+        path, agent_id=agent_id, filename=filename, allow_when=False
+    )[0]
 
 
 def _assert_process_declarative(prompt_dir: Path, filename: str, *, agent_id: str) -> None:
-    """PROCESS 声明文件的内容根本不被读取：写了 @ref= 无意义，显式报错。"""
+    """PROCESS 声明文件的内容根本不被读取：写了指令无意义，显式报错。"""
     path = _resolve_prompt_file(prompt_dir, filename)
     if path is None:
         return
@@ -207,6 +256,14 @@ def _assert_process_declarative(prompt_dir: Path, filename: str, *, agent_id: st
             agent_id=agent_id,
             filename=filename,
             line=prompt_refs.first_ref_line(text) or "",
+        )
+    if prompt_refs.has_when_directive(text):
+        raise prompt_refs.PromptRefError(
+            "PROCESS 声明文件（process*.md）的内容不会被读取，@when= 不生效；"
+            "如需条件注入请改其他文件",
+            agent_id=agent_id,
+            filename=filename,
+            line=prompt_refs.first_when_line(text) or "",
         )
 
 
@@ -450,6 +507,18 @@ class SystemPromptParts:
     identity_indexes: list[int] = field(default_factory=list)
     soul_content: str = ""
     world_info_override: str = ""
+    # 「第几段 → 注入条件」（`@when=` 取值，见 prompt_refs.WHEN_*）。
+    # 构建期只记录，发送期按当次请求是否群聊过滤（build_context 的 effective_system_prompt）。
+    when_rules: list[tuple[int, str]] = field(default_factory=list)
+
+
+def _add_segment(parts: SystemPromptParts, content: str, when: str = "") -> int:
+    """追加一个 system 段并登记注入条件，返回段下标。"""
+    parts.messages.append({"role": "system", "content": content})
+    index = len(parts.messages) - 1
+    if when:
+        parts.when_rules.append((index, when))
+    return index
 
 
 @dataclass
@@ -495,11 +564,12 @@ class ContextBuilder:
         parts = SystemPromptParts()
 
         if global_setting.exists():
-            content = _read_prompt_text(
+            raw_content, when = _read_prompt_segment(
                 global_setting, agent_id=agent.id, filename="GLOBAL_SETTING.md"
-            ).strip()
+            )
+            content = raw_content.strip()
             if content:
-                parts.messages.append({"role": "system", "content": content})
+                _add_segment(parts, content, when)
 
         for filename in self._config.get("files", []):
             key = str(filename).strip().lower()
@@ -529,12 +599,15 @@ class ContextBuilder:
             file_path = prompt_dir / filename
             if not file_path.exists():
                 continue
-            content = _read_prompt_text(file_path, agent_id=agent.id, filename=filename).strip()
+            raw_content, when = _read_prompt_segment(
+                file_path, agent_id=agent.id, filename=filename
+            )
+            content = raw_content.strip()
             if content:
-                parts.messages.append({"role": "system", "content": content})
+                index = _add_segment(parts, content, when)
                 # 记录 main 的 IDENTITY.md 位置，供杂项开关在调用模型前拦截
                 if agent.id == "main" and str(filename).lower() == "identity.md":
-                    parts.identity_indexes.append(len(parts.messages) - 1)
+                    parts.identity_indexes.append(index)
                 # 记录 SOUL.md 原文，两阶段阶段1 构建时剔除（避免角色代入干扰关键词提取）
                 if str(filename).lower() == "soul.md":
                     parts.soul_content = content
@@ -554,14 +627,31 @@ class ContextBuilder:
 
         return parts
 
-    def effective_system_prompt(self) -> list[dict[str, str]]:
-        """按杂项开关过滤系统提示词：main 关闭 IDENTITY.md 时跳过对应消息。"""
+    def effective_system_prompt(self, *, is_group: bool = False) -> list[dict[str, str]]:
+        """按「当次请求」过滤系统提示词段，两类条件合并成一次过滤（保持下标稳定）。
+
+        - `main` 关闭杂项「读 IDENTITY.md」→ 跳过记录下来的 IDENTITY 段
+        - `@when=group` / `@when=single` → 与当次请求是否群聊不符的段跳过
+
+        system prompt 是**实例级**构建并缓存复用的，而这两个条件都是**请求级**的，
+        所以只能在这里（发送期）过滤，不能在构建期丢弃。
+        """
         agent = self._agent
-        if agent.id != "main" or not agent._identity_system_indexes:
+        blocked: set[int] = set()
+
+        if (
+            agent.id == "main"
+            and getattr(agent, "_identity_system_indexes", None)
+            and not identity_read_enabled()
+        ):
+            blocked.update(agent._identity_system_indexes)
+
+        for index, when in getattr(agent, "_when_system_rules", None) or []:
+            if (when == prompt_refs.WHEN_GROUP) != bool(is_group):
+                blocked.add(index)
+
+        if not blocked:
             return agent.system_prompt
-        if identity_read_enabled():
-            return agent.system_prompt
-        blocked = set(agent._identity_system_indexes)
         return [m for i, m in enumerate(agent.system_prompt) if i not in blocked]
 
     # ── PROCESS / vars 结构化段 ─────────────────────────────
@@ -889,7 +979,13 @@ class ContextBuilder:
             commit_limit=int(self._config.get("commit_limit", 0) or 0),
         )
 
-        system_prompt_messages = self.effective_system_prompt()
+        # 群聊判定（用于 @when=group / @when=single）：按当次请求的 session_id / user_id
+        # 前缀。实例级缓存的 system prompt 必须在这里按请求过滤，见 effective_system_prompt。
+        is_group = is_group_session(
+            getattr(getattr(task, "user", None), "session_id", ""),
+            getattr(getattr(task, "user", None), "id", ""),
+        )
+        system_prompt_messages = self.effective_system_prompt(is_group=is_group)
 
         # 仅用户请求的首次 send() 计入轮次（caller 为 user 对象）；
         # 工具回执、智能体转交等内部回调 caller 是智能体，不计时。
