@@ -194,6 +194,50 @@ orchestrator/system_prompt → /app/system_prompt   （各智能体 System Promp
 
 自测：`python tools/prompt_refs_smoke_test.py`（临时目录造数据，覆盖正常路径与全部报错分支）。
 
+## 历史块的 role 重分配（短期 session 记忆）
+
+历史对话块在**加载期**按说话人重新分配 `role`，实现在
+`context_builder.shape_history_messages`，只作用于对话历史那一段。
+
+**问题**：群聊共享 session 里**所有角色**的发言在存储层都是 `role="assistant"`
+（openviking-context-service 的 `viking_store.append_turn` 对每个 agent 一视同仁），
+而 `assistant` 通道的语义是"这是我说的"。直接透传的后果是模型把别人的话当作自己说过的
+话，并从「assistant 通道里装着各种 `<名字>:` 开头的角色散文」这个格式模板里推断出
+"替别的角色写台词也是我的职责"。实测：98 个 assistant 回合里 7 个出现冒充
+（记录作者 ≠ 正文里写的说话人）。
+
+**为什么修在加载期而不是存储期**：`assistant` 这个 role 是**相对观察者**的 ——
+同一条 lilith 的发言，对 lilith 是 `assistant`，对 alice 必须是别的通道，一条物理记录
+无法同时表达两者。存储层只存观察者无关的事实（"这条是 lilith 产生的"），而这个事实
+**已经存了**（`role_id`/`peer_id` + `<agent_id>:` 前缀）。
+
+**为什么解析 `<name>:` 前缀就够**：写入时每条 agent 发言都必然带 `<agent_id>:` 前缀，
+实测 8 个会话文件、全部记录里「外层前缀 != peer_id」出现 **0 次** —— 前缀是存储层写的，
+恒等于真实作者。所以解析前缀等价于读作者字段，**不需要改 proto、不需要动存储服务**。
+
+| 情况 | 处理 |
+|------|------|
+| 说话人 == 自身 `agent_id` | 保留 `assistant`（自己的语气连续性是资产） |
+| 说话人 != 自身，原 role 是 `assistant` | 挪到 `user` 侧，**连续段合并**成一条 |
+| 原 role 已是 `user`（用户消息 / `<agent_e>:` 调度转场） | 原样保留，不参与合并 |
+| 无说话人标记（`工具摘要：…`） | 原样保留，不参与合并 |
+| `【会话摘要】` / `【相关记忆】` | 原样透传（不是对话历史） |
+
+- **只重排 role 与合并，不改动任何正文**（`<name>:` 标记保留，与 `GLOBAL_SETTING.md` 的
+  `<ID>` 约定同源）
+- 单角色私聊**天然退化为恒等变换**（那里的历史不是自己的就是用户的），所以私聊路径零回归
+- 历史块上方的免责框 `HISTORY_DISCLAIMER` 作用范围是**它下面的整个历史块**，
+  且带优先级裁决（与上方系统设定矛盾时以系统设定为准）
+
+自测：
+
+```bash
+python tools/history_shape_smoke_test.py          # 37 项，含私聊恒等与全部边界
+# 实时检查（集群内跑，验收标准是"错通道清零"，改造前基线 31/66）
+kubectl -n agent cp tools/history_shape_live_check.py <pod>:/tmp/check.py
+kubectl -n agent exec <pod> -- python /tmp/check.py
+```
+
 ## agent_list.json 按用户选择
 
 支持新格式：
