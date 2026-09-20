@@ -88,6 +88,14 @@ class UserService(user_pb2_grpc.UserServicer):
 
 
 def serve():
+    # 启动时全量对账别名指针：回填存量（如 h268 ↔ QQ 号 2195239690）并自愈历史漂移。
+    # 幂等；失败不阻断启动（对账只是派生状态，缺了不影响主流程）。
+    try:
+        stats = user_store.reconcile_all()
+        print(f"alias reconcile: {stats}", flush=True)
+    except Exception as exc:
+        print(f"alias reconcile failed (non-fatal): {exc}", flush=True)
+
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))
     user_pb2_grpc.add_UserServicer_to_server(UserService(), server)
     listen_addr = f"{config.USER_GRPC_HOST}:{config.USER_GRPC_PORT}"

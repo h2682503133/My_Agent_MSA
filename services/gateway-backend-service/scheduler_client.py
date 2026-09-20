@@ -10,6 +10,20 @@ class SchedulerClient:
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         raise NotImplementedError
 
+    async def ack_event(
+        self,
+        subscriber_id: str,
+        event_id: str,
+        ok: bool,
+        error: str = "",
+    ) -> str:
+        """回报投递结果（ok=false → 调度器转投其它渠道，全失败再缓冲）。"""
+        raise NotImplementedError
+
+    async def flush_buffered(self, user_id: str = "", channel: str = "web") -> int:
+        """渠道可达时通知调度器补发缓冲事件。"""
+        raise NotImplementedError
+
     async def subscribe_events(
         self,
         subscriber_id: str,
@@ -21,6 +35,19 @@ class SchedulerClient:
 class MockSchedulerClient(SchedulerClient):
     def __init__(self) -> None:
         self._event_queue: asyncio.Queue = asyncio.Queue()
+
+    async def ack_event(
+        self,
+        subscriber_id: str,
+        event_id: str,
+        ok: bool,
+        error: str = "",
+    ) -> str:
+        # mock 模式无转投/缓冲语义
+        return "acked" if ok else "unknown"
+
+    async def flush_buffered(self, user_id: str = "", channel: str = "web") -> int:
+        return 0
 
     async def create_task(self, message: FrontendMessage) -> CreateTaskResult:
         task_id = f"task-{uuid.uuid4().hex[:12]}"
@@ -191,6 +218,51 @@ class GrpcSchedulerClient(SchedulerClient):
             waiting=resp.waiting,
             error=resp.error,
         )
+
+    async def ack_event(
+        self,
+        subscriber_id: str,
+        event_id: str,
+        ok: bool,
+        error: str = "",
+    ) -> str:
+        """回报投递结果。返回 disposition（acked / forwarded:<ch> / buffered / unknown）。"""
+        import grpc
+
+        scheduler_pb2, scheduler_pb2_grpc = self._import_proto_modules()
+        try:
+            async with grpc.aio.insecure_channel(self.target) as channel:
+                stub = scheduler_pb2_grpc.TaskSchedulerStub(channel)
+                resp = await stub.AckEvent(
+                    scheduler_pb2.AckEventRequest(
+                        subscriber_id=subscriber_id,
+                        event_id=event_id,
+                        ok=ok,
+                        error=error,
+                    ),
+                    timeout=5,
+                )
+                return resp.disposition or ("acked" if resp.accepted else "unknown")
+        except Exception as exc:
+            print(f"[gateway] ack_event failed event={event_id}: {exc}", flush=True)
+            return "error"
+
+    async def flush_buffered(self, user_id: str = "", channel: str = "web") -> int:
+        """通知调度器本渠道（或该用户在本渠道）已可达，补发缓冲的事件。"""
+        import grpc
+
+        scheduler_pb2, scheduler_pb2_grpc = self._import_proto_modules()
+        try:
+            async with grpc.aio.insecure_channel(self.target) as channel_conn:
+                stub = scheduler_pb2_grpc.TaskSchedulerStub(channel_conn)
+                resp = await stub.FlushBuffered(
+                    scheduler_pb2.FlushBufferedRequest(user_id=user_id, channel=channel),
+                    timeout=5,
+                )
+                return int(resp.flushed or 0)
+        except Exception as exc:
+            print(f"[gateway] flush_buffered failed user={user_id}: {exc}", flush=True)
+            return 0
 
     async def subscribe_events(
         self,

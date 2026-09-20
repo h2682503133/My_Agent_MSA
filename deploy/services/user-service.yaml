@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: user-service
-        image: agent/user-service:v5
+        image: agent/user-service:v7
         imagePullPolicy: Always
         ports:
         - containerPort: 5104

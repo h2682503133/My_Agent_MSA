@@ -99,6 +99,28 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
                 continue
             yield self._dict_to_task_event(event)
 
+    def AckEvent(self, request, context):
+        """消费端回报投递结果（ok=false 或超时 → 转投其它渠道，全失败再缓冲）。"""
+        try:
+            accepted, disposition = event_bus.ack(
+                request.event_id, bool(request.ok), request.error
+            )
+            return task_scheduler_pb2.AckEventResponse(
+                accepted=accepted, disposition=disposition
+            )
+        except Exception as e:
+            return task_scheduler_pb2.AckEventResponse(accepted=False, disposition=f"error:{e}")
+
+    def FlushBuffered(self, request, context):
+        """渠道重新可达时补发缓冲（web：SSE 建立；qq：Satori 重连）。"""
+        try:
+            flushed = event_bus.flush_buffered(request.user_id, request.channel)
+            return task_scheduler_pb2.FlushBufferedResponse(
+                ok=True, flushed=flushed, message=f"flushed {flushed}"
+            )
+        except Exception as e:
+            return task_scheduler_pb2.FlushBufferedResponse(ok=False, flushed=0, message=str(e))
+
     def _dict_to_task_event(self, event: dict):
         delivery = event.get("delivery_target") or {}
         return task_scheduler_pb2.TaskEvent(
@@ -124,6 +146,8 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
 
 def serve():
     event_bus.set_user_client(UserClient())
+    # ack 超时扫描：消费端崩溃/卡死时永远等不到 ack，超时后按投递失败处理（转投/缓冲）。
+    event_bus.start_sweeper()
     start_scheduler(OrchestratorClient(config.ORCHESTRATOR_TARGET))
 
     # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）

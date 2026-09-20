@@ -1,6 +1,7 @@
 """
 异步 gRPC 客户端，用于 qq-llbot-service 与 task-scheduler-service 通信。
 """
+import os
 import sys
 from pathlib import Path
 
@@ -72,7 +73,61 @@ class SchedulerClient:
         except Exception as e:
             return {"ok": False, "task_id": "", "status": "error", "waiting": 0, "error": str(e)}
 
+    async def ack_event(
+        self,
+        subscriber_id: str,
+        event_id: str,
+        ok: bool,
+        error: str = "",
+    ) -> str:
+        """回报投递结果。返回 disposition（acked / forwarded:<ch> / buffered / unknown）。"""
+        try:
+            async with grpc.aio.insecure_channel(self.target) as chan:
+                stub = task_scheduler_pb2_grpc.TaskSchedulerStub(chan)
+                resp = await stub.AckEvent(
+                    task_scheduler_pb2.AckEventRequest(
+                        subscriber_id=subscriber_id,
+                        event_id=event_id,
+                        ok=ok,
+                        error=error,
+                    ),
+                    timeout=5,
+                )
+                return resp.disposition or ("acked" if resp.accepted else "unknown")
+        except Exception as e:
+            print(f"[qq-llbot] ack_event failed event={event_id}: {e}", flush=True)
+            return "error"
+
+    async def flush_buffered(self, user_id: str = "", channel: str = "qq") -> int:
+        """通知调度器 QQ 渠道已可达，补发缓冲的事件。"""
+        try:
+            async with grpc.aio.insecure_channel(self.target) as chan:
+                stub = task_scheduler_pb2_grpc.TaskSchedulerStub(chan)
+                resp = await stub.FlushBuffered(
+                    task_scheduler_pb2.FlushBufferedRequest(user_id=user_id, channel=channel),
+                    timeout=5,
+                )
+                return int(resp.flushed or 0)
+        except Exception as e:
+            print(f"[qq-llbot] flush_buffered failed user={user_id}: {e}", flush=True)
+            return 0
+
     async def subscribe_events(self, subscriber_id: str, channels: list[str]):
+        """订阅事件流，带**空闲看门狗**。
+
+        为什么必须有：这条流在没有任务事件时是静默的（scheduler 的心跳标记
+        `None` 不会下发给客户端），所以 TCP 半开 / 对端 pod 被替换时，
+        `async for` 会永远等不到数据也不抛错 —— 订阅者实际已不在对端的注册表里
+        （实测：调度器被 rollout 后，它的日志持续报 `no subscriber for channel='qq'`，
+        而 qq-llbot 这边毫无察觉），之后所有 QQ 事件都只能走转投或缓冲。
+
+        超过 N 秒没有任何事件 → 主动断开重连，重新注册订阅。
+        与 gateway-backend-service 的同名逻辑保持一致。
+        """
+        import asyncio
+
+        idle_reconnect = float(os.getenv("SUBSCRIBE_IDLE_RECONNECT_SECONDS", "120"))
+
         while True:
             try:
                 print(
@@ -86,7 +141,19 @@ class SchedulerClient:
                         subscriber_id=subscriber_id,
                         channels=channels,
                     )
-                    async for event in stub.SubscribeEvents(req):
+                    stream = stub.SubscribeEvents(req)
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(stream.read(), timeout=idle_reconnect)
+                        except asyncio.TimeoutError:
+                            print(
+                                f"[qq-llbot] scheduler event subscription idle "
+                                f"> {idle_reconnect:.0f}s no event, reconnecting",
+                                flush=True,
+                            )
+                            break
+                        if event is None:
+                            break
                         yield {
                             "event_id": event.event_id,
                             "task_id": event.task_id,
@@ -102,5 +169,5 @@ class SchedulerClient:
                         }
             except Exception as e:
                 print(f"[qq-llbot] event subscription disconnected: {e}", flush=True)
-                import asyncio
-                await asyncio.sleep(2)
+                import asyncio as _asyncio
+                await _asyncio.sleep(2)

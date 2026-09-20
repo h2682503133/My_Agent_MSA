@@ -18,6 +18,7 @@ message CreateTaskRequest {
   DeliveryTarget delivery_target = 6;
   map<string, string> metadata = 7;
   string agent_id = 8;
+  repeated string images = 9;
 }
 
 message CreateTaskResponse {
@@ -31,6 +32,35 @@ message CreateTaskResponse {
 message SubscribeEventsRequest {
   string subscriber_id = 1;
   repeated string channels = 2;
+}
+
+// 投递确认：消费端报告某条事件是否真的送达了用户。
+// 只有「用户可见事件」（assistant_message 且 visible_to_user、task_waiting_user、
+// 各类失败终态）需要 ack —— 这些事件的 metadata 里会带 `_ack_required=1`。
+// ok=false 或超时未 ack 时，调度器走跨渠道转投，全失败再进缓冲。
+message AckEventRequest {
+  string subscriber_id = 1;
+  string event_id = 2;
+  bool ok = 3;
+  string error = 4;
+}
+
+message AckEventResponse {
+  bool accepted = 1;    // false = 未知/已处理的事件（可忽略）
+  string disposition = 2;  // acked / forwarded:<channel> / buffered / unknown
+}
+
+// 回放缓冲：某个渠道（或某个用户在该渠道上）重新可达时，把缓冲里的事件补发出去。
+// web：SSE 连接建立时按 user_id 调；qq：Satori 重连后按 channel 调。
+message FlushBufferedRequest {
+  string user_id = 1;   // 空 = 该渠道下全部有缓冲的用户
+  string channel = 2;   // 目标渠道（web / qq）
+}
+
+message FlushBufferedResponse {
+  bool ok = 1;
+  int32 flushed = 2;
+  string message = 3;
 }
 
 message TaskEvent {
@@ -51,4 +81,6 @@ message TaskEvent {
 service TaskScheduler {
   rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream TaskEvent);
+  rpc AckEvent(AckEventRequest) returns (AckEventResponse);
+  rpc FlushBuffered(FlushBufferedRequest) returns (FlushBufferedResponse);
 }

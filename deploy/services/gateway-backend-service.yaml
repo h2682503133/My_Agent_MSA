@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: gateway-backend-service
-          image: agent/gateway-backend-service:v34
+          image: agent/gateway-backend-service:v37
           imagePullPolicy: Always
           ports:
             - name: http
@@ -35,8 +35,7 @@ spec:
               value: ""
             - name: ASSETS_DIR
               value: "/app/assets"
-            # 离线兜底缓冲：每用户最多缓存条数与保留秒数（0=不按时间过期）
-            - name: OFFLINE_BUFFER_MAX
+            # 离线兜底缓冲：每用户最多缓存条数与保留秒数�?=不按时间过期�?            - name: OFFLINE_BUFFER_MAX
               value: "50"
             - name: OFFLINE_BUFFER_TTL
               value: "0"

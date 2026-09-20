@@ -45,6 +45,11 @@ user_client = build_user_client()
 tool_client = build_tool_client()
 _consumer_task = None
 
+# 本网关在调度器侧的订阅者 id（ack 时需带上，供调度器记账）
+SUBSCRIBER_ID = os.getenv("SUBSCRIBER_ID", "web-gateway-1")
+# web 渠道名（跨渠道转投时用于指明目标渠道）
+WEB_CHANNEL = "web"
+
 
 def build_session_id(user_id: str) -> str:
     return f"web_{user_id}"
@@ -64,16 +69,16 @@ def ensure_allowed_user(user_id: str) -> None:
 
 
 async def scheduler_event_consumer() -> None:
-    subscriber_id = os.getenv("SUBSCRIBER_ID", "web-gateway-1")
-
     async for event in scheduler_client.subscribe_events(
-        subscriber_id=subscriber_id,
+        subscriber_id=SUBSCRIBER_ID,
         channels=["web"],
     ):
-        # 在线 → 推 SSE；离线（该用户无任何在线连接）→ 转投其它渠道，
-        # 都没有则存入离线缓冲等用户上线回放（见 offline_deliver）。
+        # 在线 → 推 SSE 并回报成功；离线 → 回报失败，由调度器决定转投其它渠道还是缓冲
+        # （转投/缓冲只有调度器一个所有者，见 offline_deliver 的说明）。
         delivered = await sse_hub.publish(event)
-        if not delivered:
+        if delivered:
+            await ack_delivered(event)
+        else:
             await offline_deliver(event)
 
         # Store assistant replies in conversation history
@@ -92,136 +97,66 @@ async def scheduler_event_consumer() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 离线投递：先转投其它渠道，再兜底离线缓冲
+# 投递失败回报（转投与缓冲的所有者是调度器）
 # ═══════════════════════════════════════════════════════════════
-# 离线时仍需送达用户的可见事件（回复 / 询问 / 失败提示）。
-# 任务过程事件（queued/started/progress/completed…）不转投也不缓冲，避免噪音。
-_OFFLINE_VISIBLE_TYPES = {
-    "task_waiting_user",
-    "task_failed",
-    "task_timeout",
-    "task_cancelled",
-    "task_error",
-    "task_finished_with_error",
-}
-# 转投其它渠道的单次尝试超时（秒），避免卡住事件消费循环
-_OFFLINE_FORWARD_TIMEOUT = float(os.getenv("OFFLINE_FORWARD_TIMEOUT", "8"))
+# 网关是 web 渠道的订阅者：用户没有在线 SSE 连接 = 本条事件投递失败。
+#
+# 网关**不再自己转投其它渠道**。此前网关（web 离线 → 转投 qq）与调度器的 event_bus
+# 第二优先（无订阅者 → 转投其它渠道）是两个独立的转投者，会互相弹回：qq 事件在
+# qq-llbot 重启期间无订阅者 → 转投 web → 网关 SSE 未命中 → 网关再转投 qq → …… 每个
+# 来回还新建一个任务。收敛成单一所有者（调度器）后，环在结构上不可能出现。
+#
+# 网关只回报结果：
+#   - 投递成功 → ack ok=true
+#   - 用户离线 → ack ok=false，调度器按用户渠道优先级转投，全失败再缓冲
+#   - 用户重新上线（建立 SSE）→ flush_buffered 让调度器补发缓冲
 
+def _ack_required(event) -> bool:
+    """该事件是否需要回报投递结果。
 
-def _offline_visible(event) -> bool:
-    """该事件是否属于「用户离线也要送达」的可见消息。"""
-    if event.type in ("assistant_message", "assistant_intermediate"):
-        meta = event.metadata or {}
-        return str(meta.get("visible_to_user", "")).strip().lower() == "true"
-    return event.type in _OFFLINE_VISIBLE_TYPES
-
-
-def _channel_session_id(channel: str, channel_user_id: str, fallback: str) -> str:
-    """按渠道构造推送会话 id。
-
-    qq-llbot 约定：私聊 qq_{qq号}，群聊 qq_g_{群号}；
-    其它渠道沿用事件 session_id（缺失时用 channel_userid 兜底）。
+    调度器在需要确认的事件上打了 `metadata._ack_required=1`（与它的
+    `event_bus.is_ack_required` 同源），网关不重复实现一遍判定规则。
     """
-    if channel == "qq" and channel_user_id:
-        return f"qq_{channel_user_id}"
-    return fallback or f"{channel}_{channel_user_id}"
-
-
-async def _other_channels(user_id: str) -> List[tuple[str, str]]:
-    """该用户绑定的非 web 渠道 [(channel, channel_user_id)]，按 priority 升序。"""
-    try:
-        result = await user_client.get_user(user_id)
-    except Exception as exc:
-        print(f"[gateway] offline fallback get_user failed user={user_id}: {exc}", flush=True)
-        return []
-    if not result.get("ok"):
-        return []
-    try:
-        user_data = json.loads(result.get("user_json", "{}") or "{}")
-    except json.JSONDecodeError:
-        return []
-
-    channels = user_data.get("channels") or {}
-    items: List[tuple[int, str, str]] = []
-    if isinstance(channels, dict):
-        for name, data in channels.items():
-            if not isinstance(data, dict):
-                continue
-            chan = str(data.get("channel") or name).strip()
-            if not chan or chan == "web":
-                continue
-            chan_uid = str(data.get("channel_user_id") or data.get("user_id") or "").strip()
-            if not chan_uid:
-                continue
-            try:
-                priority = int(data.get("priority") or 0)
-            except (TypeError, ValueError):
-                priority = 0
-            items.append((priority, chan, chan_uid))
-    items.sort(key=lambda x: x[0])
-    return [(chan, chan_uid) for _p, chan, chan_uid in items]
+    meta = getattr(event, "metadata", None) or {}
+    return str(meta.get("_ack_required") or "").strip() == "1"
 
 
 async def offline_deliver(event) -> str:
-    """用户离线时的事件投递。
-
-    1. 用户绑定了其它渠道（如 QQ）→ 转投该渠道：以 timer_type=send_message
-       创建任务，scheduler 直接推送、不调用模型；转投成功即视为已送达，不再缓冲。
-    2. 无其它渠道 / 全部转投失败 → 存入离线缓冲，用户重新上线（建立 SSE
-       连接）时按原顺序回放补发。
-
-    返回处置结果："forwarded:<channel>" / "buffered" / "skipped"。
-    """
-    if not event.user_id or not _offline_visible(event):
+    """用户离线时回报投递失败。返回调度器给出的处置（forwarded:<ch> / buffered）。"""
+    if not event.user_id:
+        return "skipped"
+    if not _ack_required(event):
+        # 过程类事件（task_started / progress / completed…）不要求确认，
+        # 离线时直接丢弃，避免为噪音事件增加往返。
         return "skipped"
 
-    text = (event.text or event.error or "").strip()
-    alts = await _other_channels(event.user_id)
-
-    if text and alts:
-        for channel_name, channel_uid in alts:
-            msg = FrontendMessage(
-                user_id=event.user_id,
-                session_id=_channel_session_id(channel_name, channel_uid, event.session_id),
-                content=text,
-                agent_id=(event.metadata or {}).get("agent_id") or "main",
-                metadata={
-                    "source": "offline_fallback",
-                    "timer_type": "send_message",
-                    "fallback_from": event.channel or "web",
-                    "task_id": event.task_id or "",
-                },
-                channel=channel_name,
-            )
-            try:
-                result = await asyncio.wait_for(
-                    scheduler_client.create_task(msg),
-                    timeout=_OFFLINE_FORWARD_TIMEOUT,
-                )
-            except Exception as exc:
-                print(
-                    f"[gateway] offline forward failed user={event.user_id} "
-                    f"-> {channel_name}: {exc}",
-                    flush=True,
-                )
-                continue
-            if result is not None and result.ok:
-                await sse_hub.note("forwarded_other")
-                print(
-                    f"[gateway] offline forward ok user={event.user_id} -> {channel_name} "
-                    f"type={event.type} text={text[:40]!r}",
-                    flush=True,
-                )
-                return f"forwarded:{channel_name}"
-
-    await sse_hub.note("no_target")
-    await sse_hub.hold_offline(event)
+    disposition = await scheduler_client.ack_event(
+        subscriber_id=SUBSCRIBER_ID,
+        event_id=event.event_id,
+        ok=False,
+        error="no online sse connection",
+    )
+    await sse_hub.note("nacked")
     print(
-        f"[gateway] offline buffered user={event.user_id} type={event.type} "
-        f"alts={[c for c, _ in alts]} text={text[:40]!r}",
+        f"[gateway] offline -> nack user={event.user_id} type={event.type} "
+        f"disposition={disposition}",
         flush=True,
     )
-    return "buffered"
+    return disposition
+
+
+async def ack_delivered(event) -> None:
+    """在线投递成功后回报 ok=true（仅对需要确认的事件）。"""
+    if not event.user_id or not _ack_required(event):
+        return
+    await scheduler_client.ack_event(
+        subscriber_id=SUBSCRIBER_ID,
+        event_id=event.event_id,
+        ok=True,
+    )
+
+
+
 
 
 @app.on_event("startup")
@@ -259,15 +194,14 @@ async def health():
 
 @app.get("/api/debug/sse_state")
 async def debug_sse_state():
-    """只读调试状态：在线 SSE 用户、离线缓冲、离线投递计数。
+    """只读调试状态：在线 SSE 用户与投递计数。
 
-    用于排查「用户离线 → 转投其它渠道 → 都不通则缓冲补发」是否生效：
-      - online_users          : 当前有在线 SSE 连接的用户（user_id -> 连接数）
-      - offline_buffered      : 正在缓冲等待上线的用户（user_id -> 条数）
-      - counters.delivered    : 直接投递给在线用户的事件数
-      - counters.forwarded_other : 离线转投其它渠道成功数
-      - counters.offline_held : 存入离线缓冲的消息数
-      - counters.offline_replayed : 用户上线时回放补发的条数
+    转投与缓冲已收敛到调度器（task-scheduler-service）—— 排查「用户离线 → 转投其它渠道
+    → 都不通则缓冲补发」要看**调度器**侧的事件状态（event_bus.inflight_stats），
+    本端点只反映网关自己的在线连接与投递结果：
+      - online_users   : 当前有在线 SSE 连接的用户（user_id -> 连接数）
+      - counters.delivered : 成功投递给在线连接的事件数
+      - counters.nacked    : 用户离线、已回报投递失败（交给调度器处置）的事件数
     """
     return await sse_hub.stats()
 
@@ -358,9 +292,24 @@ async def events(
     ensure_allowed_user(user_id)
 
     async def stream():
+        # 用户上线（本渠道重新可达）：让调度器补发它缓冲的可见消息。
+        # 缓冲的所有者是调度器，网关只负责通知"这个用户在本渠道可达了"。
+        async def request_flush():
+            try:
+                count = await scheduler_client.flush_buffered(
+                    user_id=user_id, channel=WEB_CHANNEL
+                )
+                if count:
+                    print(f"[gateway] flush buffered user={user_id} flushed={count}", flush=True)
+            except Exception as exc:
+                print(f"[gateway] flush buffered failed user={user_id}: {exc}", flush=True)
+
+        await request_flush()
+
         async for item in sse_hub.event_stream(
             user_id=user_id,
             agent_id=agent_id or None,
+            on_idle=request_flush,
         ):
             yield item
 

@@ -26,6 +26,7 @@ from satori.element import At, Text, Image, File, Audio, Video
 from satori.model import ChannelType
 
 from app import config
+from app.session_target import parse_session_target as _parse_session_target
 
 
 def _session_key(event: MessageEvent) -> tuple[str, bool]:
@@ -37,6 +38,15 @@ def _session_key(event: MessageEvent) -> tuple[str, bool]:
     if event.channel.type == ChannelType.DIRECT:
         return f"qq_{event.user.id}", False
     return f"qq_g_{event.channel.id}", True
+
+
+def parse_session_target(session_id: str) -> tuple[str, str] | None:
+    """把固定的会话 id 解析成推送目标：("private", QQ号) / ("group", 群号)。
+
+    实现在 `app/session_target.py`（纯函数、不依赖 satori，便于单测）；这里重新导出，
+    保持 `from app.qq_bridge import parse_session_target` 可用。
+    """
+    return _parse_session_target(session_id)
 
 
 def _strip_at(elements) -> str:
@@ -239,17 +249,19 @@ class QQBridge:
         text: str = "",
         images: list[str] | None = None,
         files: list[tuple[str, bytes]] | None = None,
-    ):
-        """向 QQ 会话（私聊用户/群）推送消息。
+    ) -> bool:
+        """向 QQ 会话（私聊用户/群）推送消息。返回是否**真的送达**。
+
+        发送目标优先用 `_sessions` 里缓存的 event（能带上 `referrer`，表现为引用回复）；
+        缓存未命中时**从 session_id 重建目标**（主动推送 / 重启后 / 缓冲补发都走这条）。
+        两条路径的差别只有引用回复样式 —— 对定时提醒、离线转投这类本就没有入站消息的
+        推送，`referrer=None` 是唯一可能，也是语义正确的。
+
+        返回 bool 是投递确认的前提：调用方据此 ack，调度器才知道该转投还是缓冲。
 
         images: 图片 URL 列表
         files:  [(文件名, 字节内容), ...] 以 Satori File 元素发送
         """
-        if session_id not in self._sessions:
-            print(f"[qq-llbot] 会话 {session_id} 不在线，无法推送", flush=True)
-            return
-
-        account, event = self._sessions[session_id]
         msg = []
         if text:
             msg.append(Text(text))
@@ -269,13 +281,82 @@ class QQBridge:
                 msg.append(Text(f"[文件] {name}"))
 
         if not msg:
-            return
+            return False
 
+        # 路径 1：本轮刚收到过消息 → 用缓存 event（保引用回复）
+        cached = self._sessions.get(session_id)
+        if cached is not None:
+            account, event = cached
+            try:
+                await account.send(event, msg)
+                print(f"[qq-llbot] 已推送消息给 {session_id}", flush=True)
+                return True
+            except Exception as e:
+                print(f"[qq-llbot] 推送失败（缓存 event 路径）session={session_id}: {e}", flush=True)
+                return False
+
+        # 路径 2：从 session_id 重建目标（主动推送 / 重启后 / 缓冲补发）
+        target = parse_session_target(session_id)
+        if target is None:
+            print(f"[qq-llbot] 无法解析会话目标，放弃推送 session={session_id!r}", flush=True)
+            return False
+
+        account = self._pick_account()
+        if account is None:
+            print(
+                f"[qq-llbot] 当前无可用 QQ 账号（Satori 未登录），无法推送 session={session_id}",
+                flush=True,
+            )
+            return False
+
+        kind, target_id = target
         try:
-            await account.send(event, msg)
-            print(f"[qq-llbot] 已推送消息给 {session_id}", flush=True)
+            if kind == "group":
+                # 群号就是 channel id
+                await account.send_message(target_id, msg)
+            else:
+                # 私聊：先拿 channel 再发。
+                # 注意不能用 send_private_message —— 它内部是 "".join(str(i) for i in message)，
+                # 会把元素列表拍平成纯文本，图片/文件语义全丢。
+                channel = await account.user_channel_create(user_id=target_id)
+                await account.send_message(channel, msg)
+            print(f"[qq-llbot] 已推送消息给 {session_id}（重建目标路径）", flush=True)
+            return True
         except Exception as e:
-            print(f"[qq-llbot] 推送失败 session={session_id}: {e}", flush=True)
+            print(f"[qq-llbot] 推送失败（重建目标路径）session={session_id}: {e}", flush=True)
+            return False
+
+    def _pick_account(self) -> Account | None:
+        """取一个已登录的 Satori 账号（App.accounts 在 WebSocket 登录时就填好了，
+        不需要任何用户消息）。优先取 `connected` 已就绪的。"""
+        accounts = list(getattr(self._app, "accounts", {}).values())
+        for account in accounts:
+            connected = getattr(account, "connected", None)
+            if connected is not None and connected.is_set():
+                return account
+        return accounts[0] if accounts else None
+
+    def is_qq_online(self) -> bool:
+        """QQ 渠道是否可用（Satori 账号已连接）。"""
+        account = self._pick_account()
+        if account is None:
+            return False
+        connected = getattr(account, "connected", None)
+        return True if connected is None else connected.is_set()
+
+    def setup_lifecycle(self, on_online):
+        """注册 Satori 登录状态回调：QQ 恢复在线时通知调度器补发缓冲。"""
+
+        @self._app.lifecycle
+        async def _on_login_state(account: Account, state):
+            try:
+                is_online = str(getattr(state, "name", state)).upper().endswith("ONLINE")
+            except Exception:
+                is_online = False
+            if is_online:
+                print("[qq-llbot] Satori 已上线，通知调度器补发缓冲", flush=True)
+                await on_online()
+
 
     async def run(self):
         """启动 Satori 客户端"""
