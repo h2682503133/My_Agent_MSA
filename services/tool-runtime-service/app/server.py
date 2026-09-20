@@ -17,7 +17,6 @@ from typing import Any
 
 import grpc
 import requests
-from bs4 import BeautifulSoup
 
 from app import config
 from app import fetch_tools
@@ -31,6 +30,7 @@ from app.process_runtime import var_remove as process_var_remove
 from app.process_runtime import write as process_write
 from app.worldinfo_runtime import write as worldinfo_write
 from app.skill_runtime import skill_runtime
+from app.web_search import web_search
 from app.workspace import (
     append_text,
     copy_path,
@@ -335,6 +335,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             return self._download(args=args, kwargs=kwargs, root=root, timeout=timeout)
 
         # 网页搜索工具，对齐提示词：web-search|关键词
+        # 实现整体在 app/web_search.py（SearXNG 主通道 + 国内引擎回落）
         if name == "web-search":
             query = kwargs.get("query") or kwargs.get("keyword") or (args[0] if args else "")
             limit = (
@@ -343,7 +344,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 or kwargs.get("max_results")
                 or (args[1] if len(args) > 1 else "")
             )
-            return self._web_search(query=query, limit=limit, timeout=timeout)
+            return web_search(query=query, limit=limit, timeout=timeout)
 
         if name == "codex":
             return self._codex(args=args, kwargs=kwargs, root=root, timeout=timeout)
@@ -584,88 +585,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         output += f"\n[exit_code] {proc.returncode}"
         return output
 
-    # ---- fetch 相关逻辑已拆到 app/fetch_tools.py ----
-
-    def _web_search(self, query: str, limit: int | str | None = None, timeout: int = 0) -> str:
-        """通过 SearXNG 元搜索引擎执行网页搜索。"""
-        query = (query or "").strip()
-        if not query:
-            return "搜索失败：关键词不能为空"
-
-        try:
-            max_results = int(limit or config.WEB_SEARCH_MAX_RESULTS)
-        except (TypeError, ValueError):
-            max_results = config.WEB_SEARCH_MAX_RESULTS
-        max_results = max(1, min(max_results, 50))
-
-        searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080")
-
-        def _do_search(pageno: int = 1):
-            response = requests.get(
-                f"{searxng_url}/search",
-                params={"q": query, "format": "json", "categories": "general", "pageno": pageno},
-                timeout=timeout or 15,
-            )
-            response.raise_for_status()
-            return response.json()
-
-        def _collect(pageno: int = 1) -> tuple[list[dict], dict]:
-            """抓取一页并按 URL 去重后追加结果。"""
-            page_data = _do_search(pageno)
-            page_results = []
-            for item in page_data.get("results", []):
-                url = item.get("url", "")
-                if url and url in seen:
-                    continue
-                if url:
-                    seen.add(url)
-                page_results.append(item)
-                if len(results) + len(page_results) >= max_results:
-                    break
-            return page_results, page_data
-
-        results: list[dict] = []
-        seen: set[str] = set()
-        try:
-            # SearXNG JSON 每页约 10 条，超过一页时按页抓取
-            pages = max(1, (max_results + 9) // 10)
-            data = {}
-            for pageno in range(1, pages + 1):
-                page_results, data = _collect(pageno)
-                results.extend(page_results)
-                if len(results) >= max_results:
-                    break
-
-            # 空结果时等待 1 秒后重试一次（搜索引擎偶发限流）
-            if not results:
-                import time
-                time.sleep(1)
-                results = []
-                seen = set()
-                for pageno in range(1, pages + 1):
-                    page_results, data = _collect(pageno)
-                    results.extend(page_results)
-                    if len(results) >= max_results:
-                        break
-
-            if not results:
-                return f"【搜索：{query}】未找到相关内容\n[搜索完成，共 0 条结果]"
-
-            results = results[:max_results]
-            formatted = []
-            for item in results:
-                title = item.get("title", "无标题")
-                url = item.get("url", "无链接")
-                snippet = (item.get("content") or item.get("snippet") or "")[:160]
-                formatted.append(f"? {title}\n【网址】{url}\n{snippet}\n")
-
-            engine = data.get("engines", [])
-            engine_str = f"（聚合引擎：{', '.join(engine[:3])}）" if engine else ""
-            count = len(formatted)
-            return f"【搜索：{query}】{engine_str}\n" + "\n".join(formatted) + f"\n[搜索完成，共 {count} 条结果]"
-
-        except Exception as exc:
-            return f"搜索失败：{exc}"
+    # ---- fetch 相关逻辑已拆到 app/fetch_tools.py；web-search 整体在 app/web_search.py ----
 
     def _download(self, args: list[str], kwargs: dict[str, str], root: Path, timeout: int) -> str:
         url = kwargs.get("url") or (args[0] if args else "")

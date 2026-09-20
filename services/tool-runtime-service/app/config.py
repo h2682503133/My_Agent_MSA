@@ -50,6 +50,18 @@ PORT_PROXY_BASE_URL = os.getenv("PORT_PROXY_BASE_URL", "http://localhost:8080/ap
 DEFAULT_TIMEOUT_SECONDS = env_int("DEFAULT_TIMEOUT_SECONDS", 30)
 WEB_SEARCH_MAX_RESULTS = env_int("WEB_SEARCH_MAX_RESULTS", 10)
 
+# ---- web-search（web_search.py）----
+# 主通道：Pod 内的 SearXNG sidecar
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080")
+# 回落通道：SearXNG 引擎池依赖境外站点，实测宿主机出网代理抖动时整池不可达，
+# 而 SearXNG 仍返回 200 且 results 为空，与「确实没有结果」不可区分。
+# 命中 0 条时回落到 Bing 中国站。
+WEB_SEARCH_CN_FALLBACK = env_bool("WEB_SEARCH_CN_FALLBACK", True)
+CN_SEARCH_BASE_URL = os.getenv("CN_SEARCH_BASE_URL", "https://cn.bing.com")
+# 回落通道独立超时：不能沿用请求级 timeout（生产为 600s），否则一旦卡住会长时间占用
+# 一个 gRPC worker。
+CN_SEARCH_TIMEOUT_SECONDS = env_int("CN_SEARCH_TIMEOUT_SECONDS", 15)
+
 # ---- fetch 体积控制与信息提取（fetch_tools.py）----
 # 清洗后文本长度 <= FETCH_MAX_RAW_CHARS：直接返回原始文本
 FETCH_MAX_RAW_CHARS = env_int("FETCH_MAX_RAW_CHARS", 1500)
