@@ -2,6 +2,7 @@
 # 微服务化版本：保留原调度核心；scheduler 只处理轻量 ScheduledTask，
 # 不再持有 Agent Runtime / 原 Task 的压栈弹栈状态。
 import queue
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -69,6 +70,24 @@ class SubmitResult:
     waiting: int
     duplicate: bool = False
     error: str = ""
+
+
+# ======================
+# /stop 打断（barge-in）
+# ======================
+# 语义是**暂停**而不是取消：orchestrator 让正在跑的任务在下一个检查点停下，
+# 现场（上下文栈 / tool_log / 记忆）全部保留；用户下一条消息作为【用户插话】
+# 回到同一个任务继续跑。
+#
+# 必须在 CreateTask 入口就拦下：/stop 若按普通任务入队，会排在正在执行的任务
+# 之后，永远没机会抢占 —— 而「用户正需要它生效」恰恰就是有任务在跑的时候。
+# 全角斜杠一并接受（中文输入法下很容易打成 ／stop）。
+_STOP_COMMAND_RE = re.compile(r"^[/／]\s*(?:stop|停止)$", re.IGNORECASE)
+
+
+def is_stop_command(content: str) -> bool:
+    """内容是否是 /stop 打断指令（仅精确匹配，不接受额外参数）。"""
+    return bool(_STOP_COMMAND_RE.match((content or "").strip()))
 
 
 # ======================
@@ -224,6 +243,7 @@ def _run_execution(task: ScheduledTask, stream_factory):
     success = True
     saw_terminal_event = False
     suspended = False
+    interrupted = False
 
     try:
         for event in stream_factory():
@@ -238,6 +258,9 @@ def _run_execution(task: ScheduledTask, stream_factory):
                 # 但通过并发上限 +挂起数使其不占用真实并发额度。
                 suspended = True
                 task.status = "suspended"
+                # interrupt=true = /stop 打断式暂停（保留现场等插话），
+                # 与「询问」挂起区分开（见 _drain_queued_into_interject）。
+                interrupted = str((event.get("metadata") or {}).get("interrupt") or "").lower() == "true"
                 with SUSPENDED_LOCK:
                     SUSPENDED_TASKS[user_id] = (task, time.time())
                 with SLOTS_LOCK:
@@ -264,6 +287,8 @@ def _run_execution(task: ScheduledTask, stream_factory):
         if suspended:
             # 挂起任务不结束：不释放 BUSY_USERS / processed，不补终态事件。
             # 等用户回复或超时后由 _run_resume 恢复。
+            if interrupted:
+                _drain_queued_into_interject(task)
             return
         with SLOTS_LOCK:
             if 0 <= task.slot_index < len(BATCH_SLOTS):
@@ -371,6 +396,35 @@ def _run_resume(suspended: ScheduledTask, reply_task: ScheduledTask) -> None:
     _run_execution(resume_task, lambda: client.resume_task(resume_task, reply_task.content))
 
 
+def _drain_queued_into_interject(suspended: ScheduledTask) -> None:
+    """打断暂停后，把队列里已经排上的消息直接升级成插话接上。
+
+    为什么必须有这一步：/stop 的暂停发生在「下一个检查点」，用户点完停止通常
+    会马上再发一条。那条消息若赶在暂停落地之前到达，就已经落在队列里了；而
+    队列要等挂起任务恢复才会动 —— 两边互等，用户看到的就是消息被吞了，
+    直到他再发一条、或挂起超时（默认 1 小时）才恢复。
+
+    这里取队首一条交给 _resume_suspended，把它变成【用户插话】。队列里其余的
+    仍然保留（用户要的是「别停我排的队」，不是「清空我的消息」）。
+    """
+    user_id = suspended.user_id
+    with USER_LOCK:
+        user_q = USER_QUEUES.get(user_id)
+    if user_q is None or user_q.empty():
+        return
+    try:
+        queued = user_q.get_nowait()
+    except queue.Empty:
+        return
+
+    queued.waiting = waiting_count()
+    gateway_log(
+        f"[interject] {user_id} 打断暂停后队列中已有消息 {queued.task_id}，"
+        f"直接作为插话接上（不排队）"
+    )
+    _resume_suspended(suspended, queued)
+
+
 def _build_timeout_reply(suspended: ScheduledTask) -> ScheduledTask:
     """构造超时系统回复：提示模型用户未回复，让模型自行判断，不删除挂起任务。"""
     content = "【系统提示】用户未在规定时间内回复，请根据情况自行判断，不要继续等待用户回复。"
@@ -422,9 +476,84 @@ def _suspend_ttl_sweeper() -> None:
 
 
 # ======================
+# /stop 打断处理
+# ======================
+def _publish_stop_notice(task: ScheduledTask, text: str) -> None:
+    """把 /stop 的回执作为用户可见消息投递。
+
+    走正常事件链路（ack / 跨渠道转投 / 离线缓冲）—— 用户可能是在 QQ 上按的
+    停止，也可能 web 页面当时并不在线。
+    """
+    event_bus.publish(task_event(
+        task,
+        "assistant_message",
+        text=text,
+        waiting=waiting_count(),
+        metadata={
+            "visible_to_user": "true",
+            "final": "true",
+            # 带上 agent_id：gateway 据此把这条回执记到当前对话（默认会记到 main）
+            "agent_id": getattr(task, "agent_id", "") or "main",
+        },
+    ))
+
+
+def _handle_stop_command(task: ScheduledTask) -> SubmitResult:
+    """处理 /stop：请求 orchestrator 暂停该用户运行中的任务（保留现场，等插话）。
+
+    回执的分工：打断**成功**时不在这里发言 —— 被打断的任务会发出
+    task_waiting_user（interrupt=true）事件，由它给出「已停止，进度已保留」，
+    一次 /stop 只冒一条消息。只有「没东西可停」和「请求失败」才在这里补说明。
+    """
+    user_id = task.user_id
+    client = _ORCHESTRATOR_CLIENT or OrchestratorClient()
+    result = client.request_stop(user_id=user_id, reason="user /stop")
+    waiting = waiting_count()
+
+    if not result.ok:
+        gateway_log(f"[stop] {user_id} 停止请求失败：{result.message}")
+        _publish_stop_notice(task, f"停止请求发送失败：{result.message}")
+        return SubmitResult(ok=True, task_id="", status="stop_failed", waiting=waiting)
+
+    if result.stopped:
+        gateway_log(f"[stop] {user_id} 打断请求已发出，任务将在下一个检查点暂停")
+        return SubmitResult(ok=True, task_id="", status="stopping", waiting=waiting)
+
+    # 没有运行中的任务。两种可能，回执要分清楚：
+    #   1) 已经处于暂停（询问 / 上一次打断）：本来就等着用户说话，无需再停，
+    #      但要把它标成「插话恢复」——用户下一条消息就不是在回答那个问题，
+    #      而是接着往下说的插话。
+    #   2) 真的空闲。
+    with SUSPENDED_LOCK:
+        suspended_entry = SUSPENDED_TASKS.get(user_id)
+    if suspended_entry is not None:
+        suspended_entry[0].metadata["resume_mode"] = "interrupt"
+        gateway_log(f"[stop] {user_id} 任务已挂起，标记为插话恢复模式")
+        _publish_stop_notice(
+            task, "任务已处于暂停状态，进度已保留。直接发消息即可接着继续。"
+        )
+        return SubmitResult(ok=True, task_id="", status="already_paused", waiting=waiting)
+
+    with USER_LOCK:
+        user_q = USER_QUEUES.get(user_id)
+    pending = user_q.qsize() if user_q is not None else 0
+    notice = "当前没有正在执行的任务。"
+    if pending:
+        notice += f"（队列中还有 {pending} 条消息，未取消）"
+    gateway_log(f"[stop] {user_id} 无运行中任务（队列 {pending} 条）")
+    _publish_stop_notice(task, notice)
+    return SubmitResult(ok=True, task_id="", status="idle", waiting=waiting)
+
+
+# ======================
 # 通用提交接口（gateway/channel-gateway 调用）
 # ======================
 def submit_task(task: ScheduledTask) -> SubmitResult:
+    # /stop 必须在幂等登记之前拦下：它不会真的成为一个任务，
+    # 也不该被 client_message_id 去重（用户停一次不够时应能再停一次）。
+    if is_stop_command(task.content):
+        return _handle_stop_command(task)
+
     idempotency_key = task.idempotency_key
     if idempotency_key is not None:
         with IDEMPOTENCY_LOCK:

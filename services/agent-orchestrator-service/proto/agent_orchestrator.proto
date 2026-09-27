@@ -26,6 +26,24 @@ message ResumeTaskRequest {
   repeated string images = 9;
 }
 
+// 打断（barge-in）：让某用户当前「正在跑」的任务在下一个检查点暂停，**保留现场**
+// （上下文栈 / tool_log / 记忆一律不动），等用户下一条消息作为【用户插话】接着跑。
+// 语义是暂停，不是销毁：任务留在 orchestrator 的 PENDING_TASKS 里等待 ResumeTask。
+message StopTaskRequest {
+  string user_id = 1;
+  // 精确指定任务；空 = 该用户当前运行中的任务（约定一用户同时只有一个）。
+  string task_id = 2;
+  string reason = 3;   // 仅用于日志
+}
+
+message StopTaskResponse {
+  bool ok = 1;
+  // 是否定位到了运行中的任务并已发出暂停请求。false = 当时没有任务在跑
+  // （已结束或本来就空闲）——调用方据此区分「已请求暂停」与「无需暂停」。
+  bool stopped = 2;
+  string message = 3;
+}
+
 message DeliveryTarget {
   string channel = 1;
   string user_id = 2;
@@ -51,4 +69,5 @@ message TaskEvent {
 service AgentOrchestrator {
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream TaskEvent);
   rpc ResumeTask(ResumeTaskRequest) returns (stream TaskEvent);
+  rpc StopTask(StopTaskRequest) returns (StopTaskResponse);
 }

@@ -8,6 +8,7 @@ TaskRuntime 是原 core/Task/Task.py 在 orchestrator 内部的运行时版本�
 """
 
 import datetime
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -52,6 +53,19 @@ class TaskRuntime:
 
     send_images: list[str] = field(default_factory=list)
     send_text: str = ""
+
+    # ─── 插话（barge-in）────────────────────────────────────────
+    # /stop 打断**不是销毁**：任务在下一个检查点暂停，上面所有现场字段
+    # （agent_context 栈 / tool_log / main_memory / temp_dialog_*）原样保留，
+    # 用户下一条消息作为【用户插话】并入同一任务继续跑。
+    #   interrupt_event     : 运行中收到停止请求时置位；任务在自己的检查点观察它
+    #   paused_by_interrupt : 本次挂起来自 /stop（而非「询问」），恢复时走插话路径
+    #   pending_interjection: 待并入下一轮的插话文本
+    interrupt_event: threading.Event = field(
+        default_factory=threading.Event, repr=False, compare=False
+    )
+    paused_by_interrupt: bool = False
+    pending_interjection: str = ""
 
     def __post_init__(self) -> None:
         self.caller = self.user

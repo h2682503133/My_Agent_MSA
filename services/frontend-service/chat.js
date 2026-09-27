@@ -18,6 +18,7 @@
     const chatBox = document.getElementById("chat-box");
     const input = document.getElementById("message-input");
     const sendBtn = document.getElementById("send-btn");
+    const stopBtn = document.getElementById("stop-btn");
     const attachBtn = document.getElementById("attach-btn");
     const imageInput = document.getElementById("image-input");
     const imgPreviewList = document.getElementById("img-preview-list");
@@ -415,6 +416,57 @@
         addMsg("agent", `消息发送失败：${err.message || err}${images.length ? "（图片未发送）" : ""}`);
       } finally {
         sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // /stop 打断（barge-in）
+    // ═══════════════════════════════════════════════════════════════
+    // 打断是**暂停**而不是取消：后端会让当前任务在下一个检查点停下并保留现场
+    // （上下文 / 工具记录 / 记忆），用户接着发的下一条消息会作为【用户插话】
+    // 回到同一个任务继续跑 —— 所以按钮上写的是「停止」，但不是丢弃。
+    //
+    // 刻意复用 /api/messages 而不是新开一个接口：/stop 就是一条普通用户消息，
+    // 由调度器在 CreateTask 入口识别。这样它会出现在对话记录里，QQ 等其它渠道
+    // 也天然拥有同一套语义，不必每个渠道各接一次。
+    async function stopTask() {
+      if (!currentAgentId) {
+        addSystemMessage("请先选择一个对话或创建新对话");
+        return;
+      }
+
+      if (stopBtn) stopBtn.disabled = true;
+      try {
+        const sessionId = buildSessionId(currentAgentId);
+        addMsg("user", "/stop");
+
+        const resp = await fetch("/api/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: userId,
+            session_id: sessionId,
+            content: "/stop",
+            images: [],
+            agent_id: currentAgentId,
+            client_message_id: buildClientMessageId(),
+          }),
+        });
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(errText || `停止失败：HTTP ${resp.status}`);
+        }
+
+        // 具体的回执（「已停止，进度已保留」/「当前没有正在执行的任务」）由后端
+        // 事件流给出，这里不重复提示，避免一次 /stop 冒两条消息。
+        const data = await resp.json();
+        if (data.ok === false) throw new Error(data.error || "停止失败");
+      } catch (err) {
+        addMsg("agent", `停止失败：${err.message || err}`);
+      } finally {
+        if (stopBtn) stopBtn.disabled = false;
         input.focus();
       }
     }

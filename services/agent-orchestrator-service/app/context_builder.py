@@ -320,6 +320,45 @@ def _resolve_prompt_file(prompt_dir: Path, filename: str) -> Path | None:
     return prompt_refs.resolve_named_file(prompt_dir, filename)
 
 
+# ── 提示词热重载 ────────────────────────────────────────────
+
+
+def prompt_revision() -> tuple:
+    """提示词热重载用的廉价快照：`(相对路径, mtime_ns, 大小)` 排序后成元组。
+
+    任一提示词文件被改 / 增删（**包括 `@ref=` 指向的目标文件**，因为这里是
+    递归扫整个提示词目录），或 `system_settings.json` 被改，快照都会变。
+    只 stat 不读内容 —— 整个提示词目录也就几十个文件，代价可忽略。
+
+    排除 `.bak`（dashboard 备份）与 `.tmp`（原子写中间态）：它们的出现/变化
+    不代表「生效内容」变了，没必要因此重建一次。
+    """
+    root = config.SYSTEM_PROMPT_DIR
+    items: list[tuple[str, int, int]] = []
+    try:
+        for path in root.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                if path.name.endswith(".bak") or path.name.endswith(".tmp"):
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            items.append((str(path.relative_to(root)), stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        pass
+
+    try:
+        stat = config.SYSTEM_SETTINGS_PATH.stat()
+        items.append((str(config.SYSTEM_SETTINGS_PATH), stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        items.append((str(config.SYSTEM_SETTINGS_PATH), 0, 0))
+
+    items.sort()
+    return tuple(items)
+
+
 def _read_prompt_segment(
     path: Path, *, agent_id: str, filename: str, allow_when: bool = True
 ) -> tuple[str, str]:
@@ -564,7 +603,7 @@ def render_tool_catalog(catalog: dict, options: dict | None = None) -> str:
 def build_tool_injection(prompt_dir: Path, declared_name: str, agent_id: str = "") -> str:
     """构建某智能体的 TOOL 注入文本；无内容返回 ""。
 
-    - files 里写 `TOOL.md`：读该文件（支持 `@ref=` 跳到另一 agent 的同名 TOOL.md），
+    - files 里写 `TOOL.md`：读该文件（支持 `@ref=` 跳到另一处，见 prompt_refs），
       有 tool-inject 选项块则按选项注入全局目录，没有选项块（老式手写文件）则原文注入。
     - files 里写 `TOOL.json`：直接注入全局目录全量（无 per-agent 选项）。
     """
@@ -665,7 +704,8 @@ class ContextBuilder:
         """构建 system prompt：GLOBAL_SETTING.md + files 声明的各文件 / 结构化段。
 
         两处"内容不是文件原文"的处理：
-        - `@ref=` 跳转在**读取期**逐文件解析（整文件替换为另一 agent 的同名文件，见 prompt_refs）
+        - `@ref=` 跳转在**读取期**逐文件解析（可指向另一目录的同名文件，或
+          `目录/文件名` 形式的任意文件；最多 `prompt_refs.MAX_REF_DEPTH` 跳）
         - `{agent_id}` 占位符在**拼接完成后**统一替换（简单规则：所有提示词段 + 记录串）
         """
         agent = self._agent

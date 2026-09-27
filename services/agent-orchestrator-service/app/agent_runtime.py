@@ -6,7 +6,13 @@ from typing import Callable
 from app import config
 from app import world_info_manager
 from app.agent_config import load_agent_config
-from app.context_builder import ContextBuilder, image_receive_enabled, load_system_settings
+from app.context_builder import (
+    ContextBuilder,
+    SystemPromptParts,
+    image_receive_enabled,
+    load_system_settings,
+    prompt_revision,
+)
 from app.context_client import ContextClient
 from app.events import TaskEventDTO, DeliveryTarget, new_event_id
 from app.logger import chat_log, debug_log
@@ -15,6 +21,11 @@ from app.response_parser import parse_model_response
 from app.syntax_parser import parse_syntax
 from app.tool_runtime_client import ToolRuntimeClient
 from app.timer_task_client import TimerTaskClient
+
+
+# /stop 打断后的用户可见提示。措辞上必须点明「进度已保留」：
+# 打断是暂停而不是销毁，用户看到这句才敢直接接着说下一句。
+INTERJECT_PAUSE_TEXT = "⏹ 已停止。当前进度已保留，直接发消息即可接着继续。"
 
 
 class AgentRuntime:
@@ -50,6 +61,13 @@ class AgentRuntime:
     PENDING_TASKS: dict[str, "TaskRuntime"] = {}
     PENDING_LOCK = threading.Lock()
 
+    # 运行中任务注册表：user_id -> TaskRuntime（约定一用户同时只有一个任务在跑）。
+    # 供 StopTask 从另一个 gRPC 线程定位到「该暂停谁」。
+    # 挂起的任务不在表内（_continue_task 返回时已注销）——它本来就在等用户，
+    # /stop 对它无事可做。
+    RUNNING_TASKS: dict[str, "TaskRuntime"] = {}
+    RUNNING_LOCK = threading.Lock()
+
     context_client = ContextClient()
     model_client = ModelProxyClient()
     tool_client = ToolRuntimeClient()
@@ -59,26 +77,68 @@ class AgentRuntime:
         self.session_id = session_id
         self.user_id = user_id or "default"
         self.config = {}
-        self.system_prompt: list[dict[str, str]] = []
-        self._identity_system_indexes: list[int] = []
-        self._when_system_rules: list[tuple[int, str]] = []  # (段下标, @when 取值)
-        self._soul_message_content: str = ""  # SOUL.md 原文，两阶段阶段1 构建时剔除（避免角色代入干扰列词）
-        self._world_info_override_content: str = ""  # world_info.md 原文，阶段1 的职责变更指令
+        # 构建结果整体放一个属性里：热重载（refresh_system_prompt）用**一次赋值**换掉整份，
+        # 段落列表 / @when 下标 / 记录串必然同源，不会出现「新 prompt 配旧下标」的中间态。
+        # 下面四个同名属性都是从它派生的只读property（context_builder 直接读它们）。
+        self._prompt_parts = SystemPromptParts()
+        self._prompt_revision: tuple = ()
         self.load_config()
         self.build_system_prompt()
+
+    @property
+    def system_prompt(self) -> list[dict[str, str]]:
+        return self._prompt_parts.messages
+
+    @property
+    def _identity_system_indexes(self) -> list[int]:
+        return self._prompt_parts.identity_indexes
+
+    @property
+    def _when_system_rules(self) -> list[tuple[int, str]]:
+        """「第几段 → @when 取值」：构建期记录，发送期过滤（见 effective_system_prompt）。"""
+        return self._prompt_parts.when_rules
+
+    @property
+    def _soul_message_content(self) -> str:
+        return self._prompt_parts.soul_content
+
+    @property
+    def _world_info_override_content(self) -> str:
+        return self._prompt_parts.world_info_override
 
     def build_system_prompt(self):
         """构建 system prompt（GLOBAL_SETTING / files 声明 / PROCESS / TOOL / 世界书）。
 
         具体拼接逻辑见 app/context_builder.py；这里只把结果存到实例上，
         供 send() 组装 messages 时使用。
+
+        快照在**读取之前**取：万一构建过程中文件又被改了，快照会偏旧，
+        下一次 refresh_system_prompt 就会再重建一遍 —— 宁可多建一次，不要漏。
         """
-        parts = ContextBuilder(self).build_system_prompt()
-        self.system_prompt = parts.messages
-        self._identity_system_indexes = parts.identity_indexes
-        self._when_system_rules = parts.when_rules
-        self._soul_message_content = parts.soul_content
-        self._world_info_override_content = parts.world_info_override
+        stamp = prompt_revision()
+        self._prompt_parts = ContextBuilder(self).build_system_prompt()
+        self._prompt_revision = stamp
+
+    def refresh_system_prompt(self) -> bool:
+        """提示词文件 / 提示词套开关变了就重建；返回是否重建过。
+
+        为什么需要它：system prompt 原本只在实例创建时构建一次，而实例按
+        `(user, session, agent)` 缓存在 `_agent_instances`（LRU 20），于是
+        「在 dashboard 改完提示词」或「换一套人设」之后，已经在聊的会话会一直用旧内容 ——
+        要么等 LRU 把它挤掉（不同用户可能同时跑着两套人设），要么重启 orchestrator
+        （而重启会杀掉在飞任务）。这一步把生效时机收敛到「下一次模型调用」。
+
+        放在 send() 开头而不是任务入口：子智能体（tool / reader…）各有自己的实例，
+        只刷 main 的话它们的提示词仍是旧的。
+        """
+        stamp = prompt_revision()
+        if stamp == self._prompt_revision:
+            return False
+        # 重建失败直接抛出（套名写错 / 套目录缺失）：与 @ref= 一致，不静默用错人设。
+        # 这里刻意**不**先记快照，失败时下一条消息会再报一次，直到配置被改正。
+        self.build_system_prompt()
+        debug_log(f"[{self.user_id}] {self.id} 提示词已变更，system prompt 重建完成")
+        return True
 
     @staticmethod
     def _is_user_object(target, task) -> bool:
@@ -258,6 +318,105 @@ class AgentRuntime:
         with cls.PENDING_LOCK:
             return cls.PENDING_TASKS.pop(task_id, None)
 
+    # ─── 运行中任务登记 + 打断（barge-in）────────────────────────
+    @classmethod
+    def _register_running(cls, task) -> None:
+        with cls.RUNNING_LOCK:
+            cls.RUNNING_TASKS[task.user.id] = task
+
+    @classmethod
+    def _unregister_running(cls, task) -> None:
+        with cls.RUNNING_LOCK:
+            # 只在仍指向本任务时删除：同一用户可能已经开始了新任务。
+            if cls.RUNNING_TASKS.get(task.user.id) is task:
+                del cls.RUNNING_TASKS[task.user.id]
+
+    @classmethod
+    def request_stop(cls, user_id: str, task_id: str = "") -> bool:
+        """请求暂停某用户当前运行中的任务（协作式，立即返回）。
+
+        只置位标志、不阻塞等待：任务在自己的检查点观察该标志后自行暂停。
+        返回 False = 当时没有任务在跑（已结束或本来就空闲）。
+        """
+        with cls.RUNNING_LOCK:
+            task = cls.RUNNING_TASKS.get(user_id)
+        if task is None:
+            return False
+        if task_id and task.task_id != task_id:
+            return False
+        task.interrupt_event.set()
+        debug_log(f"[{user_id}] 收到停止请求，任务 {task.task_id} 将在下一个检查点暂停")
+        return True
+
+    @classmethod
+    def _suspend_for_interject(cls, task, emit: Callable[[TaskEventDTO], None]) -> bool:
+        """登记为打断式暂停并发事件。调用方负责把现场摆成「可恢复」的样子。"""
+        task.paused_by_interrupt = True
+        task.status = "suspended"
+        with cls.PENDING_LOCK:
+            cls.PENDING_TASKS[task.task_id] = task
+        emit(cls.build_event(
+            task,
+            "task_waiting_user",
+            text=INTERJECT_PAUSE_TEXT,
+            metadata={
+                "visible_to_user": "true",
+                "final": "false",
+                "suspend": "true",
+                # 与「询问」挂起区分：scheduler 据此登记插话暂停（并消化队列里
+                # 已经排上的消息），前端也据此显示不同的提示。
+                "interrupt": "true",
+                "agent_id": (
+                    getattr(getattr(task, "default_agent", None), "id", "")
+                    or getattr(task, "agent_id", "")
+                    or "main"
+                ),
+            },
+        ))
+        chat_log(
+            f"[{task.user.id}] 已打断并保留现场，等待用户插话（栈长 {len(task.agent_context)}）"
+        )
+        return True
+
+    @classmethod
+    def _pause_for_interject(cls, task, emit: Callable[[TaskEventDTO], None]) -> bool:
+        """主循环头部的检查点：挂起任务，等用户插话。
+
+        **不销毁任何东西**——agent_context 栈、tool_log、main_memory、
+        temp_dialog_* 全部原样留在同一个 TaskRuntime 上，并放进 PENDING_TASKS；
+        用户下一条消息经 ResumeTask 回到同一个检查点时接着跑（见 resume_task）。
+
+        返回 False = 不该在这里暂停：栈顶就是用户帧，下一步本来就是把最终回复
+        发出去，暂停毫无意义。
+        """
+        if not task.agent_context:
+            return False
+        if cls._is_user_object(task.agent_context[-1].get("from"), task):
+            return False
+        return cls._suspend_for_interject(task, emit)
+
+    @classmethod
+    def _pause_before_model_call(cls, task, agent, emit: Callable[[TaskEventDTO], None]) -> bool:
+        """模型调用前的检查点：不启动这次调用，就地暂停等插话。
+
+        为什么光有主循环那个检查点不够：智能体之间是**嵌套调用**的
+        （`main.send()` 内部再 `call_agent` → `tool.send()`），主循环要等整条
+        嵌套链返回才轮到。实测（真实链路）单次模型调用要 40 秒以上，于是用户按了
+        /stop 之后还得白等一整条链（可能几分钟）才生效。
+        这个检查点只是「不再开新的模型调用」，并不打断正在跑的那一次 —— 与
+        「等当前这一步跑完」的语义一致。
+
+        现场处理：把「本来要发给这个智能体的输入」压成它自己的帧，于是恢复时
+        主循环弹出这一帧、把插话并在后面交回给它，它带着原输入 + 插话重跑一次
+        —— 和「询问」恢复是同一套帧语义，不需要额外状态。
+        """
+        pending_input = str(task.temp_dialog_input or "")
+        task.push_context(agent, pending_input)
+        task.set_temp_dialog_input(None)
+        task.set_temp_dialog_output("")
+        task.target = agent
+        return cls._suspend_for_interject(task, emit)
+
     @classmethod
     def resume_task(
         cls,
@@ -274,6 +433,37 @@ class AgentRuntime:
         「收到返回」拼在后面，交给询问方继续 send，再走 _continue_task 主循环。
         """
         task.status = "running"
+
+        # 与 process_task 一致：登记必须覆盖整个执行（含恢复后的第一次模型调用），
+        # 否则恢复期间到达的 /stop 找不到这个任务。
+        task.interrupt_event.clear()
+        cls._register_running(task)
+        try:
+            return cls._resume_body(task, reply, emit, images)
+        finally:
+            cls._unregister_running(task)
+
+    @classmethod
+    def _resume_body(cls, task, reply: str, emit: Callable[[TaskEventDTO], None], images) -> str:
+        """resume_task 的本体（登记由调用方负责）。"""
+        # ─── 插话恢复路径 ───────────────────────────────────────────
+        # 本次挂起来自 /stop：或由任务自己暂停（paused_by_interrupt），或在
+        # 「询问」挂起期间又被 /stop 标记（scheduler 打的 metadata.resume_mode）。
+        # 两条来源都走这里：**不弹栈、不构造【收到返回】**——现场从没被破坏，
+        # 只把插话放好，交给主循环在弹帧时并入栈顶调用者的输入。
+        resume_mode = str((task.metadata or {}).get("resume_mode") or "")
+        if task.paused_by_interrupt or resume_mode == "interrupt":
+            task.paused_by_interrupt = False
+            task.metadata.pop("resume_mode", None)
+            task.pending_interjection = str(reply)
+            # 插话同样并入本轮用户输入，保证持久化到上下文的这一轮里
+            # 能看到用户中途说了什么（否则插话只活在当次 messages 里）。
+            task.content = f"{task.content}\n\n【用户插话】\n{reply}".strip()
+            if images:
+                task.set_temp_dialog_images(images)
+            chat_log(f"[{task.user.id}] 收到插话，接着被打断的任务继续：{reply}")
+            return cls._continue_task(task, emit)
+
         context = task.pop_context()
         stack_input = (context or {}).get("input", "")
 
@@ -372,25 +562,46 @@ class AgentRuntime:
         debug_log(f"{task.user.id} 的任务正被 orchestrator 处理")
         final_reply = ""
 
-        emit(cls.build_event(task, "task_started"))
+        # 运行中登记必须覆盖**整个执行**，包括第一次模型调用：
+        # 实测（真实链路）第一次模型调用可能就要十几秒，若只在主循环里登记，
+        # 用户在这段时间按 /stop 会被告知「没有正在执行的任务」—— 而任务明明在跑。
+        # 顺便清掉残留标记，避免它跨「挂起→恢复」被误用。
+        task.interrupt_event.clear()
+        cls._register_running(task)
+        try:
+            emit(cls.build_event(task, "task_started"))
 
-        if len(task.agent_context) == 1:
-            try:
-                cls.first_call(task)
-                task.default_agent = task.target
-                task.default_agent.send(task, emit)
-            except Exception as exc:
-                raw_output = task.consume_temp_dialog_output() or task.send_text or ""
-                return cls._emit_raw_model_fallback(task, emit, str(raw_output), exc)
+            if len(task.agent_context) == 1:
+                try:
+                    cls.first_call(task)
+                    task.default_agent = task.target
+                    task.default_agent.send(task, emit)
+                except Exception as exc:
+                    raw_output = task.consume_temp_dialog_output() or task.send_text or ""
+                    return cls._emit_raw_model_fallback(task, emit, str(raw_output), exc)
 
-        return cls._continue_task(task, emit)
+            return cls._continue_task(task, emit)
+        finally:
+            cls._unregister_running(task)
 
     @classmethod
     def _continue_task(cls, task, emit: Callable[[TaskEventDTO], None]) -> str:
-        """主循环 + 收尾：process_task 和 resume_task 都会走到这里。"""
+        """主循环 + 收尾：process_task 和 resume_task 都会走到这里。
+
+        现场保留式暂停（/stop）的检查点就在循环头。运行中登记**不在这里**做：
+        它必须覆盖整个执行（含第一次模型调用），见 process_task / resume_task。
+        """
         final_reply = ""
         steps = 0
         while len(task.agent_context) > 0 and task.status == "running":
+            if task.interrupt_event.is_set():
+                if cls._pause_for_interject(task, emit):
+                    return ""
+                # 任务即将收尾（栈顶就是用户帧，下一步就是把最终回复发出去）：
+                # 此时暂停没有意义，放它跑完，并清掉标记避免下一轮再触发。
+                debug_log(f"[{task.user.id}] 停止请求到达时任务已近收尾，忽略")
+                task.interrupt_event.clear()
+
             steps += 1
             if steps > config.MAX_AGENT_STEPS:
                 task.status = "failed"
@@ -403,7 +614,11 @@ class AgentRuntime:
             context = task.pop_context()
             task.target = context["from"]
             stack_input = context.get("input", "")
-            output = task.consume_temp_dialog_output() or "因不知名原因输出已丢失"
+            raw_output = task.consume_temp_dialog_output()
+            output = raw_output or "因不知名原因输出已丢失"
+            # 插话（barge-in）：/stop 暂停期间用户发来的内容，并入本轮交给栈顶调用者
+            interjection = task.pending_interjection
+            task.pending_interjection = ""
             if task.target is not None and hasattr(task.target, 'id') and task.target.id == "main":
                 task.main_memory.append(f"←{returning_agent_id}: {str(output)}")
 
@@ -418,9 +633,19 @@ class AgentRuntime:
                 if stack_input:
                     parts.append(stack_input)
                 original_result = str(output)
-                parts.append("【收到返回】\n" + original_result)
+                if interjection:
+                    # 插话轮：有真实产出就照常回喂（放在插话之前，让模型先看到刚刚
+                    # 发生了什么、再看用户的新要求）；占位符则不喂，避免
+                    # 「输出已丢失」这种噪音干扰插话本身。
+                    if raw_output:
+                        parts.append("【收到返回】\n" + original_result)
+                    parts.append("【用户插话】\n" + interjection)
+                else:
+                    parts.append("【收到返回】\n" + original_result)
                 output = "\n\n".join(parts)
                 task.tool_log.append("收到返回:" + original_result)
+                if interjection:
+                    task.tool_log.append("用户插话:" + interjection)
                 task.set_temp_dialog_input(str(output))
                 task.target.send(task, emit)
             except Exception as exc:
@@ -514,6 +739,18 @@ class AgentRuntime:
         )
 
     def send(self, task, emit: Callable[[TaskEventDTO], None]):
+        # 提示词热重载：改了 .md / 换了提示词套 → 下一次模型调用就用新的。
+        # 只做 stat 比对（见 prompt_revision），没变时是纯读开销，可以忽略。
+        self.refresh_system_prompt()
+
+        # 模型调用前的打断检查点。一旦开始构建上下文/调用模型，这次调用就
+        # 没法再中止了（见 _pause_before_model_call 的说明）。暂停时 send() 直接返回，
+        # 调用方（process_task / call_agent / 主循环）会看到 status=suspended：
+        # 主循环据此不再发终态事件，嵌套链也逐层退出。
+        if task.interrupt_event.is_set():
+            if AgentRuntime._pause_before_model_call(task, self, emit):
+                return
+
         content = task.consume_temp_dialog_input() or ""
         dialog_images = task.consume_temp_dialog_images() or []
 

@@ -208,6 +208,21 @@ body {
 }
 .send-btn:active:not(:disabled) { opacity: 0.8; }
 
+/* /stop 打断按钮：窄屏下只留图标，避免挤占输入框宽度 */
+.stop-btn {
+  width: 40px; min-width: 40px; height: 40px;
+  align-self: flex-end;
+  border: 1px solid #ccc; border-radius: 20px;
+  background: #fff; color: #444;
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.stop-btn:disabled {
+  border-color: #e0e0e0; color: #bbb; cursor: not-allowed;
+}
+.stop-btn:active:not(:disabled) { opacity: 0.8; }
+
 /* ── Drawers ── */
 .mobile-drawer {
   position: fixed;

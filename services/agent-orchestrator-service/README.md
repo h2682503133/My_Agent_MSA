@@ -174,15 +174,31 @@ orchestrator/system_prompt → /app/system_prompt   （各智能体 System Promp
 
 | 指令 | 语义 |
 |------|------|
-| `@ref=<agent_id>` | **读取期**把整份内容替换成「另一个智能体的**同名**文件」。整文件替换语义 → 写了它就不能再有正文 |
+| `@ref=<目标>` | **读取期**把整份内容替换成目标文件。整文件替换语义 → 写了它就不能再有正文 |
 | `@when=group` / `@when=single` | 该段**只在群聊** / **只在非群聊**注入 |
+
+`@ref=` 的目标有三种写法：
+
+| 写法 | 含义 | 例子 |
+|------|------|------|
+| 含 `/` | 提示词目录内的**相对路径**（文件名可任意） | `@ref=人设合集/凌伊.md`、`@ref=alice/SOUL.md` |
+| 不含 `/`、末段带 `.md` / `.json` | **根目录下的文件** | `@ref=人设甲.md` |
+| 其余（老写法） | 另一个目录下的**同名文件** | `lilith/SOUL.md` 里写 `@ref=alice` → `alice/SOUL.md` |
 
 规则：
 
 - 指令只能出现在指令区；指令区之后（正文里）再出现 `@ref=` / `@when=` → 报错，避免误写被静默吞掉
-- `@ref=`：目标 agent 目录 / 同名文件不存在、内容为空、指向自己、目标内部再含指令（只允许一层）→ 报错
-- `@when=`：取值只允许 `group` / `single`（大小写与 `=` 两侧空格容错）；目标文件内部含 `@when=` → 报错
-  （注入条件属于**写它的那个 agent**，不随内容共享）
+- `@ref=` 目标只允许**提示词目录内的相对路径**：绝对路径 / 盘符 / `\` / `..` / 空段
+  （`a//b`、结尾多写 `/`）一律报错；也不能用 `{占位符}` 当目标。中文目录名允许
+- `@ref=` **最多 3 跳**（`prompt_refs.MAX_REF_DEPTH`）。超限报错并打印**完整链**：
+  `@ref= 跳转超过 3 跳｜链：lilith/SOUL.md → alice/SOUL.md → 人设合集/凌伊.md → …`。
+  **刻意不做环检测**：成环必然在某一跳撞上上限，而链打出来就能看出是环
+- `@ref=`：目标目录 / 文件不存在、内容为空、指向自己 → 报错
+- 目标文件里**不能**带 `@when=`（任何跳数下都成立）：注入条件属于**写它的那个 agent**，
+  不随内容共享。目标文件里再写 `@ref=` 是允许的（就是上面那个"最多 3 跳"）
+- 链上的 `{agent_id}` 永远取**最外层请求方**：`lilith → alice → 人设文件` 里，
+  人设文件写 `你是 {agent_id}` 得到 `lilith`
+- `@when=`：取值只允许 `group` / `single`（大小写与 `=` 两侧空格容错）
 - 支持范围：`files` 里声明的普通 `.md` 段 + `GLOBAL_SETTING.md`。
   `process*.md`（内容不读）/ `world_info.md`（内容只作阶段1 指令）/ `TOOL.md` 写了 `@when=` → 报错
 - `@when=` 的判定是**发送期**按 `task.user.session_id` / `task.user.id` 是否以 `grp_` / `qq_g_` 开头
@@ -190,9 +206,59 @@ orchestrator/system_prompt → /app/system_prompt   （各智能体 System Promp
   之所以不在构建期判定：system prompt 在实例创建时构建并被 LRU 缓存复用，而"是否群聊"是**每次请求**的属性
 - 失败一律抛 `PromptRefError`，不做静默降级
 
-**典型用法**：群聊时不要注入用户信息 —— 在 `USER.md` 首行加 `@when=single`。
+**典型用法**：
 
-自测：`python tools/prompt_refs_smoke_test.py`（临时目录造数据，覆盖正常路径与全部报错分支）。
+- 群聊时不要注入用户信息 —— 在 `USER.md` 首行加 `@when=single`
+- 一份内容给多个智能体共用 —— 角色目录里放一行指针，正文只维护一份：
+
+  ```
+  alice/SOUL.md          ← 人设正文（真身）
+  lilith/SOUL.md         ← @ref=alice
+  luna/SOUL.md           ← @ref=alice
+  ```
+- **几套人设快速切换** —— 让 hub 再指向人设文件（两跳），换一行 = 整个班底换人设：
+
+  ```
+  人设合集/凌伊.md                 ← 一套人设，一个文件
+  alice/SOUL.md = @ref=人设合集/凌伊.md
+  lilith/SOUL.md = @ref=alice      ← 这些存根一个字都不用改
+  luna/SOUL.md   = @ref=alice
+  ```
+
+  注意**指针方向**：不要让存根直接指人设文件（那是 5~15 处要改，而且漏改一个
+  不报错 —— 它会继续用 hub 的旧内容，属于静默的部分切换）。
+
+自测：`python tools/prompt_refs_smoke_test.py`（临时目录造数据，覆盖三种目标写法、
+深度上限、成环、路径穿越与全部报错分支）。
+
+## 提示词热重载：改完不用重启
+
+`AgentRuntime.send()` 开头比对一次提示词快照（`context_builder.prompt_revision`：
+把提示词目录下所有文件的 `(相对路径, mtime, 大小)` 排序成元组，外加
+`system_settings.json`；只 stat 不读内容，几十个文件的代价可忽略），变了就重建：
+
+- 改任何一个 `.md` / 增删文件 / **改 `@ref=` 指针行** / **改被引用的目标文件** /
+  **改链中间的 hub** → **下一次模型调用即生效**
+- 不需要重启 orchestrator（重启会杀掉在飞任务），也不需要等 LRU 把实例挤掉
+- `.bak` / `.tmp` 不参与快照（dashboard 备份、原子写中间态不该触发重建）
+
+为什么需要这一步：system prompt 是**实例级**的 —— 实例创建时构建一次就被
+LRU 复用（见 `上下文管理.md` 第 8 节）。没有热重载时，改完提示词只有两种情况
+会生效：LRU 把实例挤掉（**不同用户可能同时跑着两套人设**），或者重启。
+
+三个实现细节：
+
+- 构建结果整体放在一个属性里（`_prompt_parts`），重建是**一次赋值**，
+  不会出现「新 prompt 配旧 `@when` 下标」的中间态（`system_prompt` 等四个名字
+  改成了派生 property，调用方无感）
+- 刷新点在 `send()` 而不是任务入口：子智能体（tool / reader…）各有自己的实例，
+  只刷 main 的话它们的提示词仍是旧的
+- 快照是**全局**的（不按 agent 记依赖）：改任何提示词文件都会让所有实例在
+  下一次 send 时重建。代价是几个小文件的读取，换来的是"改了 hub 一行，
+  5 个角色下一条消息全体换"这种零心智负担的行为
+
+自测：`python tools/prompt_hot_reload_smoke_test.py`（覆盖快照判定、改正文 /
+改指针 / 改目标文件 / 改中间 hub、`.bak` 不误触发、失败不静默、真实实例缓存）。
 
 ## 历史块的 role 重分配（短期 session 记忆）
 

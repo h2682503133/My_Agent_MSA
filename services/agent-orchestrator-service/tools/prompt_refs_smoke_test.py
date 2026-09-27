@@ -70,16 +70,18 @@ def filtered(parts, *, is_group: bool):
     return ContextBuilder(agent).effective_system_prompt(is_group=is_group)
 
 
-def expect_error(label: str, fn) -> None:
+def expect_error(label: str, fn) -> str:
+    """断言 fn 抛 PromptRefError；返回报错信息（空串 = 没报错 / 抛了别的异常）。"""
     try:
         fn()
     except PromptRefError as exc:
         check(label, True, str(exc)[:110])
-        return
+        return str(exc)
     except Exception as exc:  # 非预期异常同样算失败
         check(label, False, f"抛了别的异常 {type(exc).__name__}: {exc}")
-        return
+        return ""
     check(label, False, "没有报错")
+    return ""
 
 
 # ── 造数据 ───────────────────────────────────────────────────
@@ -104,7 +106,27 @@ def expect_error(label: str, fn) -> None:
     "nick":   {"files": ["SOUL.md", "world_info.md"]},
     "olga":   {"files": ["SOUL.md", "TOOL.md"]},
     "quinn":  {"files": ["USER.md"]},
-    "rita":   {"files": ["SOUL.md"]}
+    "rita":   {"files": ["SOUL.md"]},
+    "p1":     {"files": ["SOUL.md"]},
+    "p2":     {"files": ["SOUL.md"]},
+    "p3":     {"files": ["SOUL.md"]},
+    "d1":     {"files": ["SOUL.md"]},
+    "d2":     {"files": ["SOUL.md"]},
+    "d3":     {"files": ["SOUL.md"]},
+    "d4":     {"files": ["SOUL.md"]},
+    "c1":     {"files": ["SOUL.md"]},
+    "c2":     {"files": ["SOUL.md"]},
+    "h1":     {"files": ["SOUL.md"]},
+    "h2":     {"files": ["SOUL.md"]},
+    "x1":     {"files": ["SOUL.md"]},
+    "x2":     {"files": ["SOUL.md"]},
+    "x3":     {"files": ["SOUL.md"]},
+    "x4":     {"files": ["SOUL.md"]},
+    "x5":     {"files": ["SOUL.md"]},
+    "x6":     {"files": ["SOUL.md"]},
+    "x7":     {"files": ["SOUL.md"]},
+    "x8":     {"files": ["SOUL.md"]},
+    "x9":     {"files": ["SOUL.md"]}
   }
 }
 """,
@@ -142,7 +164,38 @@ write("carol", "SOUL.md", "@ref=alice\n多余的一行\n")  # 指令+正文 → 
 write("dave", "SOUL.md", "@ref=nobody\n")  # 目标目录不存在 → 报错
 write("erin", "SOUL.md", "@ref=alice IDENTITY.md\n")  # 行内多余内容 → 报错
 write("frank", "SOUL.md", "@ref=frank\n")  # 自跳 → 报错
-write("grace", "SOUL.md", "@ref=lilith\n")  # 目标也是跳转 → 只允许一层 → 报错
+write("grace", "SOUL.md", "@ref=lilith\n")  # 两跳：grace → lilith → alice（现在合法）
+
+# ── @ref= 新写法：任意文件路径（`目录/文件名`）───────────────
+# 中文目录 + 任意文件名（老实现被 [A-Za-z0-9_.@-] 白名单挡住）
+write("人设合集", "凌伊.md", "# 凌伊\n这是凌伊的人设正文\n")
+write("人设合集", "带id.md", "人设：{agent_id}\n")
+write("p1", "SOUL.md", "@ref=人设合集/凌伊.md\n")  # 路径形式
+write("p2", "SOUL.md", "@ref=alice/world_info.md\n")  # 指向别的智能体的**非同名**文件
+write("p3", "SOUL.md", "@ref=alice/soul.md\n")  # 末段大小写不敏感
+write("h1", "SOUL.md", "@ref=人设合集/带id.md\n")  # 占位符链上的中间跳
+write("h2", "SOUL.md", "@ref=h1\n")  # 两跳 + 占位符取最外层请求方
+# 深度：3 跳仍可，4 跳报错
+write("d1", "SOUL.md", "@ref=d2\n")
+write("d2", "SOUL.md", "@ref=d3\n")
+write("d3", "SOUL.md", "@ref=d4\n")
+write("d4", "SOUL.md", "# 深度链终点\nd4 正文\n")
+# 成环：不专门检测，靠深度上限拦下
+write("c1", "SOUL.md", "@ref=c2\n")
+write("c2", "SOUL.md", "@ref=c1\n")
+# 非法目标
+write("x1", "SOUL.md", "@ref=../secret.md\n")  # 穿越
+write("x2", "SOUL.md", "@ref=/etc/passwd\n")  # 绝对路径
+write("x3", "SOUL.md", "@ref=人设合集/\n")  # 空段（结尾多写 `/`）
+write("x4", "SOUL.md", "@ref=人设合集//凌伊.md\n")  # 空段（双斜杠）
+write("x5", "SOUL.md", "@ref={agent_id}\n")  # 占位符不能当目标
+write("x6", "SOUL.md", "@ref=人设合集/空文件.md\n")  # 目标为空
+write("x7", "SOUL.md", "@ref=人设合集/带when.md\n")  # 目标里带 @when → 仍报错
+write("x8", "SOUL.md", "@ref=人设合集/带正文.md\n")  # 目标里 @ref= + 正文 → 报错
+write("x9", "SOUL.md", "@ref=人设合集/nobody.md\n")  # 目标文件不存在
+write("人设合集", "空文件.md", "   \n")
+write("人设合集", "带when.md", "@when=group\n只群聊\n")
+write("人设合集", "带正文.md", "@ref=凌伊.md\n多余的正文\n")
 
 # ── @when= 注入条件 ──────────────────────────────────────────
 HENRY_SOUL = "# 角色设定\nhenry 的 SOUL 正文\n"
@@ -189,7 +242,49 @@ expect_error("指令行之外还有正文 → 报错", lambda: build("carol"))
 expect_error("目标 agent 目录不存在 → 报错", lambda: build("dave"))
 expect_error("指令行内有多余内容 → 报错", lambda: build("erin"))
 expect_error("自跳 → 报错", lambda: build("frank"))
-expect_error("目标也是跳转（两层）→ 报错", lambda: build("grace"))
+
+print("\n== @ref= 新写法：目录/文件名（任意文件）==")
+grace = build("grace")
+check("两跳：grace → lilith → alice 现在合法",
+      grace.messages[1]["content"] == ALICE_SOUL.strip(), repr(grace.messages[1]["content"][:24]))
+
+p1 = build("p1")
+check("路径形式：中文目录 + 任意文件名",
+      p1.messages[1]["content"] == "# 凌伊\n这是凌伊的人设正文", repr(p1.messages[1]["content"][:24]))
+
+p2 = build("p2")
+check("路径形式：可指向别的智能体的非同名文件（且替换成请求方 id）",
+      p2.messages[1]["content"] == "# 核心设定\n你的id是p2", repr(p2.messages[1]["content"][:40]))
+
+p3 = build("p3")
+check("路径形式：末段大小写不敏感", p3.messages[1]["content"] == ALICE_SOUL.strip())
+
+h2 = build("h2")
+check("链上 {agent_id} 取最外层请求方", h2.messages[1]["content"] == "人设：h2", repr(h2.messages[1]["content"]))
+check("中间跳的指针内容不进入结果", "@ref" not in h2.messages[1]["content"])
+
+d1 = build("d1")
+check("3 跳仍可解析", d1.messages[1]["content"] == "# 深度链终点\nd4 正文", repr(d1.messages[1]["content"][:24]))
+write("d4", "SOUL.md", "@ref=d5\n")
+write("d5", "SOUL.md", "d5 正文\n")
+deep_msg = expect_error("超过深度上限 → 报错", lambda: build("d1"))
+check("深度报错里带跳数与完整链",
+      str(prompt_refs.MAX_REF_DEPTH) in deep_msg and "→" in deep_msg, deep_msg[:110])
+write("d4", "SOUL.md", "# 深度链终点\nd4 正文\n")
+cycle_msg = expect_error("成环 → 被深度上限拦下（无环检测）", lambda: build("c1"))
+check("成环报错里带完整链（看得出是环）",
+      "→" in cycle_msg and "c1/SOUL.md" in cycle_msg, cycle_msg[:110])
+
+print("\n== @ref= 非法目标 ==")
+expect_error("目标穿越 .. → 报错", lambda: build("x1"))
+expect_error("绝对路径 → 报错", lambda: build("x2"))
+expect_error("目标结尾多写 / → 报错", lambda: build("x3"))
+expect_error("目标含双斜杠 → 报错", lambda: build("x4"))
+expect_error("不能用 {占位符} 当目标 → 报错", lambda: build("x5"))
+expect_error("目标文件为空 → 报错", lambda: build("x6"))
+expect_error("目标里带 @when=（任何跳数下都禁止）→ 报错", lambda: build("x7"))
+expect_error("目标里 @ref= 与正文并存 → 报错", lambda: build("x8"))
+expect_error("目标文件不存在 → 报错", lambda: build("x9"))
 
 print("\n== 纯函数层面 ==")
 check("未命中原样返回（同一对象）", prompt_refs.resolve_text(

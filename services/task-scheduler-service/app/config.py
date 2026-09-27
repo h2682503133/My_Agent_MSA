@@ -29,3 +29,8 @@ SUSPEND_SWEEP_INTERVAL = env_int("SCHEDULER_SUSPEND_SWEEP_INTERVAL", 30)
 # 系统替用户回复「用户当前无法回复，请自行判断执行」以推动挂起任务收尾。
 # 若模型仍反复提问导致再次挂起，最多代答该次数后停止代答，避免往复死循环。
 MAX_OFFLINE_REPLIES = env_int("SCHEDULER_MAX_OFFLINE_REPLIES", 3)
+
+# /stop 打断：向 orchestrator 发 StopTask 的超时。
+# 该 RPC 是协作式的 —— orchestrator 只置位标志、不等暂停落地，所以这里不需要
+# 长超时；设长了反而会在 orchestrator 卡住时把 CreateTask 一起拖住。
+STOP_REQUEST_TIMEOUT_SECONDS = env_int("STOP_REQUEST_TIMEOUT_SECONDS", 10)

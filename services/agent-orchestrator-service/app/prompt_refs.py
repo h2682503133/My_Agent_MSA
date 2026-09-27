@@ -2,22 +2,33 @@
 
 构建 system prompt 时，一个 `.md` 文件的开头可以是**指令区**，正文也可以来自别处：
 
-1. `@ref=<agent_id>` —— **整文件替换**为「另一个智能体的同名文件」
+1. `@ref=<目标>` —— **整文件替换**为目标文件的内容
    - 格式：`@ref=alice`（指令行独占一行）
+   - 三种目标写法：
+     - **含 `/`**：提示词目录内的**相对路径**，文件名可以随便叫。
+       `main/SOUL.md` 写 `@ref=人设合集/凌伊.md` → 读该文件
+     - **不含 `/`、末段带 `.md` / `.json`**：**根目录下的文件**。
+       `@ref=人设甲.md` → 读 `<SYSTEM_PROMPT_DIR>/人设甲.md`
+     - **其余**（老写法）：另一个目录下的**同名文件**。`lilith/SOUL.md` 写
+       `@ref=alice` → 读 `alice/SOUL.md`
    - 整文件替换语义：写了 `@ref=` 就不能再有正文，否则报错
-   - 目标 agent 目录 / 同名文件不存在 → 报错；目标内容为空 → 报错
-   - **只允许一层**：目标文件内部再出现 `@ref=` / `@when=` → 报错
+   - 目标不存在 / 内容为空 / 指向自己 → 报错
+   - **最多 `MAX_REF_DEPTH` 跳**（`角色存根 → hub → 人设文件` 是 2 跳）。超限报错并
+     打印完整链；**刻意不做环检测**：成环必然在某一跳撞上上限，链打出来就能看出是环
    - 失败一律抛 `PromptRefError`：宁可让任务直接失败，也不要静默用错人设
 
 2. `@when=group` / `@when=single` —— 该段**只在群聊 / 只在非群聊**注入
    - 条件属于**写它的那个 agent**（声明方 / 引用方），与正文来自哪里无关
-   - 目标文件里出现 `@when=` → 报错（避免"共享内容自带开关"的隐式耦合）
+   - 目标文件里出现 `@when=` → 报错（避免"共享内容自带开关"的隐式耦合）。
+     这条**任何跳数下都成立**：条件只能写在最外层「使用者」的文件里
    - 判定时机是**发送期**（按 task 的 session_id / user_id），见
      `context_builder.is_group_session`
 
 3. `{agent_id}` —— 替换为**当前请求方**的 agent id（不是目标方的）
    - 只替换白名单键，其余花括号原样保留（如正文里的 `{好感度：65}`）
    - 由 `context_builder.build_system_prompt()` 在拼接完成后统一处理
+   - 链上永远取**最外层请求方**：`lilith → alice → 人设文件` 里，
+     人设文件写 `你是 {agent_id}` 得到的是 `lilith`
 
 指令区规则（`@ref=` 与 `@when=` 共用一套）：
 - 位于**文件开头**：连续的「指令行或空行」；出现第一行正文即结束
@@ -35,7 +46,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# 跳转指令：`@ref=alice` / `@ref = alice`
+# 跳转指令：`@ref=alice` / `@ref = alice` / `@ref=人设合集/凌伊.md`
 REF_MARKER = "@ref="
 _REF_DETECT_RE = re.compile(r"@ref\s*=")
 _REF_LINE_RE = re.compile(r"^[ \t]*@ref\s*=\s*(\S+)[ \t]*$")
@@ -48,8 +59,17 @@ WHEN_VALUES = (WHEN_GROUP, WHEN_SINGLE)
 _WHEN_DETECT_RE = re.compile(r"@when\s*=")
 _WHEN_LINE_RE = re.compile(r"^[ \t]*@when\s*=\s*(\S+)[ \t]*$")
 
-# agent_id 白名单字符（现有 agent_list 里的 id 都是这种；顺带排除 `@ref={agent_id}` 这类自指写法）
-_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
+# 跳转深度上限（**跳数**，不是层数）：角色存根 → hub → 人设文件 = 2 跳，留一跳余地。
+# 刻意不做环检测：成环必然在某一跳撞上这个上限，而报错会打印完整链
+# （看到 `a/SOUL.md → b/SOUL.md → a/SOUL.md` 就知道是环）。
+MAX_REF_DEPTH = 3
+
+# 目标里不允许的路径段：空段（`a//b`、结尾带 `/`）、`.`、`..`（挡目录穿越）
+_INVALID_PATH_SEGMENTS = frozenset({"", ".", ".."})
+# 盘符路径（`C:/x`）：绝对路径的另一种写法
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+# 带这些后缀且不含 `/` 的目标，按「根目录下的文件」理解（见 is_path_form）
+_FILE_SUFFIXES = (".md", ".json")
 
 # 占位符：只认这些键，其它花括号一律原样保留
 PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -152,6 +172,93 @@ def substitute_placeholders(text: str, *, agent_id: str) -> str:
     return PLACEHOLDER_RE.sub(_replace, text)
 
 
+# ── 跳转目标：写法校验与定位 ────────────────────────────────
+
+
+def is_path_form(target: str) -> bool:
+    """是否按「提示词目录内的相对路径」理解这个目标。
+
+    - 含 `/`：路径 —— `人设合集/凌伊.md`、`alice/SOUL.md`
+    - 不含 `/` 但末段带 `.md` / `.json`：**根目录下的文件** —— `人设甲.md`
+      （否则 `@ref=人设甲.md` 会被当成"一个叫 人设甲.md 的目录"，报出
+      「目标目录不存在」这种把人带偏的错）
+    - 其余：老语义 —— 另一个目录下的**同名文件**（`@ref=alice` → `alice/SOUL.md`）
+    """
+    if "/" in target:
+        return True
+    return target.lower().endswith(_FILE_SUFFIXES)
+
+
+def ref_chain_root(agent_id: str, filename: str) -> list[str]:
+    """跳转链的起点（最外层请求方）。只用于报错，不参与解析。"""
+    return [f"{agent_id}/{filename}"]
+
+
+def validate_ref_target(
+    target: str, *, agent_id: str, filename: str, line: str = ""
+) -> None:
+    """校验 `@ref=` 目标写法（不含磁盘存在性检查）。
+
+    只接受**提示词目录内的相对路径**：绝对路径 / 盘符 / `\\` / `..` /
+    空段一律拒绝 —— 否则 `@ref=` 就能读到配置卷里任何文件。
+
+    中文允许：老实现用 `[A-Za-z0-9_.@-]` 白名单，导致 `人设合集/凌伊.md`
+    这种目标直接报"目标 agent id 非法"。
+    """
+    def _fail(reason: str) -> None:
+        raise PromptRefError(reason, agent_id=agent_id, filename=filename, line=line)
+
+    if "{" in target or "}" in target:
+        _fail(f"@ref= 不做占位符替换，不能用 {target!r} 当跳转目标")
+    if target.startswith("/") or target.startswith("\\") or "\\" in target:
+        _fail(f"@ref= 只接受提示词目录内的相对路径：{target!r}（不能是绝对路径，也不能含 \\）")
+    if _DRIVE_RE.match(target):
+        _fail(f"@ref= 只接受提示词目录内的相对路径：{target!r}（不能是盘符路径）")
+    for segment in target.split("/"):
+        if segment in _INVALID_PATH_SEGMENTS:
+            _fail(
+                f"@ref= 目标含非法路径段：{target!r}"
+                "（不允许空段 / . / .. —— 空段常见于结尾多写了 `/`，"
+                "带 `/` 时请把文件名写全，如 `人设合集/凌伊.md`）"
+            )
+
+
+def display_path(path: Path, root: Path) -> str:
+    """报错里用的短路径（提示词目录内显示相对路径，之外退回绝对路径）。
+
+    统一用 `/` 分隔：报错里显示的是**写进文件的写法**，Windows 上的 `\\`
+    会与 `@ref=` 的语法混淆（而且 `@ref=` 本身不接受 `\\`）。
+    """
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def locate_ref_target(
+    target: str, *, filename: str, system_prompt_dir: Path
+) -> tuple[Path | None, str]:
+    """把跳转目标定位到磁盘文件，返回 `(路径, 失败说明)`；定位失败时路径为 None。"""
+    root = Path(system_prompt_dir)
+    if not is_path_form(target):
+        directory = root / target
+        if not directory.is_dir():
+            return None, f"目标目录不存在：{directory}（@ref={target}）"
+        found = resolve_named_file(directory, filename)
+        if found is None:
+            return None, f"目标文件不存在：{directory / filename}（@ref={target}）"
+        return found, ""
+
+    parent, _, name = target.rpartition("/")
+    directory = root / parent
+    if not directory.is_dir():
+        return None, f"目标目录不存在：{directory}（@ref={target}）"
+    found = resolve_named_file(directory, name)
+    if found is None:
+        return None, f"目标文件不存在：{directory / name}（@ref={target}）"
+    return found, ""
+
+
 # ── 读取期解析 ──────────────────────────────────────────────
 
 
@@ -196,23 +303,24 @@ def resolve_segment(
             filename=filename,
             line=first_ref_line(raw_text) or "",
         )
-    if not _AGENT_ID_RE.match(ref_target):
-        raise PromptRefError(
-            f"目标 agent id 非法：{ref_target!r}（只允许字母数字与 _ . @ - ）",
-            agent_id=agent_id,
-            filename=filename,
-            line=first_ref_line(raw_text) or "",
-        )
-    if ref_target == agent_id:
+    line = first_ref_line(raw_text) or ""
+    validate_ref_target(ref_target, agent_id=agent_id, filename=filename, line=line)
+    if not is_path_form(ref_target) and ref_target == agent_id:
         raise PromptRefError(
             "@ref= 指向自己，无意义",
             agent_id=agent_id,
             filename=filename,
-            line=first_ref_line(raw_text) or "",
+            line=line,
         )
 
     text = _read_target(
-        ref_target, filename=filename, agent_id=agent_id, system_prompt_dir=system_prompt_dir
+        ref_target,
+        filename=filename,
+        agent_id=agent_id,
+        system_prompt_dir=Path(system_prompt_dir),
+        chain=ref_chain_root(agent_id, filename),
+        depth=1,
+        line=line,
     )
     return ResolvedSegment(text=text, when=when)
 
@@ -309,47 +417,106 @@ def _split_directives(
     return ref_target, when, "\n".join(body_lines)
 
 
-def _read_target(target: str, *, filename: str, agent_id: str, system_prompt_dir: Path) -> str:
-    """读取目标 agent 的同名文件，做存在性 / 非空 / 只允许一层的校验。"""
-    target_dir = Path(system_prompt_dir) / target
-    if not target_dir.is_dir():
-        raise PromptRefError(
-            f"目标智能体目录不存在：{target_dir}", agent_id=agent_id, filename=filename
-        )
+def _read_target(
+    target: str,
+    *,
+    filename: str,
+    agent_id: str,
+    system_prompt_dir: Path,
+    chain: list[str],
+    depth: int,
+    line: str = "",
+) -> str:
+    """解析一跳 `@ref=`：读目标文件；若目标自己也是整文件跳转，就继续往下（受深度上限约束）。
 
-    target_file = resolve_named_file(target_dir, filename)
+    `chain` 是已走过的链（仅用于报错），`depth` 是当前跳数（从 1 开始）。
+    `filename` 沿链传播：链中某一跳用**老写法** `@ref=alice` 时取的是**最外层请求的
+    那个文件名** —— `lilith/SOUL.md → alice/SOUL.md → @ref=bob → bob/SOUL.md`，
+    所以现有指针文件一个字都不用改。
+
+    不做环检测：成环必然在某一跳超过 `MAX_REF_DEPTH`，而报错会打印完整链。
+    """
+    root = Path(system_prompt_dir)
+    target_file, problem = locate_ref_target(
+        target, filename=filename, system_prompt_dir=root
+    )
     if target_file is None:
         raise PromptRefError(
-            f"目标文件不存在：{target_dir / filename}", agent_id=agent_id, filename=filename
+            f"{problem}｜链：{' → '.join(chain + [target])}",
+            agent_id=agent_id,
+            filename=filename,
+            line=line,
         )
 
     try:
         text = target_file.read_text(encoding="utf-8")
     except Exception as exc:  # 读取失败也按硬失败处理
         raise PromptRefError(
-            f"目标文件读取失败：{target_file}（{exc}）", agent_id=agent_id, filename=filename
+            f"目标文件读取失败：{target_file}（{exc}）"
+            f"｜链：{' → '.join(chain + [display_path(target_file, root)])}",
+            agent_id=agent_id,
+            filename=filename,
+            line=line,
         ) from exc
+
+    rel = display_path(target_file, root)
+    chain_now = chain + [rel]
 
     if not text.strip():
         raise PromptRefError(
-            f"目标文件内容为空：{target_file}", agent_id=agent_id, filename=filename
-        )
-
-    nested = first_ref_line(text)
-    if nested is not None:
-        raise PromptRefError(
-            f"目标文件内部也含 @ref=（只允许一层跳转）：{target_file}",
+            f"目标文件内容为空：{rel}｜链：{' → '.join(chain_now)}",
             agent_id=agent_id,
             filename=filename,
-            line=nested,
+            line=line,
         )
 
-    nested_when = first_when_line(text)
-    if nested_when is not None:
+    # 普通内容（绝大多数情况）：原样返回，字节不变
+    if not has_any_directive(text):
+        return text
+
+    nested_ref, nested_when, body = _split_directives(
+        text, agent_id=agent_id, filename=filename
+    )
+    if nested_when:
         raise PromptRefError(
-            f"目标文件内部含 @when=（注入条件要写在引用方文件里，不能随内容共享）：{target_file}",
+            f"目标文件内含 @when=（注入条件要写在引用方文件里，不能随内容共享）：{rel}"
+            f"｜链：{' → '.join(chain_now)}",
             agent_id=agent_id,
             filename=filename,
-            line=nested_when,
+            line=first_when_line(text) or "",
         )
-    return text
+    if nested_ref is None:
+        # 抽掉指令区后就是普通正文（例如目标文件里写了 `@when=` 之外的规范指令区）
+        return body
+
+    # 目标自己也是整文件跳转 → 同样不能带正文
+    leftovers = [ln for ln in body.splitlines() if ln.strip()]
+    if leftovers:
+        raise PromptRefError(
+            f"目标文件 {rel} 的 @ref= 之外还有 {len(leftovers)} 行内容"
+            "（整文件替换语义下会被丢弃）"
+            f"｜链：{' → '.join(chain_now)}",
+            agent_id=agent_id,
+            filename=filename,
+            line=first_ref_line(text) or "",
+        )
+    if depth >= MAX_REF_DEPTH:
+        raise PromptRefError(
+            f"@ref= 跳转超过 {MAX_REF_DEPTH} 跳（成环也会在这里被拦下）"
+            f"｜链：{' → '.join(chain_now + [nested_ref])}",
+            agent_id=agent_id,
+            filename=filename,
+            line=first_ref_line(text) or "",
+        )
+    validate_ref_target(
+        nested_ref, agent_id=agent_id, filename=filename, line=first_ref_line(text) or ""
+    )
+    return _read_target(
+        nested_ref,
+        filename=filename,
+        agent_id=agent_id,
+        system_prompt_dir=root,
+        chain=chain_now,
+        depth=depth + 1,
+        line=line,
+    )

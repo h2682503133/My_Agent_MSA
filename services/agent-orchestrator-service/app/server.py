@@ -146,6 +146,38 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
 
         yield from self._stream_task_events(task, run, context)
 
+    def StopTask(self, request, context):
+        """打断（barge-in）：让该用户正在执行的任务在下一个检查点暂停。
+
+        语义是**暂停**而不是取消：现场（上下文栈 / tool_log / 记忆）保留在
+        orchestrator 内存里，用户下一条消息经 ResumeTask 回到同一处接着跑。
+
+        这里不阻塞等待暂停落地 —— 暂停发生在任务自己的检查点，等待只会白占
+        一个 gRPC 工作线程、并且也改变不了「当前这一步跑完才生效」的节奏。
+        stopped=False 表示当时没有任务在跑（已结束或本来就空闲）。
+        """
+        log(
+            "StopTask received "
+            f"task_id={request.task_id} user_id={request.user_id} reason={request.reason}"
+        )
+        try:
+            stopped = AgentRuntime.request_stop(
+                user_id=request.user_id,
+                task_id=request.task_id,
+            )
+            return agent_orchestrator_pb2.StopTaskResponse(
+                ok=True,
+                stopped=stopped,
+                message="已请求暂停" if stopped else "没有正在执行的任务",
+            )
+        except Exception as exc:
+            log(f"StopTask failed user_id={request.user_id}: {exc}")
+            return agent_orchestrator_pb2.StopTaskResponse(
+                ok=False,
+                stopped=False,
+                message=str(exc),
+            )
+
 
 def serve():
     # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）

@@ -1,4 +1,5 @@
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -18,6 +19,20 @@ try:
 except ImportError:  # pragma: no cover - only happens before running scripts/gen_proto.sh
     agent_orchestrator_pb2 = None
     agent_orchestrator_pb2_grpc = None
+
+
+@dataclass
+class StopResult:
+    """StopTask 调用结果。
+
+    ok      : RPC 是否成功（false = 服务异常/超时，调用方应明确提示失败）
+    stopped : 是否定位到运行中的任务并已发出暂停请求
+    message : 失败原因，或服务端的说明
+    """
+
+    ok: bool
+    stopped: bool = False
+    message: str = ""
 
 
 class OrchestratorClient:
@@ -127,6 +142,43 @@ class OrchestratorClient:
                     yield self._event_to_dict(task, event)
         except Exception as e:
             yield self._error_event(task, f"agent-orchestrator-service 调用失败: {e}")
+
+    def request_stop(self, user_id: str, task_id: str = "", reason: str = "") -> StopResult:
+        """scheduler -> orchestrator: StopTask，请求打断该用户运行中的任务。
+
+        协作式且立即返回：orchestrator 只置位标志，任务在自己的检查点暂停
+        （暂停真正生效由随后的 task_waiting_user 事件体现，不在这里等）。
+        """
+        if agent_orchestrator_pb2 is None or agent_orchestrator_pb2_grpc is None:
+            return StopResult(ok=False, message="gRPC generated files not found")
+
+        # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
+        max_msg_bytes = 128 * 1024 * 1024
+        try:
+            with grpc.insecure_channel(
+                self.target,
+                options=[
+                    ("grpc.max_send_message_length", max_msg_bytes),
+                    ("grpc.max_receive_message_length", max_msg_bytes),
+                ],
+            ) as channel:
+                stub = agent_orchestrator_pb2_grpc.AgentOrchestratorStub(channel)
+                resp = stub.StopTask(
+                    agent_orchestrator_pb2.StopTaskRequest(
+                        user_id=user_id,
+                        task_id=task_id,
+                        reason=reason,
+                    ),
+                    timeout=config.STOP_REQUEST_TIMEOUT_SECONDS,
+                )
+        except Exception as e:
+            return StopResult(ok=False, message=str(e))
+
+        return StopResult(
+            ok=bool(resp.ok),
+            stopped=bool(resp.stopped),
+            message=resp.message or "",
+        )
 
     def _event_to_dict(self, task: ScheduledTask, event) -> dict:
         return {

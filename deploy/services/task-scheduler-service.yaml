@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: task-scheduler-service
-        image: agent/task-scheduler-service:v21
+        image: agent/task-scheduler-service:v22
         imagePullPolicy: Always
         ports:
         - containerPort: 5100
