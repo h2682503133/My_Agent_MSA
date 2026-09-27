@@ -110,6 +110,7 @@ from pathlib import Path
 from app import config
 from app import prompt_refs
 from app.logger import debug_log
+from app.prompt_plan import insert_messages
 
 # PROCESS 长期事件记录：文件名即模式声明
 # （PROCESS.md=不报时 / PROCESS_turn.md=轮次计数 / PROCESS_clock.md=时钟）
@@ -660,6 +661,10 @@ class SystemPromptParts:
     # 「第几段 → 注入条件」（`@when=` 取值，见 prompt_refs.WHEN_*）。
     # 构建期只记录，发送期按当次请求是否群聊过滤（build_context 的 effective_system_prompt）。
     when_rules: list[tuple[int, str]] = field(default_factory=list)
+    # 全局设定段下标（-1 = 缺席）：锚点 before_persona 靠它定位"人设之前"
+    global_index: int = -1
+    # TOOL 段下标：`exclude_block: ["tool"]` 靠它剔除（files 可能同时声明 TOOL.md 与 TOOL.json）
+    tool_indexes: list[int] = field(default_factory=list)
 
 
 def _add_segment(parts: SystemPromptParts, content: str, when: str = "") -> int:
@@ -680,6 +685,18 @@ class ContextBundle:
     base_tail: list[dict] = field(default_factory=list)
     image_count: int = 0
     two_phase_world_info: bool = False
+
+
+def task_prompt_plan(task):
+    """本次任务的结构化调用计划（见 app/prompt_plan.py）；普通聊天 → None。"""
+    return getattr(task, "prompt_plan", None)
+
+
+def _plan_insert_messages(plan, anchor: str) -> list[dict]:
+    """结构化调用在某锚点的插入内容；没有计划 → 空列表。"""
+    if plan is None:
+        return []
+    return insert_messages(plan, anchor)
 
 
 class ContextBuilder:
@@ -720,7 +737,9 @@ class ContextBuilder:
             )
             content = raw_content.strip()
             if content:
-                _add_segment(parts, content, when)
+                # 全局设定永远在 files 循环之前，所以它一旦存在就是第 0 段；
+                # 记下下标供锚点 before_persona 定位（它也可能被 @when= 过滤掉）
+                parts.global_index = _add_segment(parts, content, when)
 
         for filename in self._config.get("files", []):
             key = str(filename).strip().lower()
@@ -744,6 +763,7 @@ class ContextBuilder:
                 # TOOL：选项写在 TOOL.md，清单统一来自全局 TOOL.json
                 tool_content = build_tool_injection(prompt_dir, filename, agent_id=agent.id)
                 if tool_content:
+                    parts.tool_indexes.append(len(parts.messages))
                     parts.messages.append({"role": "system", "content": tool_content})
                 continue
 
@@ -787,6 +807,22 @@ class ContextBuilder:
         system prompt 是**实例级**构建并缓存复用的，而这两个条件都是**请求级**的，
         所以只能在这里（发送期）过滤，不能在构建期丢弃。
         """
+        return [message for _, message in self._effective_segments(is_group=is_group)]
+
+    def _effective_segments(
+        self,
+        *,
+        is_group: bool = False,
+        exclude_block: frozenset[str] = frozenset(),
+    ) -> list[tuple[int, dict[str, str]]]:
+        """与 `effective_system_prompt` 同一套判定，但返回 `(原始下标, 段)`。
+
+        多返回原始下标是为了让组装期能定位锚点：`before_persona` 要知道"全局设定段
+        这一次是否幸存"，而这是**请求级**属性（`@when=` 可能把它滤掉）。
+
+        `exclude_block` 来自结构化调用计划（普通聊天为空集），只开放三个名字：
+        `tool`（剔除 TOOL 段）/ `world_info` / `memory`（后两个是机制级，见 build_send_context）。
+        """
         agent = self._agent
         blocked: set[int] = set()
 
@@ -801,9 +837,14 @@ class ContextBuilder:
             if (when == prompt_refs.WHEN_GROUP) != bool(is_group):
                 blocked.add(index)
 
-        if not blocked:
-            return agent.system_prompt
-        return [m for i, m in enumerate(agent.system_prompt) if i not in blocked]
+        if "tool" in exclude_block:
+            blocked.update(getattr(agent, "_tool_system_indexes", None) or [])
+
+        return [
+            (index, message)
+            for index, message in enumerate(agent.system_prompt)
+            if index not in blocked
+        ]
 
     # ── PROCESS / vars 结构化段 ─────────────────────────────
 
@@ -1137,19 +1178,49 @@ class ContextBuilder:
 
         # 群聊判定（用于 @when=group / @when=single）：按当次请求的 session_id / user_id
         # 前缀。实例级缓存的 system prompt 必须在这里按请求过滤，见 effective_system_prompt。
+        # ── 结构化调用计划（文字 RPG 用；普通聊天为 None）──
+        # 计划只在**组装期**生效，绝不写进实例上的 _prompt_parts：
+        # 那是实例级 LRU 缓存，写进去会跨调用 / 跨请求泄漏。
+        plan = task_prompt_plan(task)
+        excluded = plan.excluded() if plan is not None else frozenset()
+        world_info_excluded = "world_info" in excluded
+        memory_excluded = "memory" in excluded
+
         is_group = is_group_session(
             getattr(getattr(task, "user", None), "session_id", ""),
             getattr(getattr(task, "user", None), "id", ""),
         )
-        system_prompt_messages = self.effective_system_prompt(is_group=is_group)
+        segments = self._effective_segments(is_group=is_group, exclude_block=excluded)
+        system_prompt_messages = [message for _, message in segments]
+
+        # 锚点 before_persona：全局设定段之后（它缺席 / 被 @when 滤掉时 = 系统提示词最前）
+        global_index = getattr(self._agent, "_global_system_index", -1)
+        persona_pos = 1 if any(index == global_index for index, _ in segments) else 0
+        persona_inserts = _plan_insert_messages(plan, "before_persona")
+        if persona_inserts:
+            system_prompt_messages = (
+                system_prompt_messages[:persona_pos]
+                + persona_inserts
+                + system_prompt_messages[persona_pos:]
+            )
 
         # 仅用户请求的首次 send() 计入轮次（caller 为 user 对象）；
         # 工具回执、智能体转交等内部回调 caller 是智能体，不计时。
-        process_message = self.build_process_message(
-            count_turn=bool(getattr(task, "caller", None) is getattr(task, "user", None))
+        # memory 被屏蔽 → 连轮次都不计（PROCESS 存储不落盘、计数器不动）
+        process_message = (
+            None
+            if memory_excluded
+            else self.build_process_message(
+                count_turn=bool(getattr(task, "caller", None) is getattr(task, "user", None))
+            )
         )
         if process_message:
             system_prompt_messages = system_prompt_messages + [process_message]
+
+        # 锚点 before_history：系统提示词段（含 PROCESS）之后、历史块之前
+        system_prompt_messages = system_prompt_messages + _plan_insert_messages(
+            plan, "before_history"
+        )
 
         task_memory_messages = []
         if agent.id == "main":
@@ -1184,26 +1255,36 @@ class ContextBuilder:
         # 数值段（vars）插在用户对话前、世界书后：
         # - messages 组装时放 current_input 前面
         # - base_tail 同样前置 vars，世界书注入时 tail=[世界书块]+tail → 世界书→vars→用户对话
-        vars_message = self.build_vars_message()
+        vars_message = None if memory_excluded else self.build_vars_message()
         vars_list = [vars_message] if vars_message else []
 
-        messages = (
+        # 锚点 before_input / after_input：紧贴本轮输入的两侧
+        before_input_messages = _plan_insert_messages(plan, "before_input")
+        after_input_messages = _plan_insert_messages(plan, "after_input")
+
+        # 世界书注入段插在 current_input（"以下为本次单轮对话内容"）上方：
+        # base_head = 到 user_input 为止；base_tail = vars + 插入 + current_input + 插入。
+        # 两者相加必须**严格等于** messages —— 两阶段世界书走的是 base_head + tail 这条路径，
+        # 只改一处会让"单次调用"和"两阶段调用"的提示词不一致。
+        base_head = (
             system_prompt_messages
             + long_context_message
             + task_memory_messages
             + user_input_messages
-            + vars_list
-            + current_input_messages
         )
-        # 世界书注入段插在 current_input（"以下为本次单轮对话内容"）上方：
-        # base_head = 到 user_input 为止，base_tail = vars + current_input
-        base_head = system_prompt_messages + long_context_message + task_memory_messages + user_input_messages
-        base_tail = vars_list + current_input_messages
+        base_tail = (
+            vars_list
+            + before_input_messages
+            + current_input_messages
+            + after_input_messages
+        )
+        messages = base_head + base_tail
 
         image_count = len(dialog_images) + len(list(getattr(task, "images", None) or []))
         # 两阶段世界书：仅用户请求轮 + files 声明 world_info.md + 无图片（多模态轮保持单次）
         two_phase = (
             image_count == 0
+            and not world_info_excluded
             and self.world_info_enabled()
             and bool(getattr(task, "caller", None) is getattr(task, "user", None))
         )

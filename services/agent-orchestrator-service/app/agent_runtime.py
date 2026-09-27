@@ -7,16 +7,18 @@ from app import config
 from app import world_info_manager
 from app.agent_config import load_agent_config
 from app.context_builder import (
+    GROUP_SESSION_PREFIXES,
     ContextBuilder,
     SystemPromptParts,
     image_receive_enabled,
     load_system_settings,
     prompt_revision,
 )
-from app.context_client import ContextClient
+from app.context_client import AUTHOR_IN_CONTENT_KEY, ContextClient
 from app.events import TaskEventDTO, DeliveryTarget, new_event_id
 from app.logger import chat_log, debug_log
 from app.model_proxy_client import ModelProxyClient
+from app.prompt_plan import PromptPlanError, parse_prompt_plan
 from app.response_parser import parse_model_response
 from app.syntax_parser import parse_syntax
 from app.tool_runtime_client import ToolRuntimeClient
@@ -105,6 +107,16 @@ class AgentRuntime:
     @property
     def _world_info_override_content(self) -> str:
         return self._prompt_parts.world_info_override
+
+    @property
+    def _tool_system_indexes(self) -> list[int]:
+        """TOOL 段下标（`exclude_block: ["tool"]` 用）。"""
+        return self._prompt_parts.tool_indexes
+
+    @property
+    def _global_system_index(self) -> int:
+        """全局设定段下标（-1 = 缺席）；锚点 before_persona 靠它定位"人设之前"。"""
+        return self._prompt_parts.global_index
 
     def build_system_prompt(self):
         """构建 system prompt（GLOBAL_SETTING / files 声明 / PROCESS / TOOL / 世界书）。
@@ -554,6 +566,22 @@ class AgentRuntime:
             cls.default_agent[task.user.session_id] = agent_id
         target = cls.get_agent(agent_id, task.user.session_id, task.user.id)
         task.target = target
+
+        # 结构化调用（文字 RPG）：用户输入里是一段 JSON（见 app/prompt_plan.py）。
+        # 解析成功 → 计划挂到 task 上（组装期读它做块屏蔽 / 四锚点插入），并把 JSON
+        # 指令区从 task 的三份副本里整体摘掉 → 模型与历史都只看到 `text`。
+        # 解析不出（普通聊天）→ 返回 None，什么都不做。
+        # 确认是结构化调用但不合法 → 抛 PromptPlanError，由 process_task **显式失败**。
+        plan = parse_prompt_plan(task.content)
+        if plan is not None:
+            task.prompt_plan = plan
+            task.replace_input_content(plan.text)
+            debug_log(
+                f"[{task.user.id}] [prompt_plan] 屏蔽={list(plan.exclude_block) or '无'} "
+                f"插入={sum(len(items) for items in plan.inserts.values())}段 "
+                f"在场={list(plan.present) or '无'}"
+            )
+
         chat_log(f"[{task.user.id}] {task.user.session_id}->{target.id}\n{task.content}")
         debug_log(f"[{task.user.id}] [user_chat]{task.user.session_id}->{target.id}")
 
@@ -576,6 +604,22 @@ class AgentRuntime:
                     cls.first_call(task)
                     task.default_agent = task.target
                     task.default_agent.send(task, emit)
+                except PromptPlanError as exc:
+                    # 结构化调用不合法：**显式失败**。
+                    # 这个 except 必须排在通用 except 之前 —— 否则会被下面的 raw fallback
+                    # 吞成"任务处理异常"，写外部程序的那个 AI 会完全没有线索。
+                    # 此处 task.content 仍是原始 JSON（替换只在解析成功后发生），
+                    # 所以把原文一起回给调用方，便于定位。
+                    reason = f"结构化调用不合法：{exc}"
+                    debug_log(f"[{task.user.id}] {reason}")
+                    task.status = "failed"
+                    emit(cls.build_event(
+                        task,
+                        "task_failed",
+                        error=reason,
+                        text=f"{reason}\n原文（前 300 字）：{str(task.content)[:300]}",
+                    ))
+                    return reason
                 except Exception as exc:
                     raw_output = task.consume_temp_dialog_output() or task.send_text or ""
                     return cls._emit_raw_model_fallback(task, emit, str(raw_output), exc)
@@ -583,6 +627,90 @@ class AgentRuntime:
             return cls._continue_task(task, emit)
         finally:
             cls._unregister_running(task)
+
+    @classmethod
+    def _append_turn_for_recipients(
+        cls,
+        task,
+        *,
+        recorded_message: str,
+        speaker_id: str,
+        commit_limit: int = 0,
+        max_messages: int = 6,
+    ) -> None:
+        """把这一轮写进短期记忆（openviking）。
+
+        - **普通聊天**（没有结构化调用计划）：只写一次，行为与改造前完全一致。
+        - **结构化调用**（文字 RPG）：按在场列表**逐人各写一份** —— 每个在场 NPC 一份
+          自己的 session；正文首部写**真实发言者**并声明 `author_in_content`，
+          存储层因此不会再补一次前缀（否则会变成 `<收件人>: <发言者>: …`，
+          而读取侧只取最外层前缀 → 人人都把别人的话当成自己说的）。
+
+        在场列表由外部程序给出。**发言者永远在内**（漏写会导致 NPC 不记得自己刚说的话）；
+        列表为空 → 失败闭合，只写发言者自己。
+        """
+        plan = task.prompt_plan
+        if plan is None:
+            cls.context_client.append_turn(
+                user_id=task.user.id,
+                session_id=task.user.session_id,
+                task_id=task.task_id,
+                user_message=task.content,
+                assistant_message=recorded_message,
+                agent_id=speaker_id,
+                tool_summaries=[],
+                commit_limit=commit_limit,
+                max_messages=max_messages,
+            )
+            return
+
+        recipients = [speaker_id]
+        for name in plan.present:
+            name = str(name or "").strip()
+            if name and name not in recipients:
+                recipients.append(name)
+
+        # session 若带 grp_ / qq_g_ 前缀，存储层（VikingStore.full_session_id）会**强制共享**
+        # 同一个 session。此时扇出不再是"每人一份"，而是把同一轮写进去 k 次（内容完全相同），
+        # 只在共享历史里留一堆重复记录。所以这种情况只写一次。
+        # 注意：这里**不报错** —— 隔离失效可以接受，块屏蔽与插入必须照常生效（注入优先）。
+        if str(getattr(task.user, "session_id", "") or "").startswith(GROUP_SESSION_PREFIXES):
+            if len(recipients) > 1:
+                debug_log(
+                    f"[{task.user.id}] [prompt_plan] session 为群共享（{task.user.session_id}），"
+                    f"扇出退化为单次写入（按 agent 隔离已失效）"
+                )
+            recipients = recipients[:1]
+
+        failed: list[str] = []
+        for recipient in recipients:
+            try:
+                ok = cls.context_client.append_turn(
+                    user_id=task.user.id,
+                    session_id=task.user.session_id,
+                    task_id=task.task_id,
+                    user_message=task.content,
+                    assistant_message=f"<{speaker_id}>: {recorded_message}",
+                    agent_id=recipient,
+                    tool_summaries=[],
+                    commit_limit=commit_limit,
+                    max_messages=max_messages,
+                    metadata={AUTHOR_IN_CONTENT_KEY: "true"},
+                )
+            except Exception as exc:
+                ok = False
+                debug_log(f"[{task.user.id}] [prompt_plan] 扇出写入异常 {recipient}: {exc}")
+            if not ok:
+                failed.append(recipient)
+
+        if failed:
+            # 某一份写失败 = 这个 NPC 的记忆与在场其他人**分叉**（后续剧情会互相矛盾）。
+            # 绝不能静默：至少让它进日志可查。（openviking 不可用时 append_turn 会降级
+            # 到本地存储并返回 False，所以这里也会被记上。）
+            debug_log(
+                f"[{task.user.id}] [prompt_plan] 扇出写入未成功 {len(failed)}/{len(recipients)}："
+                f"{'、'.join(failed)}（openviking 可能已降级到本地存储）"
+            )
 
     @classmethod
     def _continue_task(cls, task, emit: Callable[[TaskEventDTO], None]) -> str:
@@ -670,6 +798,13 @@ class AgentRuntime:
                 default_agent_id = getattr(default_agent, "id", "main")
                 default_agent_config = getattr(default_agent, "config", {}) or {}
                 record_mode = str(default_agent_config.get("record_mode", "final") or "final").strip().lower()
+                # 结构化调用（文字 RPG）：写进历史的内容必须是**发言者本轮自己的产出**。
+                # 复用既有的 record_mode 优先级，只是强制走 intermediate —— 因为 final_reply
+                # 可能是下游 agent 的输出或框架回执（"已添加世界书条目…"），把它当成发言者
+                # 说的话写进共享历史，等于替 NPC 说了它没说过的話，而群内每个在场 NPC 都会
+                # 读到这句。（intermediate_texts 就是"协议指令之前说的那段话"，见 send()。）
+                if task.prompt_plan is not None:
+                    record_mode = "intermediate"
                 if record_mode == "intermediate":
                     # 只记录第一步返回的前半段（中间推送内容）；没有则回退最终回复。
                     recorded_message = task.intermediate_texts[0] if task.intermediate_texts else final_reply
@@ -682,14 +817,10 @@ class AgentRuntime:
                     recorded_message = final_reply
                 if not recorded_message:
                     recorded_message = final_reply
-                cls.context_client.append_turn(
-                    user_id=task.user.id,
-                    session_id=task.user.session_id,
-                    task_id=task.task_id,
-                    user_message=task.content,
-                    assistant_message=recorded_message,
-                    agent_id=task.agent_id or default_agent_id,
-                    tool_summaries=[],
+                cls._append_turn_for_recipients(
+                    task,
+                    recorded_message=recorded_message,
+                    speaker_id=task.agent_id or default_agent_id,
                     commit_limit=int(default_agent_config.get("commit_limit", 0) or 0),
                     max_messages=int(default_agent_config.get("max_messages", 6) or 6),
                 )

@@ -22,8 +22,19 @@ from typing import Any
 
 from app import config
 from app.logger import debug_log, log
-from app.text_utils import clean_text
+from app.text_utils import clean_text, format_assistant_content
 from app.world_info import search_world_info as _world_info_search
+
+# AppendTurnRequest.metadata 键：调用方声明「assistant 正文首部已带真实发言者」。
+# 多 agent 扇出写入时 agent_id 是**收件人**（要拿去拼 session key），真实发言者由调用方
+# 写在正文首部；此时不能再无条件补前缀，否则正文会变成 `<收件人>: <发言者>: …`，
+# 而读取侧（history_speaker）只取最外层前缀 → 每个收件人都把别人的话当成自己说的。
+AUTHOR_IN_CONTENT_KEY = "author_in_content"
+
+
+def _truthy(value) -> bool:
+    """宽容布尔解析（与项目其他地方同口径）。缺失 / 无法识别 → False。"""
+    return str(value or "").strip().lower() in ("true", "1", "yes", "on", "是", "开")
 
 
 def _run_coro_sync(coro):
@@ -645,6 +656,7 @@ class OpenVikingServerBackend:
         tool_summaries: list[str],
         commit_limit: int,
         max_messages: int = 0,
+        metadata: dict[str, str] | None = None,
     ) -> tuple[bool, str]:
         client = await self._new_client(user_id=user_id, agent_id=agent_id)
         try:
@@ -682,6 +694,9 @@ class OpenVikingServerBackend:
 
             def _strip_tag(text: str) -> str:
                 # 去掉开头的 <xxx>: 或 <xxx> 前缀（如 <lilith>: 或 <web_h268>）
+                # 注意：这里比 AUTHOR_PREFIX_RE 宽松（冒号可选、名字不限长），因为它只服务
+                # 下面的「转场输入」子串比对；**归属判定请用 format_assistant_content**，
+                # 不要把两者统一，宽口径会把 <web_h268> 这种纯标签也当成说话人。
                 m = re.match(r"^\s*<[^>]*>:?\s*", str(text or ""))
                 return str(text)[m.end():] if m else str(text)
 
@@ -702,24 +717,22 @@ class OpenVikingServerBackend:
                     role_id=user_id,
                 )
 
-            # assistant 段：存储拼 <agent_id>: 前缀。
-            # 模型回复可能自带自写前缀（模仿群聊格式）：
-            # - 与真实 agent_id 一致（<alice>: ...）→ 去重只留一个前缀
-            # - 不一致（冒充其他角色 <lilith>: ...）→ 保留原样（保住模型表达的视角）
-            _assistant_raw = str(assistant_message or "")
-            _assistant_body = _assistant_raw
-            for _pfx in (
-                f"<{agent_id or 'main'}>:", f"{agent_id or 'main'}:",
-                f"<{agent_id or 'main'}>：", f"{agent_id or 'main'}：",
-            ):
-                if _assistant_raw.startswith(_pfx):
-                    _assistant_body = _assistant_raw[len(_pfx):].strip()
-                    break
+            # assistant 段归属：**以文本内容为准**（见 text_utils.format_assistant_content）
+            # - 正文首部已带 `<名字>:`（调用方在群聊 / 多 agent 扇出时写入的真实发言者）
+            #   → 原样存储，不再补前缀
+            # - 否则补 `<agent_id>: `（私聊等场景的旧行为，与改造前一致）
+            # role_id 始终记真实产出者 agent_id，与正文前缀解耦。
             await self._add_message_compat(
                 add_message,
                 session_id=full_session_id,
                 role="assistant",
-                content=f"<{agent_id or 'main'}>: {_assistant_body}",
+                content=format_assistant_content(
+                    assistant_message,
+                    agent_id,
+                    authoritative_prefix=_truthy(
+                        (metadata or {}).get(AUTHOR_IN_CONTENT_KEY)
+                    ),
+                ),
                 role_id=agent_id or "main",
             )
 
@@ -983,6 +996,7 @@ class VikingStore:
         tool_summaries: list[str],
         commit_limit: int,
         max_messages: int = 0,
+        metadata: dict[str, str] | None = None,
     ) -> tuple[bool, str]:
         full_id = self.full_session_id(agent_id, session_id)
 
@@ -1003,6 +1017,7 @@ class VikingStore:
                 tool_summaries=tool_summaries,
                 commit_limit=commit_limit,
                 max_messages=max_messages,
+                metadata=metadata,
             ))
             if not ok:
                 debug_log(f"server append_turn failed: {error}")

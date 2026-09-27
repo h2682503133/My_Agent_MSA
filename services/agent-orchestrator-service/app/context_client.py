@@ -4,6 +4,12 @@ from pathlib import Path
 import grpc
 
 from app import config
+
+# AppendTurnRequest.metadata 键：声明 "assistant 正文首部已带真实发言者"（多 agent 扇出写入用）。
+# ⚠️ 必须与 openviking-context-service 的 viking_store.AUTHOR_IN_CONTENT_KEY 完全一致：
+# 两边一旦漂移，扇出写入会被存储层再补一次 `<收件人>: ` 前缀，而读取侧只取最外层 →
+# 每个收件人都把别人的话当成自己说的。tools/prompt_plan_fanout_smoke_test.py 有比对。
+AUTHOR_IN_CONTENT_KEY = "author_in_content"
 from app.local_context import append as local_append
 from app.local_context import search as local_search
 from app.logger import debug_log
@@ -153,6 +159,7 @@ class ContextClient:
         tool_summaries=None,
         commit_limit: int = 0,
         max_messages: int = 6,
+        metadata=None,
     ):
         if openviking_context_pb2 is None:
             raise RuntimeError("openviking_context protobuf is not generated")
@@ -166,7 +173,8 @@ class ContextClient:
                 user_message=user_message,
                 assistant_message=assistant_message,
                 tool_summaries=tool_summaries or [],
-                metadata={},
+                # metadata 透传（多 agent 扇出时用 author_in_content 声明"正文首部已带真实发言者"）
+                metadata=dict(metadata or {}),
                 commit_limit=commit_limit,
                 max_messages=max_messages,
             )

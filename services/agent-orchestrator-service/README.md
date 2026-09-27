@@ -365,3 +365,33 @@ tool-runtime-service:5303
 - 存储于 config 卷（`PROCESS_DIR` 同级 `local_context/` 目录），JSON 文件形式，重启后可延续。
 - `SearchContext` 失败 → 返回本地最近回合；本地无历史时返回「长期记忆服务未启用」提示。
 - `AppendTurn` 失败 → 写入本地最近回合，对话连续性不受影响。
+  （注意：本地降级存储**不加**说话人前缀，扇出时正文已带前缀所以天然正确。）
+
+## 结构化调用（文字 RPG 的外部驱动协议）
+
+支持把**用户输入整体当成一段 JSON** 来驱动一次调用（外部程序当游戏引擎、agent 当 NPC）。
+**普通聊天完全不受影响**：判定不通过就完全不解析，`task` 一个字段都不动。
+完整设计见仓库根 `上下文管理.md` 第 9 节；代码在 `app/prompt_plan.py`。
+
+最小形态（只有 `text` 必填）：
+
+```json
+{
+  "text": "玩家推开了门",
+  "exclude_block": ["tool"],
+  "insert": [{"at": "before_input", "content": ["HP=10，位置：酒馆"]}],
+  "present": ["alice", "bob"]
+}
+```
+
+| 键 | 含义 |
+|---|---|
+| `text` | **唯一必填**。解析后取代 `task.content` —— 模型与历史都只看到它 |
+| `exclude_block` | 只关不开，可选 `tool` / `world_info` / `memory` |
+| `insert` | `{"at": 锚点, "content": ["…", "…"]}`，按顺序以 `system` 消息插入。锚点：`before_persona` / `before_history` / `before_input` / `after_input` |
+| `present` | 本次在场 NPC；收尾时逐人各写一份历史（正文首部写真实发言者） |
+
+失败语义：
+
+- JSON 解析不了 / 不以 `{` 开头 / 没有已知键 → **当普通内容**（不解析、不报错）
+- 有已知键但字段不合法 → `task_failed` 事件 + 原文前 300 字（显式，不被 raw fallback 吞）

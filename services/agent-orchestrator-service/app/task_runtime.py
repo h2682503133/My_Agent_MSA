@@ -67,12 +67,39 @@ class TaskRuntime:
     paused_by_interrupt: bool = False
     pending_interjection: str = ""
 
+    # ─── 结构化调用（文字 RPG）────────────────────────────────
+    # 由 first_call() 从用户输入解析出来（见 app/prompt_plan.py）；普通聊天为 None。
+    # context_builder 在组装期读取：块屏蔽 / 四个锚点插入；收尾时用 present 扇出写入。
+    prompt_plan: Any = None
+
+    @staticmethod
+    def _dialog_input_text(content: str) -> str:
+        """send() 真正喂给模型的本轮输入文本（带请求时间前缀）。"""
+        return (
+            f"请求时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f",请求内容:{content}"
+        )
+
     def __post_init__(self) -> None:
         self.caller = self.user
-        self.set_temp_dialog_input(
-            f"请求时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')},请求内容:{self.content}"
-        )
+        self.set_temp_dialog_input(self._dialog_input_text(self.content))
         self.push_context(self.user, self.content)
+
+    def replace_input_content(self, new_content: str) -> None:
+        """整体替换本轮输入内容（结构化调用摘掉 JSON 指令区后只剩 text）。
+
+        `content` 在 __post_init__ 时就已经被复制成**三份**，只换 self.content 会漏掉
+        模型路径与投递路径，指令区会继续进提示词并落盘到历史，所以三处必须一起换：
+
+        ① `self.content`          —— main 的 user_input 段 + append_turn 落盘的历史
+        ② `self.temp_dialog_input` —— send() 里 consume 后真正发给模型的那份
+        ③ `agent_context` 栈底帧的 input —— 终局投递内容
+           （first_call 只在栈长 == 1 时被调用，所以栈底就是用户那一帧）
+        """
+        self.content = new_content
+        self.set_temp_dialog_input(self._dialog_input_text(new_content))
+        if self.agent_context:
+            self.agent_context[0]["input"] = new_content
 
     @classmethod
     def from_execute_request(cls, request) -> "TaskRuntime":

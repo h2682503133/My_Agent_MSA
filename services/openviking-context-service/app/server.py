@@ -60,6 +60,7 @@ class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServ
             tool_summaries=list(request.tool_summaries),
             commit_limit=request.commit_limit,
             max_messages=request.max_messages,
+            metadata=dict(request.metadata),
         )
         return openviking_context_pb2.AppendTurnResponse(ok=ok, error=error)
 
