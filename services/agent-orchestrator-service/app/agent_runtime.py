@@ -20,7 +20,12 @@ from app.logger import chat_log, debug_log
 from app.model_proxy_client import ModelProxyClient
 from app.prompt_plan import PromptPlanError, parse_prompt_plan
 from app.response_parser import parse_model_response
-from app.syntax_parser import parse_syntax
+from app.syntax_parser import (
+    has_misformatted_directive,
+    parse_syntax,
+    render_dispatch_memory,
+    render_return_memory,
+)
 from app.tool_runtime_client import ToolRuntimeClient
 from app.timer_task_client import TimerTaskClient
 
@@ -748,7 +753,7 @@ class AgentRuntime:
             interjection = task.pending_interjection
             task.pending_interjection = ""
             if task.target is not None and hasattr(task.target, 'id') and task.target.id == "main":
-                task.main_memory.append(f"←{returning_agent_id}: {str(output)}")
+                task.main_memory.append(render_return_memory(returning_agent_id, str(output)))
 
             if cls._is_user_object(task.target, task):
                 agent_id = getattr(getattr(task, "default_agent", None), "id", "") or getattr(task, "agent_id", "") or "main"
@@ -984,6 +989,16 @@ class AgentRuntime:
 
             parse_syntax(self, task)
             result = task.consume_temp_dialog_output()
+
+            # 伪指令告警：`→tool: …` 不是协议，本轮会被当普通文本处理。
+            # 静默是这类 bug 最糟的部分（模型以为转交了、实际什么都没发生），
+            # 所以这里显式记一笔，便于线上发现复发。
+            if has_misformatted_directive(raw_model_text):
+                debug_log(
+                    f"[{self.user_id}] [protocol] {self.id} 输出了非规范的箭头写法"
+                    "（→agent: …）：它不是指令、不会被执行，已按普通文本处理；"
+                    "正确写法是 对话:agent_id|内容。"
+                )
 
             # 模型在指令前输出的说明文本：当本轮转入后台执行（工具/转交/询问/定时任务/世界书）时，
             # 先把说明文本作为中间消息发给用户，避免它随协议行一起被丢弃。
@@ -1221,7 +1236,9 @@ class AgentRuntime:
         task.last_dialog_content = content or ""
         task.push_context(self, "【已发送给" + target_agent_id + "】\n" + content)
         if self.id == "main":
-            task.main_memory.append(f"→{target_agent_id}: {content}")
+            # 刻意**不**写成 `→tool: …`：那会和协议撞车，模型会把记忆里的渲染
+            # 当成 `对话:tool|…` 的替代写法（见 syntax_parser 的伪指令注释）。
+            task.main_memory.append(render_dispatch_memory(target_agent_id, content))
         chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
         debug_log(f"[{self.user_id}] [agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
         task.target = AgentRuntime.get_agent(target_agent_id, self.session_id, task.user.id)

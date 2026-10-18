@@ -100,9 +100,9 @@ def expect_plan(
 
 
 print("── 契约常量 ──")
-assert BLOCK_WHITELIST == ("tool", "world_info", "memory"), BLOCK_WHITELIST
+assert BLOCK_WHITELIST == ("tool", "world_info", "memory", "openviking"), BLOCK_WHITELIST
 assert INSERT_ANCHORS == ("before_persona", "before_history", "before_input", "after_input"), INSERT_ANCHORS
-ok("只开放三个可屏蔽块（tool / world_info / memory）")
+ok("只开放四个可屏蔽块（tool / world_info / memory / openviking）")
 ok("四个插入位置且顺序固定")
 ok("屏蔽键名为 exclude_block（不再是 blocks）")
 
@@ -163,9 +163,12 @@ expect_plan("text 允许为空字符串", j({"text": ""}), text="")
 expect_plan("exclude_block 去重且保持顺序",
             j({"text": "x", "exclude_block": ["world_info", "tool", "world_info"]}),
             exclude_block=("world_info", "tool"))
-expect_plan("exclude_block 三个全给",
-            j({"text": "x", "exclude_block": ["tool", "world_info", "memory"]}),
-            exclude_block=("tool", "world_info", "memory"))
+expect_plan("exclude_block 四个全给",
+            j({"text": "x", "exclude_block": ["tool", "world_info", "memory", "openviking"]}),
+            exclude_block=("tool", "world_info", "memory", "openviking"))
+expect_plan("exclude_block 只给 openviking",
+            j({"text": "x", "exclude_block": ["openviking"]}),
+            exclude_block=("openviking",))
 expect_plan("present 去重且保持顺序", j({"text": "x", "present": ["bob", "alice", "bob"]}),
             present=("bob", "alice"))
 expect_plan("present 为空列表 → 空", j({"text": "x", "present": []}), present=())

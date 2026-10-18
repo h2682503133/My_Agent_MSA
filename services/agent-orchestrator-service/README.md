@@ -291,6 +291,10 @@ LRU 复用（见 `上下文管理.md` 第 8 节）。没有热重载时，改完
 
 - **只重排 role 与合并，不改动任何正文**（`<name>:` 标记保留，与 `GLOBAL_SETTING.md` 的
   `<ID>` 约定同源）
+- **唯一例外：伪指令行**。`→tool: …` / `←main: …` 这类箭头写法从来没被解析执行过
+  （`_find_command_block` 不认箭头），留着会教模型把它当"转交指令"复读——实测自锁过一次。
+  注入前在 assistant 侧整行剔除（库里原文不动），整条被清空的消息一并丢弃。
+  成因与三道防线见仓库根 `上下文管理.md` §6.1
 - 单角色私聊**天然退化为恒等变换**（那里的历史不是自己的就是用户的），所以私聊路径零回归
 - 历史块上方的免责框 `HISTORY_DISCLAIMER` 作用范围是**它下面的整个历史块**，
   且带优先级裁决（与上方系统设定矛盾时以系统设定为准）
@@ -299,6 +303,7 @@ LRU 复用（见 `上下文管理.md` 第 8 节）。没有热重载时，改完
 
 ```bash
 python tools/history_shape_smoke_test.py          # 37 项，含私聊恒等与全部边界
+python tools/directive_guard_smoke_test.py        # 28 项，伪指令渲染/清洗/告警
 # 实时检查（集群内跑，验收标准是"错通道清零"，改造前基线 31/66）
 kubectl -n agent cp tools/history_shape_live_check.py <pod>:/tmp/check.py
 kubectl -n agent exec <pod> -- python /tmp/check.py
@@ -387,7 +392,7 @@ tool-runtime-service:5303
 | 键 | 含义 |
 |---|---|
 | `text` | **唯一必填**。解析后取代 `task.content` —— 模型与历史都只看到它 |
-| `exclude_block` | 只关不开，可选 `tool` / `world_info` / `memory` |
+| `exclude_block` | 只关不开，可选 `tool` / `world_info` / `memory` / `openviking`（`openviking` 只停注入、不停写入，且连检索都不发） |
 | `insert` | `{"at": 锚点, "content": ["…", "…"]}`，按顺序以 `system` 消息插入。锚点：`before_persona` / `before_history` / `before_input` / `after_input` |
 | `present` | 本次在场 NPC；收尾时逐人各写一份历史（正文首部写真实发言者） |
 

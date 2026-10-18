@@ -111,6 +111,7 @@ from app import config
 from app import prompt_refs
 from app.logger import debug_log
 from app.prompt_plan import insert_messages
+from app.syntax_parser import strip_misformatted_directives
 
 # PROCESS 长期事件记录：文件名即模式声明
 # （PROCESS.md=不报时 / PROCESS_turn.md=轮次计数 / PROCESS_clock.md=时钟）
@@ -246,6 +247,12 @@ def shape_history_messages(messages, *, self_id: str) -> list[dict]:
     只重排 role 与合并，**不改动任何正文**（`<name>:` 标记保留，与 GLOBAL_SETTING.md 的
     `<ID>` 约定同源）。
 
+    唯一例外：**伪指令行**（`→tool: …` / `←main: …` 这类箭头写法）在注入前整行剔除，
+    清空的消息一并丢掉。这些行从来没被解析执行过（`_find_command_block` 不认箭头），
+    留着只会让模型把它当成"转交指令"继续模仿 —— 实测过一次自锁：
+    main 把记忆里的 `→tool: …` 当成 `对话:tool|…` 的替代写法，此后连续多轮
+    "写了转交但其实什么都没发生"。清洗只作用于**注入**，库里的原文不动。
+
     单角色私聊天然退化为恒等变换：那里的历史要么是自己的（assistant，保持），要么是用户
     的（role=user，保持），所以逐条与原样返回等价 —— 私聊路径零回归。
     """
@@ -261,6 +268,11 @@ def shape_history_messages(messages, *, self_id: str) -> list[dict]:
 
     for message in messages or []:
         content = str(message.get("content") or "")
+        # 只清洗 assistant 侧：伪指令是**模型自己写的**，用户消息里出现箭头是另一种东西
+        if message.get("role") == "assistant":
+            content = strip_misformatted_directives(content)
+            if not content.strip():
+                continue
         if content.lstrip().startswith(_NON_DIALOGUE_PREFIX):
             flush()
             ordered.append(dict(message))
@@ -820,8 +832,9 @@ class ContextBuilder:
         多返回原始下标是为了让组装期能定位锚点：`before_persona` 要知道"全局设定段
         这一次是否幸存"，而这是**请求级**属性（`@when=` 可能把它滤掉）。
 
-        `exclude_block` 来自结构化调用计划（普通聊天为空集），只开放三个名字：
-        `tool`（剔除 TOOL 段）/ `world_info` / `memory`（后两个是机制级，见 build_send_context）。
+        `exclude_block` 来自结构化调用计划（普通聊天为空集），只开放四个名字：
+        `tool`（剔除 TOOL 段）/ `world_info` / `memory` / `openviking`
+        （后三个是机制级，见 build_send_context）。
         """
         agent = self._agent
         blocked: set[int] = set()
@@ -1159,33 +1172,41 @@ class ContextBuilder:
                     "但系统当前未开启图片接收，图片已被忽略。）"
                 )
 
-        # 短期 session 记忆（对话历史）：先按说话人重分配 role，再接在免责框下面。
-        # 免责框（HISTORY_DISCLAIMER）作用范围是**它下面的整个历史块**
-        # （【会话摘要】/【相关记忆】/ 对话历史），见 shape_history_messages 的说明。
-        # 摘要与相关记忆按当前决定原样透传，只重排对话历史这一段。
-        history_messages = agent.context_client.search_context(
-            user_id=task.user.id,
-            session_id=task.user.session_id,
-            agent_id=agent.id,
-            query=content,
-            max_messages=int(self._config.get("max_messages", 6) or 6),
-            max_tokens=int(self._config.get("context_max_tokens", 3000) or 3000),
-            commit_limit=int(self._config.get("commit_limit", 0) or 0),
-        )
-        long_context_message = [
-            {"role": "system", "content": HISTORY_DISCLAIMER}
-        ] + shape_history_messages(history_messages, self_id=agent.id)
-
-        # 群聊判定（用于 @when=group / @when=single）：按当次请求的 session_id / user_id
-        # 前缀。实例级缓存的 system prompt 必须在这里按请求过滤，见 effective_system_prompt。
         # ── 结构化调用计划（文字 RPG 用；普通聊天为 None）──
         # 计划只在**组装期**生效，绝不写进实例上的 _prompt_parts：
         # 那是实例级 LRU 缓存，写进去会跨调用 / 跨请求泄漏。
+        # 必须先解析：历史块是否注入、要由计划里的 openviking 决定（见下）。
         plan = task_prompt_plan(task)
         excluded = plan.excluded() if plan is not None else frozenset()
         world_info_excluded = "world_info" in excluded
         memory_excluded = "memory" in excluded
+        openviking_excluded = "openviking" in excluded
 
+        # 短期 session 记忆（对话历史）：先按说话人重分配 role，再接在免责框下面。
+        # 免责框（HISTORY_DISCLAIMER）作用范围是**它下面的整个历史块**
+        # （【会话摘要】/【相关记忆】/ 对话历史），见 shape_history_messages 的说明。
+        # 摘要与相关记忆按当前决定原样透传，只重排对话历史这一段。
+        # openviking 被屏蔽时：**连检索都不发**（省一次 gRPC 与预算），
+        # 免责框也一并移除 —— 只留一个空免责框等于给模型一个没有下文的框。
+        # 屏蔽只作用于**注入**：本轮事件仍照常写入（见 agent_runtime 的扇出写入）。
+        if openviking_excluded:
+            long_context_message: list[dict] = []
+        else:
+            history_messages = agent.context_client.search_context(
+                user_id=task.user.id,
+                session_id=task.user.session_id,
+                agent_id=agent.id,
+                query=content,
+                max_messages=int(self._config.get("max_messages", 6) or 6),
+                max_tokens=int(self._config.get("context_max_tokens", 3000) or 3000),
+                commit_limit=int(self._config.get("commit_limit", 0) or 0),
+            )
+            long_context_message = [
+                {"role": "system", "content": HISTORY_DISCLAIMER}
+            ] + shape_history_messages(history_messages, self_id=agent.id)
+
+        # 群聊判定（用于 @when=group / @when=single）：按当次请求的 session_id / user_id
+        # 前缀。实例级缓存的 system prompt 必须在这里按请求过滤，见 effective_system_prompt。
         is_group = is_group_session(
             getattr(getattr(task, "user", None), "session_id", ""),
             getattr(getattr(task, "user", None), "id", ""),

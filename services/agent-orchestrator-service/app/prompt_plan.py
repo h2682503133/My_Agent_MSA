@@ -14,7 +14,7 @@
       "text": "本轮叙事 / 玩家输入"
     }
 
-- `exclude_block`  **要屏蔽**的系统提示词块。只开放确实需要屏蔽的三个（见 `BLOCK_WHITELIST`），
+- `exclude_block`  **要屏蔽**的系统提示词块。只开放确实需要屏蔽的四个（见 `BLOCK_WHITELIST`），
   不存在"打开未声明的块"的写法 —— 那等于给运行期的 `@ref=`，会让 NPC 互读人设。
 - `insert`  在指定位置插入自定义块。`content` 是字符串列表，**按数组顺序依次插入**；
   同一锚点可以出现多次（跨条目累积，顺序 = 声明顺序）。四个位置不必都有。
@@ -51,11 +51,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-# 允许被屏蔽的块：只开放"确实需要屏蔽"的三个。
+# 允许被屏蔽的块：只开放"确实需要屏蔽"的四个。
 # - tool        NPC 不该有工具能力（外部接管重要事件与人工世界书编写 / 有限轮编写）
 # - world_info  某些轮次不需要世界书
 # - memory      框架自带的状态段（process / vars）
-BLOCK_WHITELIST = ("tool", "world_info", "memory")
+# - openviking  openviking 检索回来的历史块（会话摘要 / 相关记忆 / 对话历史）
+#               注意：只屏蔽**注入**，不屏蔽写入 —— 事件照记，只是这一轮不喂给模型
+BLOCK_WHITELIST = ("tool", "world_info", "memory", "openviking")
 
 # 四个插入位置（与 context_builder 组装顺序对应）
 INSERT_ANCHORS = ("before_persona", "before_history", "before_input", "after_input")

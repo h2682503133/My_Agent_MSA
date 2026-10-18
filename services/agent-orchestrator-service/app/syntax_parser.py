@@ -9,9 +9,70 @@
 - 切换:xxx
 - 切换到xxx智能体
 - 定时任务:类型|时间|内容
+
+另含“伪指令”清理：`→tool: …` 这类箭头写法不是协议，历史注入前会被剔除
+（成因见下方 `_MISFORMAT_DIRECTIVE_RE` 的注释）。
 """
 
+from __future__ import annotations
+
 import re
+
+# 伪指令（模型自己发明、从未被解析过的写法）：`→tool: …` / `←main: …` / `⇒alice: …`
+#
+# 已确认的成因：旧版 `main_memory` 把转交记录渲染成 `→{agent_id}: {content}`，
+# main 每轮都能在「本次任务中的记忆」里读到它，于是把 `→tool: …` 当成
+# `对话:tool|…` 的替代写法——之后一路复读该格式，却**从不真正转交**
+# （`_find_command_block` 不认箭头，整段被当普通回复返回并原样记进历史，
+# 历史又强化了这个错误示范，形成自锁）。
+#
+# 这里的处理是"三道一起上"：
+# 1. 渲染改用不撞车的词（`render_dispatch_memory` / `render_return_memory`）；
+# 2. 历史注入前剔除旧写法（`strip_misformatted_directives`），把已经污染的历史一次性洗掉；
+# 3. 模型再写出箭头写法时进日志（`has_misformatted_directive`），不静默。
+# 注意**说话人前缀**：历史里的正文会带 `<main>: ` 前缀（记历史时加的），
+# 所以真实形态往往是 `<main>: →tool: …` —— 箭头前面还有一段前缀。
+# 正则必须容忍它，否则线上这条规则会整条落空（实测踩过）。
+_SPEAKER_PREFIX_RE = r"(?:<[^>\n]{1,64}>[ \t]*[:：][ \t]*)?"
+_MISFORMAT_DIRECTIVE_RE = re.compile(
+    r"^[ \t]*" + _SPEAKER_PREFIX_RE + r"[ \t]*(?:→|←|⇒|➔|➜)"
+    r"[ \t]*[A-Za-z0-9_.\-]{1,32}[ \t]*[:：][ \t]*"
+)
+
+
+def render_dispatch_memory(target_agent_id: str, content: str) -> str:
+    """main 的「本次任务记忆」里，一条**已转交**记录。刻意不用 `id:` 前缀。"""
+    return f"【已转交 {target_agent_id}】{content}"
+
+
+def render_return_memory(agent_id: str, output: str) -> str:
+    """main 的「本次任务记忆」里，一条**已返回**记录。"""
+    return f"【{agent_id} 返回】{output}"
+
+
+def has_misformatted_directive(text: str) -> bool:
+    """文本里是否出现伪指令行（用于打日志，不参与任何解析）。"""
+    return any(_MISFORMAT_DIRECTIVE_RE.match(line) for line in str(text or "").splitlines())
+
+
+def strip_misformatted_directives(text: str) -> str:
+    """剔除伪指令行（`→agent: …` 这类）。
+
+    只做**历史注入前**的清洗，不改存储：库里保留模型当时真实说了什么，
+    但喂给模型的历史里不再出现这种格式 —— 否则模型会一直照着它学
+    （`_find_command_block` 不认箭头，这些行从来没被当成指令执行过）。
+
+    整行删除而不是"去掉前缀保留正文"：与真指令的行为对齐
+    （真指令被解析时，记录的也只有它前面的说明文本）。
+    """
+    raw = str(text or "")
+    if not raw:
+        return raw
+    lines = raw.splitlines()
+    kept = [line for line in lines if not _MISFORMAT_DIRECTIVE_RE.match(line)]
+    if len(kept) == len(lines):
+        return raw
+    return "\n".join(kept).strip()
 
 
 _COMMAND_NAMES = ("对话", "工具调用", "切换", "定时任务", "世界书")

@@ -2,7 +2,7 @@
 
 覆盖：
   - 无计划（普通聊天）＝旧行为基线
-  - exclude_block 的 tool / world_info / memory 各自关掉什么
+  - exclude_block 的 tool / world_info / memory / openviking 各自关掉什么
   - 四个锚点的确切落点与顺序、插入内容一律 {role: system}
   - messages == base_head + base_tail（两阶段世界书走后者这条路径，必须一致）
   - 计划不污染实例上的 _prompt_parts（LRU 缓存，写进去会跨请求泄漏）
@@ -88,7 +88,11 @@ proc_path.write_text(
 
 
 class StubContextClient:
+    def __init__(self):
+        self.search_calls = 0
+
     def search_context(self, **kwargs):
+        self.search_calls += 1
         return []
 
 
@@ -166,7 +170,7 @@ check("parts.messages 只有三个段", len(parts.messages) == 3, f"{len(parts.m
 
 
 # ── exclude_block ───────────────────────────────────────────
-print("── exclude_block：tool / world_info / memory ──")
+print("── exclude_block：tool / world_info / memory / openviking ──")
 _agent, _parts, b = build(plan_of({"text": "x", "exclude_block": ["tool"]}))
 c = contents(b)
 check("tool：TOOL 段消失", TOOL_TEXT not in c, f"{c}")
@@ -184,6 +188,18 @@ check("memory：PROCESS 段消失", not any(x.startswith(PROCESS_HEAD) for x in 
 check("memory：vars 段消失", not any(x.startswith(VARS_HEAD) for x in c), f"{c}")
 check("memory：段数 8 → 6", len(c) == 6, f"{len(c)}")
 
+agent_ov, _parts, b = build(plan_of({"text": "x", "exclude_block": ["openviking"]}))
+c = contents(b)
+check("openviking：免责框消失", HISTORY_DISCLAIMER not in c, f"{c}")
+check("openviking：段数 8 → 7", len(c) == 7, f"{len(c)}")
+check("openviking：连检索都不发（省一次 gRPC）", agent_ov.context_client.search_calls == 0,
+      f"{agent_ov.context_client.search_calls}")
+check("openviking：系统提示词与 vars 不动",
+      c[0] == GLOBAL_TEXT and c[1] == SOUL_TEXT and c[2] == TOOL_TEXT
+      and any(x.startswith(PROCESS_HEAD) for x in c)
+      and any(x.startswith(VARS_HEAD) for x in c), f"{c}")
+check("openviking：两阶段世界书不受影响", b.two_phase_world_info is True)
+
 _agent, _parts, b = build(plan_of({"text": "x", "exclude_block": ["tool", "memory"]}))
 check("tool + memory 同用：段数 5", len(contents(b)) == 5, f"{len(b.messages)}")
 
@@ -196,6 +212,15 @@ check("三个全关：TOOL / PROCESS / vars 都不在",
       and not any(x.startswith(PROCESS_HEAD) for x in c)
       and not any(x.startswith(VARS_HEAD) for x in c), f"{c}")
 check("三个全关：两阶段关闭", b.two_phase_world_info is False)
+
+_agent, _parts, b = build(plan_of({
+    "text": "x", "exclude_block": ["tool", "world_info", "memory", "openviking"]}))
+c = contents(b)
+check("四个全关：剩 4 条（全局设定/人设/输入提示/输入）", len(c) == 4, f"{c}")
+check("四个全关：只剩人设骨架",
+      c[0] == GLOBAL_TEXT and c[1] == SOUL_TEXT
+      and c[2] == INPUT_HEAD and c[3] == "<player>玩家推开了门", f"{c}")
+check("四个全关：两阶段关闭", b.two_phase_world_info is False)
 
 
 # ── 四个锚点插入 ─────────────────────────────────────────────
