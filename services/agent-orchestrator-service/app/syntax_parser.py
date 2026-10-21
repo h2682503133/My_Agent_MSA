@@ -379,16 +379,14 @@ def parse_syntax(agent, task):
     # 管道/重定向/多行命令被普通工具分隔逻辑或对话/切换逻辑干扰。
     priority_tool_line, priority_tool_call = _find_priority_shell_call(full_text)
     if priority_tool_call:
-        # 「收到请求」在「调用工具」之前：先收到 main 等转交的要求，再执行工具
-        if task.last_dialog_content:
-            task.tool_log.append("收到请求:" + task.last_dialog_content)
-            task.last_dialog_content = ""
+
+        task.begin_work_episode()   # 真的调工具了：把本轮请求补记进 tool_log（纯对话不记）
         task.tool_log.append("调用工具:" + priority_tool_line)
         stack_parts = []
         if task.tool_log:
             stack_parts.append("【本轮已执行的工具】\n" + "\n".join(task.tool_log))
         stack_content = "\n".join(stack_parts) if stack_parts else ""
-        task.push_context(agent, stack_content)
+        task.push_context(agent, stack_content, kind="tool")
 
         task.set_temp_dialog_output({
             "final_reply": reply,
@@ -417,16 +415,14 @@ def parse_syntax(agent, task):
     # 然后解析工具调用。
     tool_line = _find_command_block(full_text, "工具调用", allow_multiline=True)
     if tool_line:
-        # 「收到请求」在「调用工具」之前：先收到 main 等转交的要求，再执行工具
-        if task.last_dialog_content:
-            task.tool_log.append("收到请求:" + task.last_dialog_content)
-            task.last_dialog_content = ""
+
+        task.begin_work_episode()   # 同上（普通工具调用分支）
         task.tool_log.append("调用工具:" + tool_line)
         stack_parts = []
         if task.tool_log:
             stack_parts.append("【本轮已执行的工具】\n" + "\n".join(task.tool_log))
         stack_content = "\n".join(stack_parts) if stack_parts else ""
-        task.push_context(agent, stack_content)
+        task.push_context(agent, stack_content, kind="tool")
 
         tool_call = _parse_tool_call(tool_line)
 

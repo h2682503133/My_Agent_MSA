@@ -43,7 +43,6 @@ class TaskRuntime:
     temp_dialog_input: Any = None
     temp_dialog_output: Any = None
     temp_dialog_images: list[str] = field(default_factory=list)
-    last_dialog_content: str = ""
 
     main_memory: list[str] = field(default_factory=list)
     task_memory: list[str] = field(default_factory=list)
@@ -83,7 +82,7 @@ class TaskRuntime:
     def __post_init__(self) -> None:
         self.caller = self.user
         self.set_temp_dialog_input(self._dialog_input_text(self.content))
-        self.push_context(self.user, self.content)
+        self.push_context(self.user, self.content, kind="user")
 
     def replace_input_content(self, new_content: str) -> None:
         """整体替换本轮输入内容（结构化调用摘掉 JSON 指令区后只剩 text）。
@@ -115,11 +114,46 @@ class TaskRuntime:
             images=list(request.images or []),
         )
 
-    def push_context(self, from_obj, input_text: str) -> None:
+    def push_context(self, from_obj, input_text: str, kind: str = "unknown", request: str = "") -> None:
+        """压一帧。`kind` 标明**这一帧是哪条指令分支压的**（解析处就知道，不用反推）：
+
+        - `user`       —— 初始用户帧（栈底）
+        - `dialog`     —— `对话:` 转交（`call_agent`），弹栈即"对方交回回复"
+        - `tool`       —— `工具调用:`（`syntax_parser`），弹栈即"工具执行结果回来"
+        - `question`   —— `询问:` 挂起等待用户
+        - `timer`      —— 定时任务结果回喂
+        - `interject`  —— /stop 插话暂停后重跑
+
+        弹栈侧靠它区分"该不该记日志/记忆"：只有 `dialog` 帧的产出是**别人的回复**，
+        其余几种（工具结果、定时任务结果、自己继续跑）都有自己的记录位置，
+        通用弹栈逻辑不能再记一遍（否则就是双写，DSML 那类污染也是这么进来的）。
+
+        `request` 只对 `dialog` 帧有意义：调用方派发的原文。它先随帧挂着，
+        **等这一轮真的调了工具**才由 `begin_work_episode()` 补成 `收到请求:` 入账；
+        纯对话（转交了但一次工具都没调）不进 `tool_log` —— 那不是工作执行记录。
+        """
         self.agent_context.append({
             "from": from_obj,
             "input": input_text,
+            "kind": kind,
+            "request": request or "",
         })
+
+    def begin_work_episode(self) -> None:
+        """第一次工具调用时调用：给最近的对话帧打上"有工作"，并把请求补记进 tool_log。
+
+        只在真正执行工具时才把请求写进 `tool_log`：纯对话转交（对方只回一句话、没调任何
+        工具）不属于工作执行记录。写完即清空帧上的 `request`，同一轮多次工具调用不会重复记。
+        """
+        for frame in reversed(self.agent_context):
+            if frame.get("kind") != "dialog":
+                continue
+            request = frame.get("request") or ""
+            if request:
+                self.tool_log.append("收到请求:" + str(request))
+                frame["request"] = ""
+            frame["work"] = True
+            return
 
     def pop_context(self) -> dict | None:
         if self.agent_context:

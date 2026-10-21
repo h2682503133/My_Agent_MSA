@@ -304,6 +304,7 @@ LRU 复用（见 `上下文管理.md` 第 8 节）。没有热重载时，改完
 ```bash
 python tools/history_shape_smoke_test.py          # 37 项，含私聊恒等与全部边界
 python tools/directive_guard_smoke_test.py        # 28 项，伪指令渲染/清洗/告警
+python tools/frame_kind_smoke_test.py             # 25 项，帧类型（kind）与「收到返回」判据
 # 实时检查（集群内跑，验收标准是"错通道清零"，改造前基线 31/66）
 kubectl -n agent cp tools/history_shape_live_check.py <pod>:/tmp/check.py
 kubectl -n agent exec <pod> -- python /tmp/check.py

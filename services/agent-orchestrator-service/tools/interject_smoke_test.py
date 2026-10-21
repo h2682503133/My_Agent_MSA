@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """打断 / 插话（barge-in）本地冒烟测试。
 
 覆盖「/stop 打断 = 保留现场暂停，下一条消息作为插话接着跑」这条链路里最容易
@@ -99,7 +99,7 @@ class FirstCallProbeAgent(StubAgent):
         self.registered_during_first_call = AgentRuntime.RUNNING_TASKS.get(task.user.id) is task
         if self.request_stop:
             # 模型这一轮发起了工具调用（压帧），而 /stop 恰在此刻到达
-            task.push_context(self, "【本轮已执行的工具】\n调用工具:search|A")
+            task.push_context(self, "【本轮已执行的工具】\n调用工具:search|A", kind="tool")
             task.set_temp_dialog_output("工具结果:A=1")
             task.interrupt_event.set()
         else:
@@ -180,7 +180,7 @@ task = make_task(user_id="u1a")
 agent = StubAgent("main")
 task.target = agent
 # 第一次模型调用已经返回：它压了帧（发起了工具调用）并产出了结果
-task.push_context(agent, "【本轮已执行的工具】\n调用工具:search|A")
+task.push_context(agent, "【本轮已执行的工具】\n调用工具:search|A", kind="tool")
 task.set_temp_dialog_output("工具结果:A=1")
 task.interrupt_event.set()          # ← /stop 在模型思考期间就到了
 events, emit = collect()
@@ -205,7 +205,7 @@ task = make_task(content="帮我查 A 和 B")
 agent = StubAgent("main")
 task.target = agent
 task.default_agent = agent
-task.push_context(agent, "【本轮已执行的工具】\n调用工具:search|A")
+task.push_context(agent, "【本轮已执行的工具】\n调用工具:search|A", kind="tool")
 task.set_temp_dialog_output("工具结果:A=1")
 task.tool_log.append("调用工具:search|A")
 task.main_memory.append("→tool: 查 A")
@@ -213,7 +213,7 @@ task.main_memory.append("→tool: 查 A")
 
 def midway(task, emit):
     """第一轮 send 内部：压新帧（发起下一步）+ 模拟 /stop 此刻从别的线程到达。"""
-    task.push_context(agent, "【本轮已执行的工具】\n调用工具:search|A\n结果:A=1")
+    task.push_context(agent, "【本轮已执行的工具】\n调用工具:search|A\n结果:A=1", kind="tool")
     task.set_temp_dialog_output("工具结果:A=2")
     task.tool_log.append("结果:A=1")
     task.interrupt_event.set()
@@ -240,8 +240,9 @@ check("暂停：上下文栈未被动过（2 帧都还在）", len(task.agent_co
 # 要断言的是「原有内容没被清掉/覆盖」。
 check("暂停：tool_log 原有记录仍在其位", bool(task.tool_log) and task.tool_log[0] == "调用工具:search|A",
       str(task.tool_log))
-check("暂停：tool_log 只增不减（第一轮的收到返回是正常累积）",
-      "收到返回:工具结果:A=1" in task.tool_log, str(task.tool_log))
+check("暂停：工具帧不写「收到返回」（结果由 结果: 承载，避免双写）",
+      "结果:A=1" in task.tool_log
+      and not any(str(e).startswith("回复:") for e in task.tool_log), str(task.tool_log))
 check("暂停：main_memory 原有记录仍在其位",
       bool(task.main_memory) and task.main_memory[0] == "→tool: 查 A", str(task.main_memory))
 check("暂停：待回喂的产出还在（没被提前消费掉）", task.temp_dialog_output == "工具结果:A=2",
@@ -284,7 +285,7 @@ reset_state()
 task = make_task(user_id="u2", session_id="web_u2")
 agent2 = StubAgent("main")
 # 「询问」挂起的现场就是这样：send() 压了一帧，temp_dialog_output 被清空
-task.push_context(agent2, "【已发送给用户】\n询问：要查 A 还是 B？")
+task.push_context(agent2, "【已发送给用户】\n询问：要查 A 还是 B？", kind="question")
 task.target = agent2
 task.set_temp_dialog_output("")
 task.metadata["resume_mode"] = "interrupt"

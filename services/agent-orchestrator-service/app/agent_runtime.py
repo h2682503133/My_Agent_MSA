@@ -35,6 +35,37 @@ from app.timer_task_client import TimerTaskClient
 INTERJECT_PAUSE_TEXT = "⏹ 已停止。当前进度已保留，直接发消息即可接着继续。"
 
 
+def should_write_return_log(frame_kind: str) -> bool:
+    """弹栈时是否把产出记成 `回复:`（写进任务级 tool_log）。
+
+    只有 `dialog` 帧（`对话:` 转交）的产出是**对方交回的回复**。其余帧各有自己的
+    记录位置：工具结果 → `结果:`（`_run_tool` 里写）、定时任务结果 → `定时任务结果:`、
+    询问/插话 → 自己继续跑。再记一遍就是双写，也是坏格式（DSML 之类）被回灌的入口。
+    """
+    return frame_kind == "dialog"
+
+
+def should_record_main_return(frame_kind: str, target_id: str | None) -> bool:
+    """弹栈时是否把这次返回记进 main 的「本次任务记忆」。"""
+    return frame_kind == "dialog" and target_id == "main"
+
+
+def record_dispatch(task, target_agent_id: str, content, caller_id: str) -> None:
+    """派发（`对话:`）时只记 main 的「本次任务记忆」：`【已转交 X】<call_input>`。
+
+    `tool_log` 的 `收到请求:` **不在这里写** —— 它只属于"工作回合"：请求随 `dialog` 帧挂着
+    （`push_context(..., request=…)`），等这一轮真的调了工具，才由
+    `TaskRuntime.begin_work_episode()` 补记。纯对话转交（对方只回一句话、没调工具）
+    不进 `tool_log`，否则工具记录里会混进聊天内容。
+
+    刻意**不**把 `→tool: …` 这种写法写进记忆：会和 `对话:` 协议撞车，模型会把
+    记忆里的渲染当成替代语法（见 syntax_parser 顶部的伪指令注释）。
+    """
+    text = "" if content is None else str(content)
+    if caller_id == "main":
+        task.main_memory.append(render_dispatch_memory(target_agent_id, text))
+
+
 class AgentRuntime:
     """
     原 core/Agent/Agent.py 的微服务化版本。
@@ -428,7 +459,7 @@ class AgentRuntime:
         —— 和「询问」恢复是同一套帧语义，不需要额外状态。
         """
         pending_input = str(task.temp_dialog_input or "")
-        task.push_context(agent, pending_input)
+        task.push_context(agent, pending_input, kind="interject")
         task.set_temp_dialog_input(None)
         task.set_temp_dialog_output("")
         task.target = agent
@@ -745,6 +776,8 @@ class AgentRuntime:
             debug_log(f"[{task.user.id}] 弹回复栈，当前栈长 {len(task.agent_context)}")
             returning_agent_id = getattr(task.target, 'id', '')
             context = task.pop_context()
+            frame_kind = (context or {}).get("kind", "unknown")
+            frame_has_work = bool((context or {}).get("work"))
             task.target = context["from"]
             stack_input = context.get("input", "")
             raw_output = task.consume_temp_dialog_output()
@@ -752,7 +785,12 @@ class AgentRuntime:
             # 插话（barge-in）：/stop 暂停期间用户发来的内容，并入本轮交给栈顶调用者
             interjection = task.pending_interjection
             task.pending_interjection = ""
-            if task.target is not None and hasattr(task.target, 'id') and task.target.id == "main":
+            # 只有 `dialog` 帧（`对话:` 转交）的产出才是**对方交回的回复**。
+            # 工具帧的产出是工具结果（`_run_tool` 已记 `结果:`）、定时任务帧的结果
+            # 已在 `定时任务结果:` 里、询问/插话帧是自己继续跑 —— 都不该再记成"返回"。
+            if frame_kind == "unknown":
+                debug_log(f"[{task.user.id}] [frame] 未标注 kind 的帧（来自 {returning_agent_id}），按非对话帧处理")
+            if should_record_main_return(frame_kind, getattr(task.target, "id", None)):
                 task.main_memory.append(render_return_memory(returning_agent_id, str(output)))
 
             if cls._is_user_object(task.target, task):
@@ -776,7 +814,11 @@ class AgentRuntime:
                 else:
                     parts.append("【收到返回】\n" + original_result)
                 output = "\n\n".join(parts)
-                task.tool_log.append("收到返回:" + original_result)
+                # 只有 `dialog` 帧把产出记成"回复"（工具帧/定时任务帧的结果
+                # 各自已有记录位置，重复写入就是双写，也是坏格式被回灌的入口）
+                # 只有"工作回合"才记回复：纯对话转交（一次工具都没调）不进 tool_log
+                if should_write_return_log(frame_kind) and frame_has_work:
+                    task.tool_log.append("回复:" + original_result)
                 if interjection:
                     task.tool_log.append("用户插话:" + interjection)
                 task.set_temp_dialog_input(str(output))
@@ -1076,7 +1118,7 @@ class AgentRuntime:
                     return
                 # 挂起等待用户回复：与对话流程类似，把询问内容压栈；
                 # 用户回复（或超时后系统替用户回复）会通过 ResumeTask 弹栈拼接继续。
-                task.push_context(self, "【已发送给用户】\n询问：" + question)
+                task.push_context(self, "【已发送给用户】\n询问：" + question, kind="question")
                 task.set_temp_dialog_output("")
                 task.status = "suspended"
                 AgentRuntime.suspend_task(task, emit, question, agent_id=self.id)
@@ -1150,7 +1192,7 @@ class AgentRuntime:
                 # 若不压帧，结果会经 user 帧直接 emit 成给用户的回复，
                 # 模型拿不到结果，多步操作（查→删）会中断在半路。
                 task.tool_log.append("定时任务结果:" + str(reply))
-                task.push_context(self, "")
+                task.push_context(self, "", kind="timer")
                 task.set_temp_dialog_output("【定时任务执行结果】\n" + str(reply))
 
             elif result["world_info_task"]:
@@ -1233,12 +1275,11 @@ class AgentRuntime:
             self._emit_user_message(task, emit, content, final=True, agent_id=self.id)
             return
 
-        task.last_dialog_content = content or ""
-        task.push_context(self, "【已发送给" + target_agent_id + "】\n" + content)
-        if self.id == "main":
-            # 刻意**不**写成 `→tool: …`：那会和协议撞车，模型会把记忆里的渲染
-            # 当成 `对话:tool|…` 的替代写法（见 syntax_parser 的伪指令注释）。
-            task.main_memory.append(render_dispatch_memory(target_agent_id, content))
+        # 派发即入账（任务级 tool_log）：与 main_memory 的「已转交」同点同条件。
+        # 放在这里而不是 syntax_parser，是为了让"这一轮被派了什么活"**无条件**留下 ——
+        # 否则对方若不调工具直接回话，日志里就只有回复、没有请求，模型读不出上下文。
+        record_dispatch(task, target_agent_id, content, self.id)
+        task.push_context(self, "【已发送给" + target_agent_id + "】\n" + content, kind="dialog", request=content)
         chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
         debug_log(f"[{self.user_id}] [agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
         task.target = AgentRuntime.get_agent(target_agent_id, self.session_id, task.user.id)
