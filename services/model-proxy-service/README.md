@@ -1,4 +1,4 @@
-# model-proxy-service
+﻿# model-proxy-service
 
 这是从原 `core/Agent/Agent.py` 中拆出的模型代理服务。
 
@@ -184,3 +184,28 @@ kubectl apply -f deploy/services/model-proxy-service.yaml
 ```
 
 其中 `commit_limit`、`files` 属于 orchestrator，不会传给模型服务。
+
+## v3：DSML 原生调用标记归一化（2026-10）
+
+部分模型（deepseek-v4-flash）会把训练期的工具调用标记写进 **content 正文**：
+
+    <||DSML|| calls>
+    <||DSML|| invoke name="shell">
+    <||DSML|| parameter name="command" string="true">ls -la</||DSML|| parameter>
+    </||DSML|| invoke>
+    </||DSML|| calls>
+
+本系统只认文本协议 工具调用:名字|参数…，orchestrator 不认这套标记。实测两种坏法：
+正文只有标记（调用根本没执行、连环重试）；正文"协议行 + 标记"（标记被多行参数吞进
+shell 命令，跑坏，还会进历史继续教模型）。
+
+现在在**唯一出口**做归一化，且**不改 `provider_client.py`**：`app/dsml_text.py`（纯函数）+
+`app/dsml_adapter.py`（导入即包装 `ProviderClient.chat_completion`，幂等），入口走新文件
+`app/bootstrap.py`（Dockerfile CMD 指向它）。
+
+- 正文已有 `工具调用:` 行 → **只删标记**（不重复调用）；
+- 正文只有标记 → 把能解析的 invoke **转成协议行**（让调用真的发生）；
+- 孤立闭合标签 / 坏块 → 删掉，不留残渣（否则会被多行参数吞进 shell 命令）。
+- 竖线兼容 **ASCII | 与全角 ｜（U+FF5C）**：线上真实输出是全角 <｜｜DSML｜｜ …>，只写 ASCII 会整条漏过（踩过）。
+
+orchestrator 不需要知道这件事。自测：`python tools/dsml_text_smoke_test.py`（20 项，含全角竖线与包装后的出口验证）。

@@ -19,4 +19,5 @@ ENV TZ=Asia/Shanghai
 
 EXPOSE 5302
 
-CMD ["python", "-m", "app.main"]
+# 入口走 bootstrap：它先加载 app.dsml_adapter（DSML 出口归一化），再起 gRPC 服务
+CMD ["python", "-m", "app.bootstrap"]
