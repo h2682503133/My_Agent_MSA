@@ -49,6 +49,10 @@ fi
 mkdir -p "$NFS_ROOT/config/qq-llbot"
 cp "$REPO_ROOT/config/qq-llbot/qq_llbot_config.json" "$NFS_ROOT/config/qq-llbot/" 2>/dev/null || true
 
+# qq-official 配置（官方机器人 WebSocket 渠道）
+mkdir -p "$NFS_ROOT/config/qq-official"
+cp "$REPO_ROOT/config/qq-official/qq_official_config.json" "$NFS_ROOT/config/qq-official/" 2>/dev/null || true
+
 echo "[OK] 同步完成。"
 echo
 echo "NFS config 目录结构："

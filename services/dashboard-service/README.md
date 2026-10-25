@@ -24,7 +24,7 @@ port: 5700 (HTTP)
 | 部署脚本 | `GET /api/deploy/script?services=a,b` | 生成一键部署 shell 脚本 |
 | System Prompt | `GET/POST/PUT/DELETE /api/system_prompt/**` | 管理每个智能体的 System Prompt 文件；列表里会标出 `TOOL.md` 是「选项式 / 原文式」、`TOOL.json` 的段/工具数与 JSON 错误 |
 | 工具目录 | `GET /api/tool/catalog`、`GET /api/tool/options?agent=`、`POST /api/tool/generate` | 解析 `system_prompt/TOOL.json`、反解某智能体 `TOOL.md` 的选项块、按勾选生成 `TOOL.md` + 注入预览 |
-| 二维码 | `POST/GET /api/qrcode`、`GET /api/qrcode/info` | 接收 admin-panel 推送的 LLBot 登录二维码并展示 |
+| QQ 设置 | `POST/GET /api/qrcode`、`GET /api/qrcode/info`；`GET /api/qq/channels`、`POST /api/qq/bind`、`POST /api/qq/unbind` | 两个子页：LLBot（登录二维码，沿用原二维码接口）、官方 Bot（`qqofficial` 渠道的 openid ↔ 规范 user_id 绑定，转发给 user-service） |
 | Session 管理 | `GET /api/session/**` | 按 openviking 用户列出/查看/删除 session 及 messages.jsonl |
 | 长期记忆 | `GET /api/memory/search?user=&query=` | 调 OpenViking `/api/v1/search/find` 做用户级语义搜索 |
 | 杂项设置 | `GET/PUT /api/misc/settings` | 读写 orchestrator 的 system_settings.json（图片接收、shell 限制等开关） |
@@ -49,10 +49,10 @@ static/
 ├── index.html                页面骨架（约 80 行）：head / 登录层 / header+nav / <main> 里的 @include 占位 / script 引入
 ├── assets/
 │   ├── css/dashboard.css     全部样式（变量 / 布局 / 通用组件 / 标签页专用）
-│   ├── tabs/<tab>.html       每个标签页的标记分片：pods config logs sprompt worldinfo process session qrcode misc
+│   ├── tabs/<tab>.html       每个标签页的标记分片：pods config logs sprompt worldinfo process session qq misc
 │   └── js/
 │       ├── core.js           公共：登录·改密、Tab 切换、Toast、esc / escapeHtml
-│       ├── pods|config|logs|sprompt|tool_panel|worldinfo|process|session|qrcode|misc.js
+│       ├── pods|config|logs|sprompt|tool_panel|worldinfo|process|session|qrcode|qq|misc.js
 │       └── init.js           启动（首次刷新 + 15s 定时器），必须最后加载
 └── qrcode.png / qrcode_time.txt   LLBot 二维码（由 POST /api/qrcode 写入）
 ```

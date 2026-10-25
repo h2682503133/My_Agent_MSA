@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qq-official-service
+  namespace: agent
+  labels:
+    app: qq-official-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qq-official-service
+  template:
+    metadata:
+      labels:
+        app: qq-official-service
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: qq-official-service
+          image: agent/qq-official-service:v3
+          imagePullPolicy: Always
+          env:
+            - name: QQ_OFFICIAL_CONFIG_PATH
+              value: "/service/config/qq_official_config.json"
+            - name: SCHEDULER_TARGET
+              value: "task-scheduler-service.agent.svc.cluster.local:5100"
+            - name: USER_SERVICE_TARGET
+              value: "user-service.agent.svc.cluster.local:5104"
+            - name: MODEL_PROXY_TARGET
+              value: "model-proxy-service:5302"
+            - name: SUBSCRIBER_ID
+              value: "qq-official-1"
+            - name: QQ_OFFICIAL_CHANNEL
+              value: "qqofficial"
+          volumeMounts:
+            - name: my-agent-config
+              mountPath: /service/config
+              subPath: qq-official
+            - name: my-agent-workspace
+              mountPath: /app/workspace
+      volumes:
+        - name: my-agent-config
+          persistentVolumeClaim:
+            claimName: my-agent-config-pvc
+        - name: my-agent-workspace
+          persistentVolumeClaim:
+            claimName: my-agent-workspace-pvc

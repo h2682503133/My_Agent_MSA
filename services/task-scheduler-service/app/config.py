@@ -34,3 +34,12 @@ MAX_OFFLINE_REPLIES = env_int("SCHEDULER_MAX_OFFLINE_REPLIES", 3)
 # 该 RPC 是协作式的 —— orchestrator 只置位标志、不等暂停落地，所以这里不需要
 # 长超时；设长了反而会在 orchestrator 卡住时把 CreateTask 一起拖住。
 STOP_REQUEST_TIMEOUT_SECONDS = env_int("STOP_REQUEST_TIMEOUT_SECONDS", 10)
+
+# 定时任务（timer_task）的结果**不允许**投递到的渠道。
+# 官方 QQ bot 的主动消息受限（用户可关闭、有频控），定时推送走它基本等于丢失，
+# 所以默认屏蔽 qqofficial：事件会按用户其它渠道的优先级转投（如 qq / web）。
+SCHEDULED_EXCLUDED_CHANNELS = {
+    item.strip()
+    for item in os.getenv("SCHEDULER_EXCLUDED_CHANNELS", "qqofficial").split(",")
+    if item.strip()
+}

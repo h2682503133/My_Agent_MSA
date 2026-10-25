@@ -79,6 +79,8 @@ _META_FALLBACK_FROM = "_fallback_from"
 _META_FALLBACK_HOPS = "_fallback_hops"
 _META_TRIED_CHANNELS = "_tried_channels"
 _META_BUFFER_ATTEMPTS = "_buffer_attempts"
+# 该事件**不允许**通过这些渠道投递（例如官方 bot 的主动消息受限 → 定时任务屏蔽 qqofficial）
+_META_SUPPRESS_CHANNELS = "suppress_channels"
 
 
 def is_ack_required(event: dict) -> bool:
@@ -97,6 +99,16 @@ def is_ack_required(event: dict) -> bool:
 def _meta(event: dict) -> dict:
     meta = event.get("metadata")
     return meta if isinstance(meta, dict) else {}
+
+
+def suppressed_channels(event: dict) -> set[str]:
+    """事件显式屏蔽的渠道名集合（逗号分隔，来自 metadata.suppress_channels）。
+
+    用途：官方 QQ bot 的主动消息受限 → 定时任务不应该再走 qqofficial，
+    这类事件在 publish / 转投时都会跳过被屏蔽的渠道。
+    """
+    raw = str(_meta(event).get(_META_SUPPRESS_CHANNELS) or "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 def _brief(event: dict) -> str:
@@ -224,9 +236,24 @@ class EventBus:
 
     def publish(self, event: dict):
         event_channel = str(event.get("channel") or "")
+        suppressed = suppressed_channels(event)
 
         with self._lock:
             items = list(self._subscribers.items())
+
+        # 事件显式屏蔽的渠道：跳过原始投递，直接走跨渠道转投（转投时也不会再选它）
+        if event_channel and event_channel in suppressed:
+            _log(
+                f"channel={event_channel!r} suppressed by event metadata, "
+                f"trying fallback {_brief(event)}"
+            )
+            self._fallback_chain(
+                event,
+                exclude_channel=event_channel,
+                exclude_subscriber="",
+                hops=1,
+            )
+            return
 
         # 第一优先：匹配原始 channel 的订阅者
         target = self._match_subscriber(items, event_channel)
@@ -307,8 +334,9 @@ class EventBus:
         if hops <= MAX_FALLBACK_HOPS:
             with self._lock:
                 items = list(self._subscribers.items())
+            suppressed = suppressed_channels(event)
             for channel, chan_uid, _prio in self._channel_targets(user_id):
-                if channel in tried:
+                if channel in tried or (channel and channel in suppressed):
                     continue
                 target = self._match_subscriber(items, channel, exclude=exclude_subscriber)
                 if target is None:
@@ -532,6 +560,18 @@ def task_event(
     error: str = "",
     metadata: dict[str, str] | None = None,
 ) -> dict:
+    meta = dict(metadata or {})
+    # 定时任务（timer_task）的结果不允许落到受限渠道：
+    # 官方 bot 的主动消息会被用户开关/频控拦下，走它等于丢消息。
+    if str((task.metadata or {}).get("source") or "") == "timer_task":
+        excluded = excluded_scheduled_channels()
+        if excluded:
+            merged = {
+                item for item in str(meta.get(_META_SUPPRESS_CHANNELS) or "").split(",")
+                if item
+            }
+            merged |= excluded
+            meta[_META_SUPPRESS_CHANNELS] = ",".join(sorted(merged))
     return {
         "event_id": make_event_id(),
         "task_id": task.task_id,
@@ -544,5 +584,14 @@ def task_event(
         "waiting": waiting,
         "error": error,
         "delivery_target": task.delivery_target.to_dict(),
-        "metadata": metadata or {},
+        "metadata": meta,
     }
+
+
+def excluded_scheduled_channels() -> set[str]:
+    """定时任务屏蔽的渠道（来自 scheduler config，缺省屏蔽 qqofficial）。"""
+    try:
+        from app import config as _config
+        return set(getattr(_config, "SCHEDULED_EXCLUDED_CHANNELS", set()))
+    except Exception:
+        return set()

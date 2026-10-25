@@ -11,6 +11,7 @@ import shutil
 import asyncio
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -813,6 +814,127 @@ async def qrcode_info():
     if exists and QRCODE_TIME_FILE.exists():
         updated_at = QRCODE_TIME_FILE.read_text().strip()
     return {"exists": exists, "updated_at": updated_at}
+
+
+# ═══ QQ 渠道绑定（官方 bot 的 openid ↔ 规范 user_id）══════════
+# dashboard 只是转发：真相在 user-service 的 channels 里，
+# 官方 bot 侧另有 /id、/bind <QQ号> 命令，两条路径写的是同一份数据。
+
+QQ_OFFICIAL_CHANNEL = os.environ.get("QQ_OFFICIAL_CHANNEL", "qqofficial")
+# NFS 上的官方 bot 配置：dashboard 挂载了整个 config 卷，所以可以直接读写
+QQ_OFFICIAL_CONFIG = CONFIG_ROOT / "qq-official" / "qq_official_config.json"
+QQ_OFFICIAL_DEPLOYMENT = "qq-official-service"
+
+
+def _load_qq_official_config() -> dict:
+    if QQ_OFFICIAL_CONFIG.exists():
+        try:
+            data = json.loads(QQ_OFFICIAL_CONFIG.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+@app.get("/api/qq/app")
+async def api_qq_app():
+    """返回 AppID 配置状态（**不回传 secret 明文**）。"""
+    data = _load_qq_official_config()
+    return {
+        "ok": True,
+        "path": str(QQ_OFFICIAL_CONFIG.relative_to(CONFIG_ROOT)).replace("\\", "/"),
+        "app_id": str(data.get("app_id") or ""),
+        "secret_set": bool(str(data.get("client_secret") or "").strip()),
+        "channel": str(data.get("channel") or QQ_OFFICIAL_CHANNEL),
+        "api_base": str(data.get("api_base") or "https://api.bot.qq.com"),
+        "configured": bool(str(data.get("app_id") or "").strip())
+        and bool(str(data.get("client_secret") or "").strip()),
+    }
+
+
+@app.post("/api/qq/app")
+async def api_qq_app_save(payload: dict):
+    """保存 AppID/AppSecret（保留文件里的其它键）。
+
+    `client_secret` 留空 = 不改动原有 secret，避免用户只想改 AppID 时把密钥清空。
+    """
+    data = _load_qq_official_config()
+    app_id = str(payload.get("app_id") or "").strip()
+    secret = str(payload.get("client_secret") or "").strip()
+    if app_id:
+        data["app_id"] = app_id
+    if secret:
+        data["client_secret"] = secret
+    if not str(data.get("app_id") or "").strip() or not str(data.get("client_secret") or "").strip():
+        raise HTTPException(400, "AppID 与 AppSecret 都必须有值")
+
+    QQ_OFFICIAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    tmp = QQ_OFFICIAL_CONFIG.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(QQ_OFFICIAL_CONFIG)
+    return {
+        "ok": True,
+        "configured": True,
+        "deployment": QQ_OFFICIAL_DEPLOYMENT,
+        "restart_hint": f"POST /api/restart?service={QQ_OFFICIAL_DEPLOYMENT}",
+    }
+
+
+def _user_service_http(path: str, payload: dict | None = None, method: str = "GET") -> dict:
+    """调用 user-service 的轻量 HTTP 端点（失败抛 HTTPException，前端能看到原因）。"""
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{USER_SERVICE_URL}{path}",
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return body if isinstance(body, dict) else {}
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(exc.code, f"user-service 返回 {exc.code}")
+    except Exception as exc:
+        raise HTTPException(502, f"user-service 不可达：{exc}")
+
+
+@app.get("/api/qq/channels")
+async def api_qq_channels(channel: str = QQ_OFFICIAL_CHANNEL):
+    """列出某渠道的绑定（默认 qqofficial）。"""
+    body = _user_service_http(f"/channels/{urllib.parse.quote(channel)}")
+    return {"ok": True, "channel": channel, "bindings": body.get("bindings") or []}
+
+
+@app.post("/api/qq/bind")
+async def api_qq_bind(payload: dict):
+    """绑定：{user_id, channel_user_id, channel?}。"""
+    body = {
+        "user_id": str(payload.get("user_id") or "").strip(),
+        "channel": str(payload.get("channel") or QQ_OFFICIAL_CHANNEL).strip(),
+        "channel_user_id": str(payload.get("channel_user_id") or "").strip(),
+        "priority": int(payload.get("priority") or 0),
+    }
+    if not body["user_id"] or not body["channel_user_id"]:
+        raise HTTPException(400, "user_id 与 channel_user_id 都不能为空")
+    result = _user_service_http("/channels/bind", body, method="POST")
+    return {"ok": bool(result.get("ok")), "message": result.get("message") or ""}
+
+
+@app.post("/api/qq/unbind")
+async def api_qq_unbind(payload: dict):
+    """解绑：{user_id, channel?}。"""
+    body = {
+        "user_id": str(payload.get("user_id") or "").strip(),
+        "channel": str(payload.get("channel") or QQ_OFFICIAL_CHANNEL).strip(),
+    }
+    if not body["user_id"]:
+        raise HTTPException(400, "user_id 不能为空")
+    result = _user_service_http("/channels/unbind", body, method="POST")
+    return {"ok": bool(result.get("ok")), "message": result.get("message") or ""}
 
 
 # ═══ Session 管理（按 openviking 用户隔离）═══════════════════

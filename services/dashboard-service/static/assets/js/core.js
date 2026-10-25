@@ -75,7 +75,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     if (btn.dataset.tab === 'sprompt') spRefresh();
     if (btn.dataset.tab === 'worldinfo') wiLoad();
     if (btn.dataset.tab === 'process') procLoadUsers();
-    if (btn.dataset.tab === 'qrcode') refreshQrcode();
+    if (btn.dataset.tab === 'qq') { refreshQrcode(); qqLoadBindings(); }
     if (btn.dataset.tab === 'misc') loadMiscSettings();
   });
 });

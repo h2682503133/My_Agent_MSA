@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # My_Agent_MSA 一键部署脚本
 # 在项目根目录 PowerShell 中运行
 # ============================================================
@@ -16,6 +16,7 @@ $IMAGES = @{
     "timer-task-service"           = @{ dir = "services/timer-task-service" }
     "gateway-backend-service"      = @{ dir = "services/gateway-backend-service" }
     "qq-llbot-service"             = @{ dir = "services/qq-llbot-service" }
+    "qq-official-service"          = @{ dir = "services/qq-official-service" }
     "model-proxy-service"          = @{ dir = "services/model-proxy-service" }
     "openviking-context-service"   = @{ dir = "services/openviking-context-service" }
     "tool-runtime-service"         = @{ dir = "services/tool-runtime-service" }
@@ -33,6 +34,7 @@ $YAML_MAP = @{
     "timer-task-service"           = "deploy/services/timer-task-service.yaml"
     "gateway-backend-service"      = "deploy/services/gateway-backend-service.yaml"
     "qq-llbot-service"             = "deploy/services/qq-llbot-service.yaml"
+    "qq-official-service"          = "deploy/services/qq-official-service.yaml"
     "model-proxy-service"          = "deploy/services/model-proxy-service.yaml"
     "openviking-context-service"   = "deploy/services/openviking-context-service.yaml"
     "openviking-server"            = "deploy/services/openviking-server.yaml"
@@ -62,6 +64,7 @@ $OPTIONS = @(
     @{ key = "core";                type = "group";   label = "必要服务（Web 对话最小闭环）";               services = $CORE_SERVICES }
     @{ key = "timer-task-service";  type = "single";  label = "timer-task-service 定时任务";                 service = "timer-task-service" }
     @{ key = "qq-llbot-service";    type = "single";  label = "qq-llbot-service QQ 渠道";                    service = "qq-llbot-service" }
+    @{ key = "qq-official-service"; type = "single";  label = "qq-official-service QQ 官方渠道(WebSocket)";  service = "qq-official-service" }
     @{ key = "openviking-context-service"; type = "single"; label = "openviking-context-service 长期记忆(RAG,自动带server)"; service = "openviking-context-service" }
     @{ key = "openviking-server";   type = "single";  label = "openviking-server 语义检索库";                service = "openviking-server" }
     @{ key = "user-service";        type = "single";  label = "user-service 用户信息";                       service = "user-service" }
@@ -100,6 +103,9 @@ $CONFIG_MAP = @{
     "qq-llbot-service" = @(
         "config/qq-llbot/qq_llbot_config.json"
     )
+    "qq-official-service" = @(
+        "config/qq-official/qq_official_config.json"
+    )
     "tool-runtime-service" = @(
         "config/openviking/api_key"
     )
@@ -112,7 +118,8 @@ $CONFIG_MAP = @{
         "config/openviking/ov.conf",
         "config/openviking/root_api_key",
         "config/openviking/api_key",
-        "config/qq-llbot/qq_llbot_config.json"
+        "config/qq-llbot/qq_llbot_config.json",
+        "config/qq-official/qq_official_config.json"
     )
 }
 

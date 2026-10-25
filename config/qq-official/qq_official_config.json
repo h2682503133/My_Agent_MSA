@@ -1,0 +1,16 @@
+{
+  "scheduler_target": "task-scheduler-service.agent.svc.cluster.local:5100",
+  "user_service_target": "user-service.agent.svc.cluster.local:5104",
+  "model_proxy_target": "model-proxy-service:5302",
+  "subscriber_id": "qq-official-1",
+  "channel": "qqofficial",
+  "api_base": "https://api.bot.qq.com",
+  "app_id": "",
+  "client_secret": "",
+  "intents": 33554432,
+  "group_map": {},
+  "workspace_dir": "/app/workspace",
+  "reply_chunk_chars": 1500,
+  "reader_profile": "reader",
+  "summary_timeout_seconds": 20
+}

@@ -49,6 +49,7 @@ deploy/
 │   ├── gateway-backend-service.yaml
 │   ├── image-assets-service.yaml     # 图床（nginx，port-forward 5102）
 │   ├── qq-llbot-service.yaml
+│   ├── qq-official-service.yaml      # QQ 官方机器人（WebSocket，无需公网入口）
 │   ├── qq-satori-adapter-external.yaml
 │   ├── model-proxy-service.yaml
 │   ├── openviking-context-service.yaml

@@ -1,0 +1,81 @@
+<!-- QQ 设置：LLBot 扫码登录 + 官方 Bot（qqofficial）绑定 -->
+<div id="tab-qq" class="tab">
+  <h2>QQ 设置</h2>
+
+  <div style="display:flex;gap:8px;margin-bottom:16px;">
+    <button class="btn qq-sub" data-qq="llbot" onclick="qqSwitch('llbot')">LLBot（扫码登录）</button>
+    <button class="btn qq-sub" data-qq="official" onclick="qqSwitch('official')">官方 Bot（openid 绑定）</button>
+  </div>
+
+  <!-- ── LLBot：保留原有二维码 ───────────────────────────── -->
+  <div id="qq-pane-llbot">
+    <div class="card" style="text-align:center;padding:32px;">
+      <img id="qrcode-img" src="/api/qrcode?t=0" alt="QR Code"
+           style="max-width:300px;max-height:300px;border:1px solid var(--border);border-radius:8px;"
+           onerror="this.style.display='none';document.getElementById('qrcode-placeholder').style.display='block';">
+      <div id="qrcode-placeholder" style="display:none;padding:60px;color:var(--dim);">
+        <p style="font-size:1.1rem;">暂无二维码</p>
+        <p style="font-size:0.85rem;margin-top:8px;">请先在 LLBot 页面启动 Bot 并推送二维码</p>
+      </div>
+      <p id="qrcode-time" style="margin-top:16px;color:var(--dim);font-size:0.85rem;"></p>
+      <button class="btn" onclick="refreshQrcode()" style="margin-top:12px;">刷新二维码</button>
+    </div>
+  </div>
+
+  <!-- ── 官方 Bot：openid ↔ 规范 user_id 绑定 ─────────────── -->
+  <div id="qq-pane-official" style="display:none;">
+    <div class="card">
+      <h3>AppID / AppSecret</h3>
+      <p id="qq-app-status" style="color:var(--dim);font-size:0.85rem;">读取中…</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <input id="qq-app-id" type="text" placeholder="AppID"
+               style="flex:1;min-width:200px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:4px;">
+        <input id="qq-app-secret" type="password" placeholder="AppSecret（留空＝不修改）"
+               style="flex:2;min-width:240px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:4px;">
+        <button class="btn green" onclick="qqSaveApp()">保存并重启</button>
+      </div>
+      <p style="color:var(--dim);font-size:0.8rem;margin-top:10px;">
+        保存后会自动执行 <code>kubectl rollout restart deployment qq-official-service</code>。
+        配置是 subPath 挂载，只有**新 Pod 启动时**才会读到，所以必须重启才能生效。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>怎么拿到自己的 qqofficial id</h3>
+      <p style="color:var(--dim);font-size:0.85rem;line-height:1.8;">
+        官方渠道的 openid 只在机器人收到消息时才能拿到，所以：<br>
+        1. 在 QQ 里私聊官方机器人（或群里 @ 它），发送 <code>/id</code>；<br>
+        2. 机器人会回复 <code>qqofficial id: &lt;openid&gt;</code>，复制那一串；<br>
+        3. 也可以直接发送 <code>/bind &lt;你的QQ号&gt;</code> 自助绑定，不必打开本页。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>手动绑定</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input id="qq-bind-user" type="text" placeholder="QQ 号（例如 2195239690）"
+               style="flex:1;min-width:220px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:4px;">
+        <input id="qq-bind-openid" type="text" placeholder="qqofficial id（user_openid）"
+               style="flex:2;min-width:260px;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:4px;">
+        <button class="btn green" onclick="qqBind()">绑定</button>
+      </div>
+      <p style="color:var(--dim);font-size:0.8rem;margin-top:10px;">
+        绑定后，该用户在官方渠道的会话 id 变为 <code>qq_&lt;user_id&gt;</code>，与 LLBot 共用同一段上下文。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>已绑定的用户
+        <button class="btn" onclick="qqLoadBindings()" style="float:right;">刷新</button>
+      </h3>
+      <table>
+        <thead>
+          <tr><th>QQ 号</th><th>qqofficial id</th><th>规范账户</th><th>优先级</th><th></th></tr>
+        </thead>
+        <tbody id="qq-bind-rows">
+          <tr><td colspan="5" style="color:var(--dim);">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
