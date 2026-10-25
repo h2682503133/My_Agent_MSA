@@ -30,6 +30,7 @@ from app.process_runtime import var_remove as process_var_remove
 from app.process_runtime import write as process_write
 from app.worldinfo_runtime import write as worldinfo_write
 from app.skill_runtime import skill_runtime
+from app.image_tools import load_image
 from app.web_search import web_search
 from app.workspace import (
     append_text,
@@ -96,12 +97,25 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 
             # 执行过程中产生的即时事件（message/image）先推送给调用方，
             # 调用方会立即转发给用户；最后的 done 事件携带最终结果。
+            # `model_image` 是特例：不是给用户看的，而是给**模型**看的
+            # （image-view 回填），orchestrator 会把它挂到下一轮 images 上。
             for event in events:
                 event_type = str(event.get("type", "message"))
                 if event_type == "image":
                     artifact = event.get("artifact") or {}
                     yield tool_runtime_pb2.ExecuteToolEvent(
                         event_type="image",
+                        text=str(event.get("text", "")),
+                        artifact=tool_runtime_pb2.Artifact(
+                            type=str(artifact.get("type", "image")),
+                            local_path=str(artifact.get("local_path", "")),
+                            asset_url=str(artifact.get("asset_url", "")),
+                        ),
+                    )
+                elif event_type == "model_image":
+                    artifact = event.get("artifact") or {}
+                    yield tool_runtime_pb2.ExecuteToolEvent(
+                        event_type="model_image",
                         text=str(event.get("text", "")),
                         artifact=tool_runtime_pb2.Artifact(
                             type=str(artifact.get("type", "image")),
@@ -357,6 +371,12 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         if name == "send-image-by-url":
             image_url = self._first_arg(args, kwargs, "url", "image_url", default="")
             return self._send_image_by_url(image_url=image_url)
+
+        # 把工作区（或远程 URL）里的图片读出来**给模型看**（多模态回填）。
+        # 图片本身由 orchestrator 收到消息时自动落盘，不需要模型先"保存"。
+        if name in {"image-view", "view-image"}:
+            target = self._first_arg(args, kwargs, "path", "url", "image", default="")
+            return self._image_view(target=target, root=root)
 
         if name in {"send-message", "notify"}:
             text = self._first_arg(args, kwargs, "text", "message", default="")
@@ -640,6 +660,38 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 
         return f"此图片URL为：{url}"
 
+    def _image_view(self, target: str, root: Path) -> ToolResult:
+        """image-view：读书/下载图片并交给模型（不发给用户）。
+
+        事件类型用 `model_image` 而不是 `image`：`image` 会被 orchestrator 当成
+        "推送给用户"，而这里的图是喂给模型看的，两者不能混。
+        """
+        try:
+            payload = load_image(target, root, config.IMAGE_VIEW_MAX_BYTES)
+        except Exception as exc:
+            debug(f"image-view failed: {exc}")
+            return f"图片读取失败：{exc}"
+
+        text = (
+            f"已载入图片：{payload.relpath}"
+            f"（{payload.dimension_text}，{payload.mime}，{payload.size_text}）。"
+            "图片内容已附加到本轮上下文，直接据此回答，不要重复调用 image-view。"
+        )
+        return ToolResult(
+            output=text,
+            events=[
+                {
+                    "type": "model_image",
+                    "text": text,
+                    "artifact": {
+                        "type": "image",
+                        "local_path": payload.relpath,
+                        "asset_url": payload.data_url,
+                    },
+                }
+            ],
+        )
+
     @staticmethod
     def _send_image_by_url(image_url: str):
         if not image_url:
@@ -689,6 +741,8 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 - codex: 工作目录|需求 (在外部 VM 上调用 codex exec 生成代码，需 VM 安装 @openai/codex)
 - get-image-url-from-local: local image path
 - send-image-by-url: image url (执行时立即将图片推送给用户)
+- image-view: 图片路径或 http(s) URL（把图片读取给模型看，用于回看历史消息里的图片；
+  用户发送的图片会自动保存到 uploads/images/<日期>/，历史与提示词里带路径）
 - send-message: text (执行过程中立即向用户推送文本消息)
 - process-write: index|title|content (index=-1 追加到末尾，1..N 覆写对应条目)
 - process-remove: index (按 1 起始删除对应条目)

@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agent-orchestrator-service
@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: agent-orchestrator-service
-        image: agent/agent-orchestrator-service:v91
+        image: agent/agent-orchestrator-service:v93
         imagePullPolicy: Always
         ports:
         - containerPort: 5300
@@ -36,6 +36,11 @@ spec:
           value: "/app/config/process"
         - name: MAX_AGENT_STEPS
           value: "30"
+        # 用户工作区（与 tool-runtime 同一个 PVC）：带图消息的图片由 orchestrator
+        # 自动落盘到 users/<user_id>/uploads/images/<日期>/，tool-runtime 的
+        # image-view 再从同一路径读回来给模型看。两边的 WORKSPACE_DIR 必须一致。
+        - name: WORKSPACE_DIR
+          value: "/app/workspace"
         volumeMounts:
         - name: my-agent-config
           mountPath: /app/config
@@ -43,10 +48,15 @@ spec:
         - name: my-agent-config
           mountPath: /app/system_prompt
           subPath: orchestrator/system_prompt
+        - name: my-agent-workspace
+          mountPath: /app/workspace
       volumes:
       - name: my-agent-config
         persistentVolumeClaim:
           claimName: my-agent-config-pvc
+      - name: my-agent-workspace
+        persistentVolumeClaim:
+          claimName: my-agent-workspace-pvc
 ---
 apiVersion: v1
 kind: Service

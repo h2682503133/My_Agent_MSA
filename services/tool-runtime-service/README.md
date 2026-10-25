@@ -39,6 +39,10 @@
 
 - `get-image-url-from-local|路径`：本地图片 → URL
 - `send-image-by-url|url`：立即推送图片给用户
+- `image-view|路径或 URL`：把图片**读给模型看**（多模态回填，不发给用户）。
+  用户发来的图片由 orchestrator 自动存到 `<用户工作区>/uploads/images/<日期>/<hash>.<ext>`，
+  提示词与历史里会带「（附图: 路径）」；模型据此随时回看历史消息里的图片。
+  单图上限 `IMAGE_VIEW_MAX_BYTES`（默认 7.5MB），支持 png/jpg/gif/webp/bmp。
 - `send-message|text` / `notify`：执行过程中立即推送文本
 
 ### PROCESS 长期事件记录（按 user_id + agent_id 定位存储）

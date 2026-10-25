@@ -29,6 +29,10 @@ class TaskRuntime:
     metadata: dict[str, str] = field(default_factory=dict)
     agent_id: str = ""
     images: list[str] = field(default_factory=list)
+    # 本轮带图消息的**工作区引用**（uploads/images/<日期>/<hash>.<ext>）：
+    # 图片收到时由 AgentRuntime 自动落盘后填在这里（见 app/image_store.py），
+    # 提示词与历史都会带上它，模型下一轮仍能据此调 image-view 回看。
+    image_refs: list[str] = field(default_factory=list)
 
     status: str = "running"
     default_agent: Any = None

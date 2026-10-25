@@ -16,6 +16,7 @@ from app.context_builder import (
 )
 from app.context_client import AUTHOR_IN_CONTENT_KEY, ContextClient
 from app.events import TaskEventDTO, DeliveryTarget, new_event_id
+from app.image_store import image_marker, store_images
 from app.logger import chat_log, debug_log
 from app.model_proxy_client import ModelProxyClient
 from app.prompt_plan import PromptPlanError, parse_prompt_plan
@@ -282,6 +283,49 @@ class AgentRuntime:
         return final_reply
 
     @classmethod
+    def _store_incoming_images(cls, task, images) -> None:
+        """把本轮收到的图片自动存进用户工作区，并记下引用（见 app/image_store.py）。
+
+        这是**框架行为**，不是工具：模型不需要、也无法主动"保存"用户发来的图。
+        落盘成功 → `task.image_refs` 多一条 `uploads/images/<日期>/<hash>.<ext>`，
+        提示词与本轮历史都会带上它；之后任何一轮都能用 `image-view` 回看。
+
+        失败闭合：单张存不下来只记日志并跳过，绝不影响本轮对话。
+        """
+        values = [str(v) for v in (images or []) if v]
+        if not values:
+            return
+        # 杂项「图像接收」关掉时，图片与消息里那句「图片已被忽略」保持一致：
+        # 不落盘、不产生引用（否则模型会拿到路径，反而绕过这个开关）。
+        if not image_receive_enabled():
+            debug_log(f"[{task.user.id}] 图像接收已关闭，跳过图片落盘 {len(values)} 张")
+            return
+        try:
+            refs = store_images(config.WORKSPACE_DIR, task.user.id, values)
+        except Exception as exc:
+            debug_log(f"[{task.user.id}] 图片落盘失败（已跳过）: {exc}")
+            return
+        for ref in refs:
+            if ref not in task.image_refs:
+                task.image_refs.append(ref)
+        if len(refs) < len(values):
+            debug_log(
+                f"[{task.user.id}] 图片落盘部分成功 {len(refs)}/{len(values)}"
+                f"（非 data URL 或格式不支持的单张已跳过）"
+            )
+        if refs:
+            chat_log(f"[{task.user.id}] 图片已存入工作区: {', '.join(refs)}")
+
+    @staticmethod
+    def _history_user_message(task) -> str:
+        """写进 openviking 的用户消息：原文 + 图片引用。
+
+        引用必须进历史，否则下一轮模型既看不到图、也不知道这张图存在
+        （历史只有纯文本，图像字节不会跟着走）。
+        """
+        return str(task.content or "") + image_marker(getattr(task, "image_refs", None))
+
+    @classmethod
     def _persist_tool_summary(cls, task) -> None:
         """将 tool_log 总结后持久化到 tool 的上下文，供 tool agent 后续检索。"""
         if not task.tool_log:
@@ -508,6 +552,7 @@ class AgentRuntime:
             # 能看到用户中途说了什么（否则插话只活在当次 messages 里）。
             task.content = f"{task.content}\n\n【用户插话】\n{reply}".strip()
             if images:
+                cls._store_incoming_images(task, images)
                 task.set_temp_dialog_images(images)
             chat_log(f"[{task.user.id}] 收到插话，接着被打断的任务继续：{reply}")
             return cls._continue_task(task, emit)
@@ -521,6 +566,7 @@ class AgentRuntime:
         parts.append("【收到返回】\n" + str(reply))
         task.set_temp_dialog_input("\n\n".join(parts))
         if images:
+            cls._store_incoming_images(task, images)
             task.set_temp_dialog_images(images)
 
         asking_agent = task.target
@@ -635,6 +681,12 @@ class AgentRuntime:
         try:
             emit(cls.build_event(task, "task_started"))
 
+            # 带图消息：先把图片存进用户工作区（框架行为，不是工具）。
+            # 必须在第一次模型调用**之前**做 —— 提示词里的 `（附图: 路径）`
+            # 与本轮 history 的引用都依赖 image_refs 已经就绪。
+            if getattr(task, "images", None):
+                cls._store_incoming_images(task, task.images)
+
             if len(task.agent_context) == 1:
                 try:
                     cls.first_call(task)
@@ -691,7 +743,7 @@ class AgentRuntime:
                 user_id=task.user.id,
                 session_id=task.user.session_id,
                 task_id=task.task_id,
-                user_message=task.content,
+                user_message=cls._history_user_message(task),
                 assistant_message=recorded_message,
                 agent_id=speaker_id,
                 tool_summaries=[],
@@ -725,7 +777,7 @@ class AgentRuntime:
                     user_id=task.user.id,
                     session_id=task.user.session_id,
                     task_id=task.task_id,
-                    user_message=task.content,
+                    user_message=cls._history_user_message(task),
                     assistant_message=f"<{speaker_id}>: {recorded_message}",
                     agent_id=recipient,
                     tool_summaries=[],
@@ -1389,6 +1441,22 @@ class AgentRuntime:
                         "agent_id": push_agent_id,
                     },
                 ))
+                continue
+
+            if event_type == "model_image":
+                # image-view 的回填：图片不是发给用户的，而是**给模型看的**。
+                # 挂到 task.images 上 —— 这就是 main 每轮用户消息里那份图片列表，
+                # 于是「下一次模型调用」就能真正看到这张老图（纯文本档案会自动
+                # 切到 image_model_profile 视觉模型，见 send() 的 image_count 路由）。
+                artifact = event.get("artifact") or {}
+                viewed_url = artifact.get("asset_url", "")
+                if viewed_url and viewed_url not in task.images:
+                    task.images.append(viewed_url)
+                if viewed_url:
+                    debug_log(
+                        f"[{task.user.id}] image-view 回填图片: "
+                        f"{artifact.get('local_path', '')}"
+                    )
                 continue
 
             if event_type == "done":

@@ -109,6 +109,7 @@ from pathlib import Path
 
 from app import config
 from app import prompt_refs
+from app.image_store import image_marker
 from app.logger import debug_log
 from app.prompt_plan import insert_messages
 from app.syntax_parser import strip_misformatted_directives
@@ -1253,7 +1254,12 @@ class ContextBuilder:
         user_input_messages = []
         if agent.id == "main":
             task_images = list(task.images or [])
-            user_content = f"<{task.user.id}>" + task.content
+            # 图片引用（uploads/images/<日期>/<hash>.<ext>）：图片本身已挂成多模态
+            # 输入，但模型还需要知道**它在工作区里的位置** —— 否则下一轮就只能
+            # 凭记忆描述这张图，无法用 image-view 回看。
+            user_content = (
+                f"<{task.user.id}>" + task.content + image_marker(getattr(task, "image_refs", None))
+            )
             if task_images and image_enabled:
                 user_input_messages = [
                     {"role": "system", "content": "以下为本次请求对话，请着重于下面部分\n下面是该任务用户原始请求"},

@@ -144,6 +144,15 @@ orchestrator/config       → /app/config          （agent_list.json、system_s
 orchestrator/system_prompt → /app/system_prompt   （各智能体 System Prompt）
 ```
 
+另外还会挂 `my-agent-workspace-pvc` 到 `/app/workspace`（`WORKSPACE_DIR=/app/workspace`），
+与 tool-runtime 共用同一个用户工作区：
+
+- 带图消息的图片由 orchestrator **自动落盘**（`app/image_store.py`）：
+  `<用户工作区>/uploads/images/<YYYYMMDD>/<sha1 前16位>.<ext>`，同图按内容哈希去重；
+- 提示词（main 的「本次请求对话」）与本轮 openviking 历史里都会带
+  `（附图: uploads/images/…）`，模型下一轮可据此调 tool-runtime 的 `image-view` 回看；
+- 落盘失败只记日志、不影响本轮对话（失败闭合）。
+
 ## 工具清单（system_prompt/TOOL.json）
 
 工具清单统一放在 `SYSTEM_PROMPT_DIR/TOOL.json`，各智能体的 `TOOL.md` 只写注入选项（正文可选，作为该智能体补充说明追加）：

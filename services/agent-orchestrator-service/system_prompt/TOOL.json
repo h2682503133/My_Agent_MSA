@@ -185,6 +185,19 @@
           "groups": [
             "图片"
           ]
+        },
+        {
+          "name": "image-view",
+          "args": "图片路径",
+          "desc": "读取工作区里的图片给模型看（回看历史消息中的图片）",
+          "groups": [
+            "图片"
+          ],
+          "notes": [
+            "用户发来的图片会被自动保存到工作区 uploads/images/<日期>/<hash>.<ext>，提示词与历史里都带「（附图: 路径）」",
+            "要重新看某张图（如用户说“你再看下刚才那张图”）→ image-view|uploads/images/20260101/xxxxxxxx.jpg",
+            "也可以直接传 http(s) 图片链接；单图上限约 7.5MB"
+          ]
         }
       ]
     },

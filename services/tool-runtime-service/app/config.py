@@ -110,6 +110,13 @@ ENABLE_OPENVIKING = env_bool("ENABLE_OPENVIKING", True)
 
 ENABLE_SHELL_TOOLS = env_bool("ENABLE_SHELL_TOOLS", True)
 
+# ---- image-view（image_tools.py）----
+# 单张图片字节上限：base64 膨胀 4/3，7.5MB 原文 ≈ 10MB data URL，
+# 与主流多模态接口的单图上限对齐；超限直接报错，不丢给上游去失败。
+IMAGE_VIEW_MAX_BYTES = env_int("IMAGE_VIEW_MAX_BYTES", int(7.5 * 1024 * 1024))
+# 远程 URL 下载超时（image-view 支持直接传 http(s) 链接）
+IMAGE_VIEW_TIMEOUT_SECONDS = env_int("IMAGE_VIEW_TIMEOUT_SECONDS", 30)
+
 # PROCESS 长期事件记录存储：config PVC 挂载在 /app/system_prompts（orchestrator 侧同目录为 /app/config）
 PROCESS_DIR = os.getenv("PROCESS_DIR", "/app/system_prompts/orchestrator/config/process")
 
