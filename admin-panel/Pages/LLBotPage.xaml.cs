@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Threading.Tasks;
 using System.IO;
 using System.Net.Http;
 using System.Text.Json;
@@ -27,11 +29,12 @@ public partial class LLBotPage : Page
         _llbot.LogReceived += OnLogReceived;
         _llbot.QrCodeStatus += OnQrCodeStatus;
         _llbot.QrUrlChanged += OnQrUrlChanged;
+        _llbot.LlbotExited += OnLlbotExited;
         _llbot.QrImageFetched += OnQrCodeChanged;   // 兜底取到的码：只显示，不推送
 
         LoadSettings();
-        if (!string.IsNullOrEmpty(TxtFolderPath.Text))
-            _llbot.LlbotFolder = TxtFolderPath.Text;
+        ApplySelectedExe();
+        CmbMode.SelectedIndex = _llbot.HeadlessMode ? 1 : 0;
         if (!string.IsNullOrEmpty(TxtQqPath.Text))
             _llbot.QqPath = TxtQqPath.Text;
         _llbot.WebuiBaseUrl = string.IsNullOrWhiteSpace(TxtWebuiUrl.Text)
@@ -189,11 +192,153 @@ public partial class LLBotPage : Page
         SaveSettings();
     }
 
-    private void TxtFolderPath_TextChanged(object sender, TextChangedEventArgs e)
+    private void TxtExePath_TextChanged(object sender, TextChangedEventArgs e)
     {
         SaveSettings();
-        if (Directory.Exists(TxtFolderPath.Text))
-            _llbot.LlbotFolder = TxtFolderPath.Text;
+        ApplySelectedExe();
+    }
+
+    /// <summary>把输入框里的 exe 路径同步给服务并刷新识别结果。</summary>
+    private void ApplySelectedExe()
+    {
+        var path = (TxtExePath.Text ?? "").Trim().Trim('"');
+        if (path.Length > 0)
+            _llbot.LlbotExe = path;
+        UpdateLlbotInfo();
+    }
+
+    /// <summary>展示识别结果：新旧布局 / 运行时版本 / 数据目录 / 二维码文件位置。</summary>
+    private void UpdateLlbotInfo()
+    {
+        var exe = _llbot.ResolveLlbotExe();
+        if (exe.Length == 0)
+        {
+            TxtLlbotInfo.Text = "⚠ 未找到启动器 exe：请选择安装根目录下的 LuckyLillia.exe（新版）或 llbot.exe（旧版）";
+            TxtLlbotInfo.Foreground = System.Windows.Media.Brushes.IndianRed;
+            return;
+        }
+
+        var version = _llbot.VersionText;
+        var layout = _llbot.LayoutText + (version.Length > 0 ? $" · 运行时 v{version}" : "");
+        var qr = _llbot.QrCodePath;
+        var leftovers = _llbot.FindInstallProcesses().Count;
+        TxtLlbotInfo.Text =
+            $"识别为：{layout}    工作目录：{_llbot.LlbotFolder}    数据目录：{_llbot.DataDir}"
+            + (qr.Length > 0 ? $"    二维码文件：{qr}" : "")
+            + (leftovers > 0 ? $"    ⚠ 检测到 {leftovers} 个残留进程（点「清理残留」）" : "");
+
+        // 只有「新版 + PMHQ 模式」才需要这几样：PMHQ 抠不到 QQ 窗口里的码
+        var pmhq = _llbot.Layout == LlBotService.LlbotLayout.Bundled && !_llbot.HeadlessMode;
+        TxtPmhqHint.Visibility = pmhq ? Visibility.Visible : Visibility.Collapsed;
+        BtnFocusQq.Visibility = pmhq ? Visibility.Visible : Visibility.Collapsed;
+        BtnCaptureQq.Visibility = pmhq ? Visibility.Visible : Visibility.Collapsed;
+        TxtLlbotInfo.Foreground = leftovers > 0
+            ? System.Windows.Media.Brushes.DarkOrange
+            : System.Windows.Media.Brushes.DimGray;
+    }
+
+    /// <summary>
+    /// 清理残留：结束安装目录下仍在运行的启动器 / PMHQ / 内嵌 node。
+    /// 典型场景：面板被直接关掉（没点停止）、或启动器是命令行拉起来的 ——
+    /// 这时面板没有它们的句柄，只能按安装路径认领。
+    /// </summary>
+
+
+    /// <summary>进程自己退出（崩溃/被外部结束）时，把按钮和内部状态同步回来。</summary>
+    private void OnLlbotExited()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _isRunning = false;
+            BtnStartStop.Content = "▶ 启动";
+            BtnStartStop.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0, 120, 212));
+            UpdateLlbotInfo();
+        });
+    }
+
+
+    /// <summary>启动后：等 QQ 登录窗口出现并前置（只为省一次找窗口，不截图）。</summary>
+    private async Task BringQqWindowAsync()
+    {
+        var focus = await _llbot.FocusQqWindowWhenReadyAsync();
+        AppendLog("[系统] " + focus);
+    }
+
+
+    /// <summary>PMHQ / headless 切换（两种都是官方模式）。</summary>
+    private void CmbMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_llbot == null) return;
+        var headless = CmbMode.SelectedIndex == 1;
+        if (_llbot.HeadlessMode == headless) return;
+        _llbot.HeadlessMode = headless;
+        SaveSettings();
+        UpdateLlbotInfo();
+        AppendLog(headless
+            ? "[系统] 已切到 headless 模式（LLBot 直连）：启动后二维码会直接显示在面板里"
+            : "[系统] 已切到 PMHQ 模式（真实 QQ 客户端）：二维码在 QQ 登录窗口里");
+    }
+
+    private void BtnCaptureQq_Click(object sender, RoutedEventArgs e)
+    {
+        var (png, message) = _llbot.CaptureQqWindow();
+        AppendLog("[系统] " + message);
+        if (png != null) ShowQrImage(png, "QQ 登录窗口实拍（在这里扫码）");
+    }
+
+    /// <summary>把 PNG 字节显示到二维码卡片（与二维码轮询共用）。</summary>
+    private void ShowQrImage(byte[] png, string statusText)
+    {
+        try
+        {
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = new MemoryStream(png);
+            bitmap.EndInit();
+            bitmap.Freeze();
+            QrCodeImage.Source = bitmap;
+            TxtQrStatus.Text = statusText;
+            TxtQrStatus.Foreground = System.Windows.Media.Brushes.Green;
+        }
+        catch (Exception ex)
+        {
+            TxtQrStatus.Text = $"加载失败: {ex.Message}";
+            TxtQrStatus.Foreground = System.Windows.Media.Brushes.Red;
+        }
+    }
+
+    private void BtnFocusQq_Click(object sender, RoutedEventArgs e)
+    {
+        AppendLog("[系统] " + _llbot.FocusQqWindow());
+    }
+
+    private void BtnCleanup_Click(object sender, RoutedEventArgs e)
+    {
+        var found = _llbot.FindInstallProcesses();
+        if (found.Count == 0)
+        {
+            AppendLog("[系统] 没有检测到 LLBot 残留进程");
+            UpdateLlbotInfo();
+            return;
+        }
+
+        var names = string.Join("、", found.Select(f => $"{f.Name}({f.Pid})"));
+        var answer = MessageBox.Show(
+            $"检测到 {found.Count} 个 LLBot 进程仍在运行：\n{names}\n\n要强制结束它们吗？（QQ 进程不会被结束）",
+            "清理 LLBot 残留",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes)
+        {
+            AppendLog("[系统] 已取消清理");
+            return;
+        }
+
+        var killed = _llbot.KillInstallProcesses();
+        AppendLog($"[系统] 清理完成，已结束 {killed.Count} 个进程");
+        UpdateLlbotInfo();
     }
 
     private void TxtQqPath_TextChanged(object sender, TextChangedEventArgs e)
@@ -202,14 +347,19 @@ public partial class LLBotPage : Page
         SaveSettings();
     }
 
-    private void BtnBrowseFolder_Click(object sender, RoutedEventArgs e)
+    private void BtnBrowseExe_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new System.Windows.Forms.FolderBrowserDialog
+        var dialog = new System.Windows.Forms.OpenFileDialog
         {
-            Description = "选择 LLBot 文件夹"
+            Title = "选择 LLBot 启动器（新版 LuckyLillia.exe / 旧版 llbot.exe）",
+            Filter = "LLBot 启动器|*.exe|所有文件|*.*",
+            CheckFileExists = true,
         };
+        var folder = _llbot.LlbotFolder;
+        if (folder.Length > 0 && Directory.Exists(folder))
+            dialog.InitialDirectory = folder;
         if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-            TxtFolderPath.Text = dialog.SelectedPath;
+            TxtExePath.Text = dialog.FileName;
     }
 
     private void BtnBrowseQq_Click(object sender, RoutedEventArgs e)
@@ -237,11 +387,31 @@ public partial class LLBotPage : Page
         }
         else
         {
-            if (string.IsNullOrEmpty(TxtFolderPath.Text))
+            if (_llbot.ResolveLlbotExe().Length == 0)
             {
-                AppendLog("[系统] 请先选择 LLBot 文件夹");
+                AppendLog("[系统] 请先选择 LLBot 启动器 exe（新版 LuckyLillia.exe / 旧版 llbot.exe）");
                 return;
             }
+
+            // 端口占用检查：新旧版都占 PMHQ 13000 / WebUI 3080。
+            // 已有实例在跑时再启动会冲突（新版启动器还会在控制台问「是否关闭这些进程」，
+            // 而面板没给它 stdin，结果是卡住后无声退出），所以先让用户决定。
+            var busy = _llbot.BusyPorts();
+            if (busy.Count > 0)
+            {
+                AppendLog($"[系统] 检测到端口被占用：{string.Join("、", busy)}（多半已有一个 LLBot 实例在运行）");
+                var answer = MessageBox.Show(
+                    $"端口 {string.Join("、", busy)} 已被占用，通常说明已经有一个 LLBot 实例在运行。\n\n继续启动可能与已有实例冲突（登录互踢 / 二维码互相覆盖）。\n是否仍要继续？",
+                    "LLBot 端口占用",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (answer != MessageBoxResult.Yes)
+                {
+                    AppendLog("[系统] 已取消启动");
+                    return;
+                }
+            }
+
             try
             {
                 _llbot.StartLlbot();
@@ -250,8 +420,10 @@ public partial class LLBotPage : Page
                 BtnStartStop.Background = new System.Windows.Media.SolidColorBrush(
                     System.Windows.Media.Color.FromRgb(211, 47, 47));
                 AppendLog("[系统] LLBot 已启动");
-                // 启动后按 WebUI API 优先、文件兜底的方式轮询二维码
-                _llbot.StartQrPolling();
+                _ = BringQqWindowAsync();   // PMHQ 模式：等 QQ 登录窗口出现后前置并截图
+                // 轮询间隔按模式取：headless 的码会自己过期，密一点刷新；
+                // PMHQ 模式码根本拿不到，没必要频繁打接口。
+                _llbot.StartQrPolling(_llbot.HeadlessMode ? 20000 : 120000);
             }
             catch (Exception ex)
             {
@@ -282,8 +454,17 @@ public partial class LLBotPage : Page
                 var settings = JsonSerializer.Deserialize<SettingsData>(json);
                 if (settings != null)
                 {
-                    TxtFolderPath.Text = settings.LlbotFolder ?? "";
+                    // 新版设置直接存 exe；只有旧版设置（LlbotFolder）时，
+                    // 在目录里找出启动器 exe 自动迁移过来（不要求用户重新选）。
+                    var exe = settings.LlbotExe ?? "";
+                    if (string.IsNullOrWhiteSpace(exe) && !string.IsNullOrWhiteSpace(settings.LlbotFolder))
+                    {
+                        var migrated = LlBotService.ResolveLlbotExeIn(settings.LlbotFolder!);
+                        if (migrated.Length > 0) exe = migrated;
+                    }
+                    TxtExePath.Text = exe;
                     TxtQqPath.Text = settings.QqPath ?? "";
+                    _llbot.HeadlessMode = settings.Headless == true;
                     TxtWebuiUrl.Text = settings.WebuiUrl ?? "http://127.0.0.1:3080";
                     TxtWebuiToken.Text = settings.WebuiToken ?? "";
                 }
@@ -303,7 +484,9 @@ public partial class LLBotPage : Page
             Directory.CreateDirectory(SettingsDir);
             var settings = new SettingsData
             {
-                LlbotFolder = TxtFolderPath.Text,
+                LlbotExe = TxtExePath.Text,
+                Headless = _llbot.HeadlessMode,
+                LlbotFolder = _llbot.LlbotFolder,
                 QqPath = TxtQqPath.Text,
                 WebuiUrl = TxtWebuiUrl.Text,
                 WebuiToken = TxtWebuiToken.Text
@@ -315,6 +498,8 @@ public partial class LLBotPage : Page
 
     private class SettingsData
     {
+        public string? LlbotExe { get; set; }
+        public bool Headless { get; set; }
         public string? LlbotFolder { get; set; }
         public string? QqPath { get; set; }
         public string? WebuiUrl { get; set; }
