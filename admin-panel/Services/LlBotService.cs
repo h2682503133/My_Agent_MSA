@@ -1049,7 +1049,7 @@ public class LlBotService
     /// （api-auth.luckylillia.com，Cloudflare，含 AAAA —— IPv6 抖动时会 Network unreachable）。
     /// 空 = 交给 LLBot 自己决定（默认 cf）。
     /// </summary>
-    public string SignCdn { get; set; } = "china";
+    public string SignCdn { get; set; } = "cf";
 
 
     /// <summary>

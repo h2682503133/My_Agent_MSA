@@ -480,7 +480,7 @@ public partial class LLBotPage : Page
                     TxtExePath.Text = exe;
                     TxtQqPath.Text = settings.QqPath ?? "";
                     _llbot.HeadlessMode = settings.Headless == true;
-                    _llbot.SignCdn = string.IsNullOrWhiteSpace(settings.Cdn) ? "china" : settings.Cdn!;
+                    _llbot.SignCdn = string.IsNullOrWhiteSpace(settings.Cdn) ? "cf" : settings.Cdn!;
                     TxtWebuiUrl.Text = settings.WebuiUrl ?? "http://127.0.0.1:3080";
                     TxtWebuiToken.Text = settings.WebuiToken ?? "";
                 }
