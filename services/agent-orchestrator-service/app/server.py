@@ -146,6 +146,18 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
 
         yield from self._stream_task_events(task, run, context)
 
+    def SetSessionState(self, request, context):
+        """斜杠命令 /agent、/mode：改会话的默认智能体 / 模式（内存态）。"""
+        ok, message, error = AgentRuntime.set_session_state(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            agent_id=request.agent_id,
+            mode=request.mode,
+        )
+        return agent_orchestrator_pb2.SetSessionStateResponse(
+            ok=ok, message=message, error=error
+        )
+
     def StopTask(self, request, context):
         """打断（barge-in）：让该用户正在执行的任务在下一个检查点暂停。
 

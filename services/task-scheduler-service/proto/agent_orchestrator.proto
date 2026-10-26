@@ -29,6 +29,19 @@ message ResumeTaskRequest {
 // 打断（barge-in）：让某用户当前「正在跑」的任务在下一个检查点暂停，**保留现场**
 // （上下文栈 / tool_log / 记忆一律不动），等用户下一条消息作为【用户插话】接着跑。
 // 语义是暂停，不是销毁：任务留在 orchestrator 的 PENDING_TASKS 里等待 ResumeTask。
+message SetSessionStateRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string agent_id = 3;   // 非空 = 切换智能体
+  string mode = 4;       // 非空 = 切换模式（"default" = 回默认）
+}
+
+message SetSessionStateResponse {
+  bool ok = 1;
+  string message = 2;    // 给用户看的回执
+  string error = 3;
+}
+
 message StopTaskRequest {
   string user_id = 1;
   // 精确指定任务；空 = 该用户当前运行中的任务（约定一用户同时只有一个）。
@@ -70,4 +83,6 @@ service AgentOrchestrator {
   rpc ExecuteTask(ExecuteTaskRequest) returns (stream TaskEvent);
   rpc ResumeTask(ResumeTaskRequest) returns (stream TaskEvent);
   rpc StopTask(StopTaskRequest) returns (StopTaskResponse);
+  // 会话状态（斜杠命令 /agent、/mode）：只改内存里的 default_agent / default_mode
+  rpc SetSessionState(SetSessionStateRequest) returns (SetSessionStateResponse);
 }

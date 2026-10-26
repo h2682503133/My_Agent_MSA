@@ -35,6 +35,14 @@ class StopResult:
     message: str = ""
 
 
+@dataclass
+class StateResult:
+    """SetSessionState 的结果（斜杠命令 /agent、/mode）。"""
+    ok: bool = False
+    message: str = ""
+    error: str = ""
+
+
 class OrchestratorClient:
     def __init__(self, target: str | None = None):
         self.target = target or config.ORCHESTRATOR_TARGET
@@ -179,6 +187,32 @@ class OrchestratorClient:
             stopped=bool(resp.stopped),
             message=resp.message or "",
         )
+
+    def set_session_state(
+        self,
+        user_id: str,
+        session_id: str,
+        agent_id: str = "",
+        mode: str = "",
+    ) -> StateResult:
+        """scheduler -> orchestrator: SetSessionState（斜杠命令 /agent、/mode）。"""
+        if agent_orchestrator_pb2 is None or agent_orchestrator_pb2_grpc is None:
+            return StateResult(ok=False, error="gRPC generated files not found")
+        try:
+            with grpc.insecure_channel(self.target) as channel:
+                stub = agent_orchestrator_pb2_grpc.AgentOrchestratorStub(channel)
+                resp = stub.SetSessionState(
+                    agent_orchestrator_pb2.SetSessionStateRequest(
+                        user_id=user_id,
+                        session_id=session_id,
+                        agent_id=agent_id,
+                        mode=mode,
+                    ),
+                    timeout=config.STOP_REQUEST_TIMEOUT_SECONDS,
+                )
+        except Exception as exc:
+            return StateResult(ok=False, error=str(exc))
+        return StateResult(ok=bool(resp.ok), message=resp.message or "", error=resp.error or "")
 
     def _event_to_dict(self, task: ScheduledTask, event) -> dict:
         return {

@@ -6,6 +6,7 @@ from typing import Callable
 from app import config
 from app import world_info_manager
 from app import mode as mode_switch
+from app import user_commands
 from app.agent_config import load_agent_config
 from app.context_builder import (
     GROUP_SESSION_PREFIXES,
@@ -274,6 +275,76 @@ class AgentRuntime:
             return str(model_response)
         except Exception:
             return ""
+
+    @classmethod
+    def set_session_state(
+        cls,
+        user_id: str,
+        session_id: str,
+        agent_id: str = "",
+        mode: str = "",
+    ) -> tuple[bool, str, str]:
+        """斜杠命令的服务端实现（/agent、/mode）。
+
+        与 `/stop` 同一层：scheduler 在任务入口拦下命令，经 RPC 调到这里，
+        只改内存里的 `default_agent` / `default_mode`，不建实例、不写历史、不调模型。
+
+        返回 `(ok, message, error)`；message 是给用户的回执原文。
+        """
+        uid = str(user_id or "default")
+        sid = str(session_id or "")
+        current_agent = cls.default_agent.get(sid, "main") or "main"
+        current_mode = mode_switch.normalize_mode(cls.default_mode.get(sid))
+        names = user_commands.available_agents(config.AGENT_CONFIG_PATH, uid)
+
+        def _agent_config(agent: str) -> dict:
+            try:
+                return load_agent_config(
+                    path=config.AGENT_CONFIG_PATH, user_id=uid, agent_id=agent
+                )
+            except Exception as exc:
+                debug_log(f"[{uid}] 读取智能体 {agent} 配置失败：{exc}")
+                return {}
+
+        if agent_id:
+            if not user_commands.agent_exists(config.AGENT_CONFIG_PATH, uid, agent_id):
+                return False, "", f"未知智能体 {agent_id!r}，可用：{', '.join(names) or '（无）'}"
+            cls.default_agent[sid] = agent_id
+            # 换 agent 即换人：模式回到 default
+            cls.default_mode[sid] = mode_switch.DEFAULT_MODE
+            debug_log(f"[{uid}] 斜杠命令切换智能体 -> {agent_id}（模式重置 default）")
+            return True, f"已切换智能体：{agent_id}（模式重置为 default）", ""
+
+        if mode:
+            agent_config = _agent_config(current_agent)
+            error = mode_switch.validate_mode(
+                agent_config,
+                config.SYSTEM_PROMPT_DIR / current_agent,
+                mode,
+            )
+            if error:
+                return False, "", error
+            canonical = mode_switch.canonical_mode(agent_config, mode)
+            cls.default_mode[sid] = canonical
+            effective = mode_switch.effective_config(agent_config, canonical)
+            debug_log(
+                f"[{uid}] 斜杠命令切换模式 -> {canonical}"
+                f"（模型 {effective.get('model_profile')}）"
+            )
+            return True, (
+                f"已切换模式：{canonical}（智能体 {current_agent}，"
+                f"模型 {effective.get('model_profile', '')}）"
+            ), ""
+
+        # 无参数 = 查看当前状态
+        agent_config = _agent_config(current_agent)
+        modes = mode_switch.available_modes(agent_config)
+        return True, (
+            f"当前智能体：{current_agent}｜当前模式：{current_mode}\n"
+            f"可用智能体：{', '.join(names) or '（无）'}\n"
+            f"可用模式（{current_agent}）：{', '.join(modes)}\n"
+            "切换：/agent <名称>、/mode <名称>（/mode default 回默认）"
+        ), ""
 
     @classmethod
     def _emit_user_message(

@@ -12,6 +12,7 @@ from app import config
 from app.event_bus import event_bus, task_event
 from app.logger import gateway_log
 from app.orchestrator_client import OrchestratorClient
+from app import commands
 from app.scheduled_task import DeliveryTarget, ScheduledTask
 
 # ======================
@@ -82,12 +83,10 @@ class SubmitResult:
 # 必须在 CreateTask 入口就拦下：/stop 若按普通任务入队，会排在正在执行的任务
 # 之后，永远没机会抢占 —— 而「用户正需要它生效」恰恰就是有任务在跑的时候。
 # 全角斜杠一并接受（中文输入法下很容易打成 ／stop）。
-_STOP_COMMAND_RE = re.compile(r"^[/／]\s*(?:stop|停止)$", re.IGNORECASE)
-
-
 def is_stop_command(content: str) -> bool:
-    """内容是否是 /stop 打断指令（仅精确匹配，不接受额外参数）。"""
-    return bool(_STOP_COMMAND_RE.match((content or "").strip()))
+    """内容是否是 /stop 打断指令（保留此名给既有调用点；解析见 app/commands.py）。"""
+    command = commands.parse(content)
+    return bool(command and command.is_stop)
 
 
 # ======================
@@ -498,6 +497,40 @@ def _publish_stop_notice(task: ScheduledTask, text: str) -> None:
     ))
 
 
+def _handle_state_command(task: ScheduledTask, command: "commands.Command") -> SubmitResult:
+    """处理 /agent、/mode：请求 orchestrator 改会话状态，并把回执发给用户。
+
+    状态只存在 orchestrator 内存里（`AgentRuntime.default_agent` / `default_mode`），
+    scheduler 侧不做任何本地存储，纯转发。
+    """
+    kind, arg = command.name, command.arg
+    client = _ORCHESTRATOR_CLIENT or OrchestratorClient()
+    result = client.set_session_state(
+        user_id=task.user_id,
+        session_id=task.session_id,
+        agent_id=arg if kind == "agent" else "",
+        mode=arg if kind == "mode" else "",
+    )
+    waiting = waiting_count()
+
+    if result.ok:
+        gateway_log(f"[state] {task.user_id} /{kind} {arg or '(查看)'} ok")
+        _publish_stop_notice(task, result.message or "已更新会话状态")
+        return SubmitResult(ok=True, task_id="", status="state_command", waiting=waiting)
+
+    detail = result.error or result.message or "未知错误"
+    gateway_log(f"[state] {task.user_id} /{kind} {arg or '(查看)'} 失败：{detail}")
+    _publish_stop_notice(task, f"【命令失败】{detail}")
+    return SubmitResult(ok=True, task_id="", status="state_command_failed", waiting=waiting)
+
+
+def _handle_command(task: ScheduledTask, command: "commands.Command") -> SubmitResult:
+    """所有斜杠命令的唯一分发点（/stop、/agent、/mode）。"""
+    if command.is_stop:
+        return _handle_stop_command(task)
+    return _handle_state_command(task, command)
+
+
 def _handle_stop_command(task: ScheduledTask) -> SubmitResult:
     """处理 /stop：请求 orchestrator 暂停该用户运行中的任务（保留现场，等插话）。
 
@@ -551,8 +584,11 @@ def _handle_stop_command(task: ScheduledTask) -> SubmitResult:
 def submit_task(task: ScheduledTask) -> SubmitResult:
     # /stop 必须在幂等登记之前拦下：它不会真的成为一个任务，
     # 也不该被 client_message_id 去重（用户停一次不够时应能再停一次）。
-    if is_stop_command(task.content):
-        return _handle_stop_command(task)
+    # 所有斜杠命令（/stop、/agent、/mode）统一在入队前拦下：控制命令不是任务内容，
+    # 也不该被幂等键去重；解析与分发给 app/commands.py + _handle_command。
+    command = commands.parse(task.content)
+    if command is not None:
+        return _handle_command(task, command)
 
     idempotency_key = task.idempotency_key
     if idempotency_key is not None:
