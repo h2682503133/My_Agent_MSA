@@ -1181,7 +1181,19 @@ class AgentRuntime:
                 client = TimerTaskClient()
                 task_type = timer.get("task_type", "submit_task")
 
-                if task_type == "delete":
+                if task_type == "invalid":
+                    # 指令看着像定时任务但字段解析不出来：必须回一句用法，
+                    # 否则用户只会看到"没反应"（模型也拿不到纠正机会）。
+                    reply = (
+                        "定时任务指令格式不对。正确写法：\n"
+                        "  定时任务:submit_task|智能体id|内容|时间|重复\n"
+                        "  定时任务:send_message|智能体id|内容|时间|重复\n"
+                        "  定时任务:query|用户id\n"
+                        "  定时任务:delete|任务id"
+                    )
+                    task.set_temp_dialog_output(reply)
+
+                elif task_type == "delete":
                     resp = client.delete_user_task(
                         user_id=task.user.id,
                         task_id=timer.get("content", ""),

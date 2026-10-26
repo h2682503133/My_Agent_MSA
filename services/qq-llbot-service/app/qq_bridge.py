@@ -13,8 +13,10 @@ QQ LLBot 桥接：通过 Satori 协议收发 QQ 消息。
 """
 import asyncio
 import base64
+import json
 import mimetypes
 import re
+from pathlib import Path
 from typing import Callable, Awaitable
 from urllib.parse import urlparse, urlunparse
 
@@ -23,10 +25,20 @@ from satori.client import App, WebsocketsInfo, Account
 from satori.const import EventType
 from satori.event import MessageEvent
 from satori.element import At, Text, Image, File, Audio, Video
+
 from satori.model import ChannelType
 
 from app import config
 from app.session_target import parse_session_target as _parse_session_target
+
+# QQ 系统表情表：QSid → 中文名（微笑/捂脸/…）。
+# 表从 LLBot 自带的 face_config.sysface 提取（见 app/face_names.json），
+# Satori 的 <face id="..."/> 只带 id，不带名字，所以在这里补。
+try:
+    with open(Path(__file__).with_name("face_names.json"), "r", encoding="utf-8") as _fh:
+        _FACE_NAMES: dict[str, str] = json.load(_fh)
+except Exception:  # 表缺失也不能影响收消息
+    _FACE_NAMES = {}
 
 
 def _session_key(event: MessageEvent) -> tuple[str, bool]:
@@ -49,14 +61,81 @@ def parse_session_target(session_id: str) -> tuple[str, str] | None:
     return _parse_session_target(session_id)
 
 
+def _extract_element_id(elem, attrs: dict) -> str:
+    """从元素上取 id。
+
+    不同来源的元素形状不一样（typed 类、通用 Element、客户端解析的原始对象），
+    attrs 里不一定有 `id`；兜底从对象属性、以及未渲染的标签文本里抠，
+    避免退化成没有信息量的 `[表情]`。
+    """
+    for key in ("id", "face_id", "faceId", "emoji_id", "emojiId"):
+        value = (attrs or {}).get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+
+    for attr in ("id", "face_id", "faceId", "emoji_id", "emojiId", "index", "faceIndex"):
+        value = getattr(elem, attr, None)
+        if value not in (None, ""):
+            return str(value).strip()
+
+    # 最后兜底：通用 Element 的 str() 是 `<face id="264" .../>` 这种标签
+    try:
+        match = re.search(r'\bid\s*=\s*"([^"]+)"', str(elem))
+        if match:
+            return match.group(1).strip()
+    except Exception:
+        pass
+    return ""
+
+def _render_element(elem) -> str:
+    """把 Satori 消息元素渲染成给模型看的纯文本。
+
+    为什么不能直接用 `str(elem)`：
+    satori 的 `ELEMENT_TYPE_MAP` 只认识 text/at/emoji/sharp/image/audio/video/file/author，
+    QQ 原生表情 `<face id="264" type="2" platform="llonebot"/>` 会被解析成通用
+    `Element(type="face")`，而它的 `__str__` 会把元素 **dumps 回 XML 原文** ——
+    于是提示词和历史里就多了一段形如 `<face id="264" .../>` 的标签，
+    模型容易把它当成标签/指令，长期污染上下文。
+    """
+    if isinstance(elem, Text):
+        return str(elem)
+
+    kind = str(getattr(elem, "type", "") or "").strip().lower()
+    if kind in ("", "text"):
+        # satori 有两种表示：typed 的 Text 类，以及解析器产出的通用
+        # Element(type="text")。后者的 str() 就是正文（没有标签）。
+        return str(elem)
+    attrs = getattr(elem, "attrs", {}) or {}
+
+    if kind in ("face", "mface", "marketface", "emoji"):
+        fid = _extract_element_id(elem, attrs)
+        if not fid:
+            return "[表情]"
+        if kind == "emoji":
+            # satori 的 emoji 元素 id 是 Unicode 码点（如 128512 = 😀）
+            try:
+                return chr(int(fid))
+            except Exception:
+                return "[表情]"
+        name = _FACE_NAMES.get(fid, "")
+        return f"[表情:{name}]" if name else f"[表情:{fid}]"
+    if kind in ("at",):
+        # @ 目标（通常是机器人自己）不喂给模型，避免"被点名的错觉"
+        name = str(attrs.get("name") or "").strip()
+        if not name or name in ("all", "全体成员"):
+            return ""
+        return f"@{name}"
+    if kind in ("quote", "reply"):
+        # 引用回复：被引用的原文另外会在消息里出现，这里不重复
+        return ""
+    if kind in ("image", "img", "file", "audio", "video", "sharp"):
+        return ""   # 这些走 images / files 专用通道
+    return f"[{kind}]" if kind else ""
+
+
 def _strip_at(elements) -> str:
-    """去掉 @ / 图片 / 文件 / 音视频等资源元素，返回纯文本内容（其余元素原样保留）。"""
-    parts = []
-    for elem in elements:
-        if isinstance(elem, (At, Image, File, Audio, Video)):
-            continue
-        parts.append(str(elem))
-    return "".join(parts).strip()
+    """把消息元素转成纯文本（图片/文件/引用等资源元素只留占位或丢弃）。"""
+    return "".join(_render_element(elem) for elem in elements).strip()
 
 
 def _extract_images(elements) -> list[str]:

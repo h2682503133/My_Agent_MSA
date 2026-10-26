@@ -612,6 +612,36 @@ public class LlBotService
         return PollQrOnceAsync();
     }
 
+    /// <summary>当前设置下要传给启动器的参数（拼装逻辑独立出来，便于自检）。</summary>
+    public string BuildArguments()
+    {
+        var args = "";
+        if (HeadlessMode)
+        {
+            // headless 模式：其它参数会被忽略，只传模式本身
+            args = "--headless";
+        }
+        else if (!string.IsNullOrEmpty(_qqPath) && File.Exists(_qqPath))
+        {
+            args = $"--qq-path \"{_qqPath}\"";
+        }
+
+        // 签名接入点：命令行优先级最高，环境变量兜底（LLBot 与 PMHQ 分别认 CDN / PMHQ_CDN）
+        var cdn = NormalizedCdn();
+        if (cdn.Length > 0)
+        {
+            args = args.Length > 0 ? $"{args} --cdn={cdn}" : $"--cdn={cdn}";
+        }
+        return args;
+    }
+
+    /// <summary>归一化后的接入点（只允许 china / cf；其它值当作未设置）。</summary>
+    public string NormalizedCdn()
+    {
+        var cdn = (SignCdn ?? "").Trim().ToLowerInvariant();
+        return cdn is "china" or "cf" ? cdn : "";
+    }
+
     public Process StartLlbot()
     {
         if (_isRunning) return _llbotProcess!;
@@ -634,16 +664,8 @@ public class LlBotService
 
         var utf8 = new UTF8Encoding(false);
 
-        var args = "";
-        if (HeadlessMode)
-        {
-            // headless 模式：其它参数会被忽略，只传模式本身
-            args = "--headless";
-        }
-        else if (!string.IsNullOrEmpty(_qqPath) && File.Exists(_qqPath))
-        {
-            args = $"--qq-path \"{_qqPath}\"";
-        }
+        var args = BuildArguments();
+        var cdn = NormalizedCdn();
 
         var psi = new ProcessStartInfo
         {
@@ -657,6 +679,12 @@ public class LlBotService
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        if (cdn.Length > 0)
+        {
+            psi.Environment["CDN"] = cdn;
+            psi.Environment["PMHQ_CDN"] = cdn;
+        }
 
         _llbotProcess = new Process { StartInfo = psi };
         _llbotProcess.OutputDataReceived += (s, e) =>
@@ -1015,6 +1043,14 @@ public class LlBotService
     ///   于是面板的二维码卡片、日志网址、推送 Dashboard 整套都能照旧工作。
     /// </summary>
     public bool HeadlessMode { get; set; }
+
+    /// <summary>
+    /// 签名接入点：`china`（国内镜像 llbot-api-auth.wumiao.wang，仅 IPv4）/ `cf`
+    /// （api-auth.luckylillia.com，Cloudflare，含 AAAA —— IPv6 抖动时会 Network unreachable）。
+    /// 空 = 交给 LLBot 自己决定（默认 cf）。
+    /// </summary>
+    public string SignCdn { get; set; } = "china";
+
 
     /// <summary>
     /// 把 QQ 窗口切到前台。

@@ -476,21 +476,37 @@ def parse_syntax(agent, task):
     # 定时任务在询问之前判断，避免同时出现时被询问分支抢走。
     timer_line = _find_command_block(full_text, "定时任务", allow_multiline=False)
     if timer_line:
-        # 统一格式: 定时任务:任务类别|智能体id|任务内容|开始时间|重复计划(可选,0=不重复)
-        # 第 2/3 参允许为空（agent_id 可留空，如 定时任务:query||2195239690|2026-08-23 14:29:00|0）
-        match_timer = re.match(r"([^|]+)\|([^|]*)\|([^|]*)(?:\|(.*))?", timer_line)
-        if match_timer:
-            task_type = match_timer.group(1).strip()
-            agent_id = match_timer.group(2).strip()
-            content = match_timer.group(3).strip()
-            rest = match_timer.group(4) or ""
-            rest_parts = rest.split("|")
-            start_time = rest_parts[0].strip() if rest_parts else ""
-            repeat_str = rest_parts[1].strip() if len(rest_parts) > 1 else ""
+        # 统一格式（**严格按位置，不允许省略字段**）：
+        #   定时任务:任务类别|智能体id|任务内容|开始时间|重复计划
+        #
+        # - 空字段就"留空"（提示词里约定），这里把每个字段两端空白一律 strip 掉
+        #   （含全角空格 　 / NBSP），所以"打几个空格占位"等同"什么都不写"。
+        # - 位置固定 → 不存在"省了 agent 还是省了 repeat"的猜测。
+        # - 缺字段 / 内容为空 / 未知类别 → invalid（显式回执，不静默、不瞎猜）。
+        parts = [p.strip() for p in timer_line.split("|")]
+        task_type = (parts[0] if parts else "").strip()
+        rest = parts[1:]
+        timer_task = None
 
-            if task_type in ("delete", "query"):
-                # 定时任务:delete|agent_id|task_id|
-                # 定时任务:query|agent_id|user_id|
+        def _invalid_timer_task(reason: str) -> dict:
+            return {
+                "task_type": "invalid",
+                "content": reason,
+                "agent_id": "",
+                "time_str": "",
+                "repeat_str": "",
+                "trigger_timestamp": 0.0,
+            }
+
+        if task_type in ("delete", "query"):
+            # query / delete 没有时间语义：`类型|<id>` 或 `类型|<agent_id>|<id>`
+            if len(rest) >= 2:
+                agent_id, content = rest[0], rest[1]
+            elif len(rest) == 1:
+                agent_id, content = "", rest[0]
+            else:
+                agent_id, content = "", ""
+            if content:
                 timer_task = {
                     "task_type": task_type,
                     "content": content,
@@ -500,19 +516,31 @@ def parse_syntax(agent, task):
                     "trigger_timestamp": 0.0,
                 }
             else:
-                # submit_task / send_message:
-                #   第4参 开始时间：绝对 2026-01-31 10:00 / 当天 10:00 / 10点30分
-                #     相对 5分钟后 / 明天10:00 / 区间随机 10:00-11:00 / 现在 / 空=立即
-                #   第5参 重复计划（可选，0=不重复）：
-                #     每30分钟 / 每2小时 / 每1小时30分钟 / 每5-10分钟
-                timer_task = {
-                    "task_type": task_type,
-                    "time_str": start_time,
-                    "repeat_str": repeat_str,
-                    "trigger_timestamp": 0.0,
-                    "content": content,
-                    "agent_id": agent_id,
-                }
+                timer_task = _invalid_timer_task(timer_line)
+
+        elif task_type in ("submit_task", "send_message"):
+            # 严格位置：类型|agent|内容[|时间[|重复]]
+            if len(rest) < 2:
+                timer_task = _invalid_timer_task(timer_line)
+            else:
+                agent_id, content = rest[0], rest[1]
+                start_time = rest[2] if len(rest) > 2 else ""
+                repeat_str = rest[3] if len(rest) > 3 else ""
+                if content:
+                    timer_task = {
+                        "task_type": task_type,
+                        "time_str": start_time,
+                        "repeat_str": repeat_str,
+                        "trigger_timestamp": 0.0,
+                        "content": content,
+                        "agent_id": agent_id,
+                    }
+                else:
+                    timer_task = _invalid_timer_task(timer_line)
+
+        else:
+            # 未知类别：显式报错，别静默吞掉（否则用户完全没反馈）
+            timer_task = _invalid_timer_task(timer_line)
 
     # 世界书（World Info）管理命令：与定时任务同级，先于询问判断。
     # 格式：

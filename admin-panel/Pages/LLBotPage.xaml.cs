@@ -35,6 +35,7 @@ public partial class LLBotPage : Page
         LoadSettings();
         ApplySelectedExe();
         CmbMode.SelectedIndex = _llbot.HeadlessMode ? 1 : 0;
+        CmbCdn.SelectedIndex = _llbot.SignCdn == "cf" ? 1 : 0;
         if (!string.IsNullOrEmpty(TxtQqPath.Text))
             _llbot.QqPath = TxtQqPath.Text;
         _llbot.WebuiBaseUrl = string.IsNullOrWhiteSpace(TxtWebuiUrl.Text)
@@ -280,6 +281,20 @@ public partial class LLBotPage : Page
             : "[系统] 已切到 PMHQ 模式（真实 QQ 客户端）：二维码在 QQ 登录窗口里");
     }
 
+
+    /// <summary>签名接入点切换：china（国内 IPv4）/ cf（Cloudflare）。</summary>
+    private void CmbCdn_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_llbot == null) return;
+        var cdn = CmbCdn.SelectedIndex == 1 ? "cf" : "china";
+        if (_llbot.SignCdn == cdn) return;
+        _llbot.SignCdn = cdn;
+        SaveSettings();
+        AppendLog(cdn == "china"
+            ? "[系统] 签名接入点：国内镜像（仅 IPv4）"
+            : "[系统] 签名接入点：Cloudflare（含 IPv6，IPv6 不稳定时会报 Network unreachable）");
+    }
+
     private void BtnCaptureQq_Click(object sender, RoutedEventArgs e)
     {
         var (png, message) = _llbot.CaptureQqWindow();
@@ -465,6 +480,7 @@ public partial class LLBotPage : Page
                     TxtExePath.Text = exe;
                     TxtQqPath.Text = settings.QqPath ?? "";
                     _llbot.HeadlessMode = settings.Headless == true;
+                    _llbot.SignCdn = string.IsNullOrWhiteSpace(settings.Cdn) ? "china" : settings.Cdn!;
                     TxtWebuiUrl.Text = settings.WebuiUrl ?? "http://127.0.0.1:3080";
                     TxtWebuiToken.Text = settings.WebuiToken ?? "";
                 }
@@ -486,6 +502,7 @@ public partial class LLBotPage : Page
             {
                 LlbotExe = TxtExePath.Text,
                 Headless = _llbot.HeadlessMode,
+                Cdn = _llbot.SignCdn,
                 LlbotFolder = _llbot.LlbotFolder,
                 QqPath = TxtQqPath.Text,
                 WebuiUrl = TxtWebuiUrl.Text,
@@ -500,6 +517,7 @@ public partial class LLBotPage : Page
     {
         public string? LlbotExe { get; set; }
         public bool Headless { get; set; }
+        public string? Cdn { get; set; }
         public string? LlbotFolder { get; set; }
         public string? QqPath { get; set; }
         public string? WebuiUrl { get; set; }

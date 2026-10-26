@@ -47,6 +47,14 @@
                     <ComboBoxItem Content="PMHQ（真实 QQ 客户端，需在 QQ 窗口里扫码）"/>
                     <ComboBoxItem Content="headless（LLBot 直连，二维码直接显示在面板）"/>
                 </ComboBox>
+                <TextBlock Text="签名接入点：" VerticalAlignment="Center"
+                           FontSize="12" Foreground="#444" Margin="16,0,6,0"/>
+                <ComboBox x:Name="CmbCdn" Width="200" Height="26" FontSize="12"
+                          VerticalContentAlignment="Center"
+                          SelectionChanged="CmbCdn_SelectionChanged">
+                    <ComboBoxItem Content="china（国内镜像，仅 IPv4）"/>
+                    <ComboBoxItem Content="cf（Cloudflare，含 IPv6）"/>
+                </ComboBox>
             </StackPanel>
         </StackPanel>
 
