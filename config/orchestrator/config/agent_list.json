@@ -8,7 +8,16 @@
         "SOUL.md",
         "TOOL.md"
       ],
-      "image_model_profile": "视觉模型，如果不需要可以删除本条设置"
+      "image_model_profile": "视觉模型，如果不需要可以删除本条设置",
+      "modes": {
+        "eco": {
+          "files": [
+            "SOUL_ECO.md",
+            "IDENTITY.md"
+          ],
+          "model_profile": "default-main"
+        }
+      }
     },
     "tool": {
       "model_profile": "default-tool",

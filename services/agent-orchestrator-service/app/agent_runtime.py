@@ -5,6 +5,7 @@ from typing import Callable
 
 from app import config
 from app import world_info_manager
+from app import mode as mode_switch
 from app.agent_config import load_agent_config
 from app.context_builder import (
     GROUP_SESSION_PREFIXES,
@@ -93,6 +94,9 @@ class AgentRuntime:
     MNT_WRITE_TOOLS = {"file-copy", "file-move", "windows-file-copy", "windows-file-move"}
     _agent_instances: OrderedDict[str, "AgentRuntime"] = OrderedDict()
     default_agent: dict[str, str] = {}
+    # 模式开关（与 default_agent 并列）：session_id → 模式名，缺省 default。
+    # 语义：切换 agent 时重置为 default；模式不动 agent_id，所以上下文共用。
+    default_mode: dict[str, str] = {}
 
     # 挂起任务注册表：task_id -> TaskRuntime
     # 只存在 orchestrator 进程内存里，供 ResumeTask 恢复时取回。
@@ -122,6 +126,7 @@ class AgentRuntime:
         self._prompt_parts = SystemPromptParts()
         self._prompt_revision: tuple = ()
         self.load_config()
+        self._config_revision_stamp = self._config_revision()
         self.build_system_prompt()
 
     @property
@@ -167,6 +172,17 @@ class AgentRuntime:
         stamp = prompt_revision()
         self._prompt_parts = ContextBuilder(self).build_system_prompt()
         self._prompt_revision = stamp
+        # 记住这次构建用的模式：模式变了即使提示词文件没变也要重建
+        self._prompt_mode = self.current_mode()
+
+    @staticmethod
+    def _config_revision() -> tuple:
+        """agent_list.json 的廉价版本戳（mtime + 大小）。"""
+        try:
+            stat = config.AGENT_CONFIG_PATH.stat()
+            return (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return (0, 0)
 
     def refresh_system_prompt(self) -> bool:
         """提示词文件 / 提示词套开关变了就重建；返回是否重建过。
@@ -181,8 +197,16 @@ class AgentRuntime:
         只刷 main 的话它们的提示词仍是旧的。
         """
         stamp = prompt_revision()
-        if stamp == self._prompt_revision:
+        config_stamp = self._config_revision()
+        config_changed = config_stamp != getattr(self, "_config_revision_stamp", (0, 0))
+        mode_changed = self.current_mode() != getattr(self, "_prompt_mode", "")
+        if stamp == self._prompt_revision and not config_changed and not mode_changed:
             return False
+        if config_changed:
+            # agent_list.json 改过（新增 modes / 换模型 / 改 files）：先重载配置再重建提示词，
+            # 否则已有实例会一直用旧配置（只有新建实例才吃到）
+            self.load_config()
+            self._config_revision_stamp = config_stamp
         # 重建失败直接抛出（套名写错 / 套目录缺失）：与 @ref= 一致，不静默用错人设。
         # 这里刻意**不**先记快照，失败时下一条消息会再报一次，直到配置被改正。
         self.build_system_prompt()
@@ -957,6 +981,23 @@ class AgentRuntime:
 
     def set_default_agent(self, agent_id: str):
         AgentRuntime.default_agent[self.session_id] = agent_id
+        # 换 agent 即换人：模式回到 default（用户约定）
+        AgentRuntime.default_mode[self.session_id] = mode_switch.DEFAULT_MODE
+
+    def set_default_mode(self, mode_name: str | None):
+        """切换本会话的模式（不改 agent_id → 会话 key 不变 → 上下文共用）。"""
+        AgentRuntime.default_mode[self.session_id] = mode_switch.canonical_mode(
+            self.config or {}, mode_name
+        )
+
+    def current_mode(self) -> str:
+        return mode_switch.normalize_mode(
+            AgentRuntime.default_mode.get(self.session_id)
+        )
+
+    def effective_config(self) -> dict:
+        """agent 配置叠加当前模式的覆盖（files / model_profile / temperature …）。"""
+        return mode_switch.effective_config(self.config or {}, self.current_mode())
 
     def load_config(self):
         debug_log(f"[load_config] self.id={self.id!r} self.user_id={self.user_id!r}")
@@ -999,12 +1040,13 @@ class AgentRuntime:
         base_head = context.base_head
         base_tail = context.base_tail
 
-        model_profile = self.config.get("model_profile") or self.config.get("model") or self.id
+        effective = self.effective_config()
+        model_profile = effective.get("model_profile") or effective.get("model") or self.id
         base_model_profile = model_profile
         # 多模态路由：本次请求带图片时切换到 image_model_profile（如豆包多模态），纯文本保持 model_profile
         image_count = context.image_count
         if image_count > 0:
-            vision_profile = self.config.get("image_model_profile")
+            vision_profile = effective.get("image_model_profile")
             if vision_profile:
                 chat_log(
                     f"[{self.user_id}] {self.id} 检测到 {image_count} 张图片，"
@@ -1021,13 +1063,13 @@ class AgentRuntime:
             "seed",
         )
         params = {
-            "temperature": self.config.get("temperature", 1),
-            "max_tokens": self.config.get("max_tokens", 2048),
+            "temperature": effective.get("temperature", 1),
+            "max_tokens": effective.get("max_tokens", 2048),
             "stream": False,
         }
         for _key in _SAMPLE_PARAM_KEYS:
-            if _key in self.config and self.config[_key] is not None:
-                params[_key] = self.config[_key]
+            if _key in effective and effective[_key] is not None:
+                params[_key] = effective[_key]
 
         # 两阶段世界书：仅用户请求轮 + files 声明 world_info.md + 无图片（多模态轮保持单次）
         # 判定在 context_builder.build_send_context 里完成（two_phase_world_info）
@@ -1083,6 +1125,26 @@ class AgentRuntime:
 
             parse_syntax(self, task)
             result = task.consume_temp_dialog_output()
+
+            # 模式切换（模型输出的指令）：只换提示词与模型，不动 agent/会话 key。
+            mode_name = str((result or {}).get("mode_switch") or "").strip()
+            if mode_name:
+                error = mode_switch.validate_mode(
+                    self.config or {},
+                    config.SYSTEM_PROMPT_DIR / self.id,
+                    mode_name,
+                )
+                if error:
+                    self._emit_user_message(
+                        task, emit, f"【模式切换失败】{error}", final=True, agent_id=self.id
+                    )
+                    return
+                self.set_default_mode(mode_name)
+                self.refresh_system_prompt()
+                chat_log(
+                    f"[{self.user_id}] {self.id} 模式切换 -> {self.current_mode()}"
+                    f"（模型 {self.effective_config().get('model_profile', '')}）"
+                )
 
             # 伪指令告警：`→tool: …` 不是协议，本轮会被当普通文本处理。
             # 静默是这类 bug 最糟的部分（模型以为转交了、实际什么都没发生），

@@ -748,6 +748,10 @@ class ContextBuilder:
 
     @property
     def _config(self) -> dict:
+        # 模式覆盖后的配置：files / model_profile / temperature 等全部跟着模式走
+        effective = getattr(self._agent, "effective_config", None)
+        if callable(effective):
+            return effective() or {}
         return self._agent.config or {}
 
     @property

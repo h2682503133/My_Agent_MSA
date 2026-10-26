@@ -75,7 +75,7 @@ def strip_misformatted_directives(text: str) -> str:
     return "\n".join(kept).strip()
 
 
-_COMMAND_NAMES = ("对话", "工具调用", "切换", "定时任务", "世界书")
+_COMMAND_NAMES = ("对话", "工具调用", "切换", "模式", "定时任务", "世界书")
 _COMMAND_LINE_RE = re.compile(
     r"^\s*(?:[-*•`]\s*)?(?:" + "|".join(map(re.escape, _COMMAND_NAMES)) + r")\s*:"
 )
@@ -439,6 +439,7 @@ def parse_syntax(agent, task):
             has_other = bool(
                 _find_command_block(full_text, "对话")
                 or _find_command_block(full_text, "工具调用")
+                or _find_command_block(full_text, "模式")
                 or _find_command_block(full_text, "定时任务")
                 or _find_command_block(full_text, "世界书")
             )
@@ -456,12 +457,23 @@ def parse_syntax(agent, task):
             has_other = bool(
                 _find_command_block(full_text, "对话")
                 or _find_command_block(full_text, "工具调用")
+                or _find_command_block(full_text, "模式")
                 or _find_command_block(full_text, "定时任务")
                 or _find_command_block(full_text, "世界书")
             )
             pure_switch = not has_other
             switch_call = {"target_id": agent_id, "pure": pure_switch}
             agent.set_default_agent(agent_id)
+
+    # 模式切换：`模式:special` / `模式:`（空 = 回到 default）。
+    # 与 `切换:` 的区别：模式不动 agent_id，会话 key 不变 → 上下文共用。
+    mode_switch_name = ""
+    mode_line = _find_command_block(full_text, "模式", allow_multiline=False)
+    if mode_line is not None:
+        mode_switch_name = (mode_line or "").strip() or "default"
+    elif re.search(r"^\s*(?:[-*•`]\s*)?模式\s*:\s*$", full_text, re.MULTILINE):
+        # `_find_command_block` 对空内容返回 None，但 `模式:`（空）应表示回到 default
+        mode_switch_name = "default"
 
     if (
         switch_target
@@ -574,6 +586,7 @@ def parse_syntax(agent, task):
         "prefix": prefix,
         "tool_call": tool_call,
         "agent_call": agent_call,
+        "mode_switch": mode_switch_name,
         "question": question,
         "timer_task": timer_task,
         "world_info_task": world_info_task,

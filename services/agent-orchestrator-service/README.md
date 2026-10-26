@@ -410,3 +410,46 @@ tool-runtime-service:5303
 
 - JSON 解析不了 / 不以 `{` 开头 / 没有已知键 → **当普通内容**（不解析、不报错）
 - 有已知键但字段不合法 → `task_failed` 事件 + 原文前 300 字（显式，不被 raw fallback 吞）
+
+## 模式开关（`模式:` 指令）
+
+在**不换智能体**的前提下，切换某个会话注入的**提示词**与**模型**——`agent_id` 不变，
+所以会话 key 不变，上下文天然共用（`切换:` 是换 agent，历史和会话都会跟着走）。
+
+### 指令
+
+| 指令（由模型在回复末尾输出） | 语义 |
+|---|---|
+| `模式:special` | 切到 `special` 模式 |
+| `模式:`（空） | 回到 `default` 模式 |
+| `切换:<agent>` | 换智能体，**同时把模式重置为 `default`** |
+
+变量存在 `AgentRuntime.default_mode`（与 `default_agent` 并列，按 `session_id` 记，
+进程内、重启即空；缺省为 `default`）。
+
+### 模式定义（`agent_list.json`，每个 agent 一份）
+
+```json
+"main": {
+  "model_profile": "default-main",
+  "files": ["SOUL.md", "TOOL.md", "IDENTITY.md"],
+  "modes": {
+    "special": {
+      "files": ["SOUL_special.md", "IDENTITY.md"],
+      "model_profile": "default-talker",
+      "temperature": 1.2
+    }
+  }
+}
+```
+
+- 可覆盖 `files` / `model_profile` / `temperature` / `max_tokens`（浅合并，模式优先）；
+- 没写的键沿用 agent 级配置；
+- `default` 模式 = agent 原配置，不定义 `modes` 时行为与改造前完全一致。
+
+### 生效与失败处理
+
+- 指令解析后立即重建 system prompt（`refresh_system_prompt` 会比较模式名，不一致就重建）；
+- 模式名未定义 → 回复`【模式切换失败】未知模式 'x'，可用模式：default, special`；
+- 模式声明的提示词文件缺失 → 回复里列出缺失文件名（不静默少注入）；
+- 空 `模式:` 永远合法（等价于 `default`）。
