@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: openviking-context-service
-          image: agent/openviking-context-service:v34
+          image: agent/openviking-context-service:v41
           imagePullPolicy: Always
           ports:
             - containerPort: 5301
@@ -36,6 +36,10 @@ spec:
               value: "fixed"
             - name: OPENVIKING_FILE_FALLBACK
               value: "false"
+            - name: EMBEDDING_SERVICE_TARGET
+              value: "embedding-service:5303"
+            - name: EMBEDDING_MODEL
+              value: "qwen3-embedding:0.6b"
             - name: USER_SERVICE_URL
               value: "http://user-service.agent.svc.cluster.local:5204"
             - name: MOCK_VIKING

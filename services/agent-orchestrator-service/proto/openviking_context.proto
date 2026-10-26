@@ -23,6 +23,8 @@ message MemoryHit {
 message ChatMessage {
   string role = 1;
   string content = 2;
+  // 该条消息的写入时间（ISO8601，UTC）。老数据可能为空 —— 空则不渲染时间戳。
+  string created_at = 3;
 }
 
 message SearchContextResponse {

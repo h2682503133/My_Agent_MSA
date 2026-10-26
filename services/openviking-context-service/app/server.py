@@ -43,7 +43,11 @@ class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServ
                 for item in result["memories"]
             ],
             recent_messages=[
-                openviking_context_pb2.ChatMessage(role=item.get("role", ""), content=item.get("content", ""))
+                openviking_context_pb2.ChatMessage(
+                    role=item.get("role", ""),
+                    content=item.get("content", ""),
+                    created_at=item.get("created_at", "") or "",
+                )
                 for item in result["recent_messages"]
             ],
             error=result.get("error", ""),

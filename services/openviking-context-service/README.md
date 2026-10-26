@@ -130,3 +130,60 @@ kubectl apply -f deploy/services/openviking-context-service.yaml
 自测：`python tools/assistant_prefix_smoke_test.py`（33 项，含与
 `context_builder.history_speaker` 的**正则口径比对** —— 两边漂移会导致"存的时候跳过了
 自动前缀、读的时候解析不出说话人"的静默错配）。
+
+## 会话历史：时间戳与"未 commit 内容"的召回
+
+### 1. 时间戳
+
+OpenViking 的 session 消息本来就带 `created_at`（ISO8601，UTC），之前被丢掉了。
+现在整条链路透传，并在注入模型前渲染成本地时间前缀：
+
+```text
+proto ChatMessage.created_at
+  → viking_store._message_created_at
+  → server.SearchContext
+  → context_client.search_context
+  → context_builder.history_time_stamp / shape_history_messages
+```
+
+渲染结果形如 `[10-26 13:04] <2195239690>: 我的猫粮快没了…`；老数据没有 `created_at`
+则不加前缀（正文原样）。`【会话摘要】/【相关记忆】` 不是对话，不加时间戳。
+
+### 2. 未 commit 会话内容的向量召回（`app/session_recall.py`）
+
+**背景（实测）**：OpenViking 只对 `memories / resource / skill` 建向量索引
+（`find` 的 `context_type` 仅这几种），会话的 `messages.jsonl` **不建索引** ——
+在 session 上 `find` 恒 0 命中。而 `commit_limit`（默认 15 条）才压缩进长期记忆、
+上下文窗口只取最近 `max_messages`（默认 6）条，中间的几条既不在窗口里、也没进长期记忆。
+
+**做法**：本地补一层召回，不写任何存储：
+
+1. `client.read("viking://user/<uid>/sessions/<sid>/messages.jsonl")` 取未 commit 的全部消息
+2. 按条数从尾部剔除"已经在窗口里"的最新 N 条（尾部对不上时才退回按正文去重）
+3. 用 embedding 把 query 与候选消息向量化（候选按内容哈希缓存，进程内上限 1024）
+4. 余弦相似度取 top-k（阈值过滤 + 同文去重）
+
+**embedding 走哪里**：只调 `embedding-service`（gRPC `EmbeddingService.Embed`，唯一收束口）。
+本服务不硬编码 ollama / OpenAI 地址；provider 由 embedding-service 配置决定。
+embedding 失败/超时只记一条日志并跳过召回，不影响本轮对话。
+
+**缓存**：向量缓存**按 `user_id` 分桶**，每桶独立容量与 FIFO 淘汰
+（`SESSION_RECALL_CACHE_PER_USER`，默认 256 条），桶数超上限按 LRU 整桶淘汰
+（`SESSION_RECALL_CACHE_MAX_USERS`，默认 64）。key 含模型名，换模型自动失效。
+进程内缓存，重启即空。
+
+**配置**：
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `SESSION_RECALL_ENABLED` | `true` | 总开关 |
+| `SESSION_RECALL_TOP_K` | `3` | 最多注入几条 |
+| `SESSION_RECALL_MIN_SCORE` | `0.45` | 余弦阈值 |
+| `SESSION_RECALL_MAX_MESSAGES` | `200` | 参与打分的候选上限（取最近 N 条） |
+| `EMBEDDING_SERVICE_TARGET` | `embedding-service:5303` | 向量计算入口（gRPC） |
+| `EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 请求模型（需与索引侧一致，1024 维） |
+| `SESSION_RECALL_CACHE_PER_USER` | `256` | 每用户缓存条数上限 |
+| `SESSION_RECALL_CACHE_MAX_USERS` | `64` | 最多保留多少个用户的缓存桶 |
+
+命中结果以 `memory_id="session:<msg_id>"` 的形式并入 `memories`（与长期记忆同一注入通道，
+编排层渲染成 `【相关记忆】[10-26 13:04] …`），总条数仍受 `MAX_MEMORY_HITS`（默认 5）约束。

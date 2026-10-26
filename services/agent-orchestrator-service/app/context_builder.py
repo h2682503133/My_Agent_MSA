@@ -102,6 +102,7 @@ TOOL 注入
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 from dataclasses import dataclass, field
@@ -230,6 +231,29 @@ def history_speaker(content) -> str:
     return match.group(1).strip() if match else ""
 
 
+def history_time_stamp(message) -> str:
+    """把历史消息的 `created_at`（ISO8601，UTC）渲染成本地时间前缀 `[10-26 13:06] `。
+
+    拿不到 / 解析失败 → 返回空串（老数据不受影响，正文原样）。
+    """
+    if not isinstance(message, dict):
+        return ""
+    raw = str(message.get("created_at") or "").strip()
+    if not raw:
+        return ""
+    try:
+        moment = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return ""
+    try:
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=datetime.timezone.utc)
+        local = moment.astimezone()
+    except Exception:
+        return ""
+    return local.strftime("[%m-%d %H:%M] ")
+
+
 def shape_history_messages(messages, *, self_id: str) -> list[dict]:
     """把短期 session 记忆（对话历史）按说话人重新分配 role。
 
@@ -275,25 +299,27 @@ def shape_history_messages(messages, *, self_id: str) -> list[dict]:
             if not content.strip():
                 continue
         if content.lstrip().startswith(_NON_DIALOGUE_PREFIX):
+            # 【会话摘要】/【相关记忆】不是对话，不加时间戳
             flush()
-            ordered.append(dict(message))
+            ordered.append({**message, "content": content})
             continue
 
+        stamp = history_time_stamp(message)
         speaker = history_speaker(content)
         if speaker == self_id:
             flush()
-            ordered.append({"role": "assistant", "content": content})
+            ordered.append({"role": "assistant", "content": stamp + content})
         elif speaker:
             if message.get("role") == "user":
-                # 本来就是 user 侧（用户消息 / `<agent_e>:` 转场）：保持原样
+                # 本来就是 user 侧（用户消息 / `<agent_e>:` 转场）：保持原样（仅补时间戳）
                 flush()
-                ordered.append(dict(message))
+                ordered.append({**message, "content": stamp + content})
             else:
-                foreign.append(content)
+                foreign.append(stamp + content)
         else:
             # 无作者信息可判：保持原 role（工具摘要等）
             flush()
-            ordered.append(dict(message))
+            ordered.append({**message, "content": stamp + content})
     flush()
     return ordered
 

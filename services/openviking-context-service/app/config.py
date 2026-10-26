@@ -50,3 +50,23 @@ WORLD_INFO_PATH = Path(os.getenv("WORLD_INFO_PATH", "/app/config/orchestrator/co
 WORLD_INFO_GROUPS_PATH = Path(os.getenv("WORLD_INFO_GROUPS_PATH", "/app/config/orchestrator/config/world_info/groups.json"))
 WORLD_INFO_MAX_TOKENS = int(os.getenv("WORLD_INFO_MAX_TOKENS", "1500"))
 WORLD_INFO_MAX_ENTRIES = int(os.getenv("WORLD_INFO_MAX_ENTRIES", "20"))
+
+# ─── 未 commit 会话内容的向量召回（session_recall.py）──────────────
+# 会话 messages.jsonl 不被 OpenViking 建索引，窗口外、尚未 commit 的消息会成为盲区；
+# 这里在本地用 embedding-service（唯一向量计算入口）补一层相似度召回。
+# 本服务不硬编码 ollama / OpenAI 地址 —— provider 由 embedding-service 决定。
+EMBEDDING_SERVICE_TARGET = os.getenv("EMBEDDING_SERVICE_TARGET", "embedding-service:5303")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+EMBEDDING_TIMEOUT_SECONDS = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30"))
+SESSION_RECALL_ENABLED = os.getenv("SESSION_RECALL_ENABLED", "true").lower() == "true"
+SESSION_RECALL_TOP_K = int(os.getenv("SESSION_RECALL_TOP_K", "3"))
+SESSION_RECALL_MIN_SCORE = float(os.getenv("SESSION_RECALL_MIN_SCORE", "0.45"))
+SESSION_RECALL_MAX_MESSAGES = int(os.getenv("SESSION_RECALL_MAX_MESSAGES", "40"))
+# 单轮最多补算多少条向量（冷启动时分摊到多轮，避免一轮等十几秒）
+SESSION_RECALL_EMBED_MAX_PER_CALL = int(os.getenv("SESSION_RECALL_EMBED_MAX_PER_CALL", "16"))
+SESSION_RECALL_EMBED_BATCH = int(os.getenv("SESSION_RECALL_EMBED_BATCH", "16"))
+# 等召回结果的总超时：超过就放弃本次命中（任务留后台继续跑，顺手把缓存热起来）
+SESSION_RECALL_TOTAL_TIMEOUT_SECONDS = float(os.getenv("SESSION_RECALL_TOTAL_TIMEOUT_SECONDS", "3"))
+# 向量缓存按用户分桶：每桶条数上限 / 最多保留多少个用户（LRU 整桶淘汰）
+SESSION_RECALL_CACHE_PER_USER = int(os.getenv("SESSION_RECALL_CACHE_PER_USER", "256"))
+SESSION_RECALL_CACHE_MAX_USERS = int(os.getenv("SESSION_RECALL_CACHE_MAX_USERS", "64"))

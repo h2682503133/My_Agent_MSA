@@ -10,7 +10,8 @@ python -m grpc_tools.protoc \
   -I "$BASE_DIR/proto" \
   --python_out="$OUT_DIR" \
   --grpc_python_out="$OUT_DIR" \
-  "$BASE_DIR/proto/openviking_context.proto"
+  "$BASE_DIR/proto/openviking_context.proto" \
+  "$BASE_DIR/proto/embedding.proto"
 
 touch "$OUT_DIR/__init__.py"
 

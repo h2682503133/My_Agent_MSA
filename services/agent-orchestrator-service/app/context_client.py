@@ -84,6 +84,7 @@ class ContextClient:
                 messages.append({
                     "role": msg.role,
                     "content": msg.content,
+                    "created_at": getattr(msg, "created_at", "") or "",
                 })
             return messages
         except Exception as exc:

@@ -22,6 +22,7 @@ from typing import Any
 
 from app import config
 from app.logger import debug_log, log
+from app import session_recall
 from app.text_utils import clean_text, format_assistant_content
 from app.world_info import search_world_info as _world_info_search
 
@@ -30,6 +31,9 @@ from app.world_info import search_world_info as _world_info_search
 # 写在正文首部；此时不能再无条件补前缀，否则正文会变成 `<收件人>: <发言者>: …`，
 # 而读取侧（history_speaker）只取最外层前缀 → 每个收件人都把别人的话当成自己说的。
 AUTHOR_IN_CONTENT_KEY = "author_in_content"
+
+# 超时后被放弃但仍在后台跑的召回任务（要留引用，否则可能被回收）
+_BACKGROUND_TASKS: set = set()
 
 
 def _truthy(value) -> bool:
@@ -414,6 +418,17 @@ class OpenVikingServerBackend:
                 return value
         return ""
 
+    @staticmethod
+    def _message_created_at(msg: Any) -> str:
+        """取消息写入时间（ISO8601 字符串）。老数据可能没有，返回空串。"""
+        if not isinstance(msg, dict):
+            return str(getattr(msg, "created_at", "") or "")
+        for key in ("created_at", "createdAt", "created", "ts", "timestamp"):
+            value = msg.get(key)
+            if value:
+                return str(value)
+        return ""
+
     def _messages_from_context(
         self,
         ctx: dict[str, Any],
@@ -455,7 +470,11 @@ class OpenVikingServerBackend:
             try:
                 role, content = self._message_to_role_content(msg)
                 if content and "智能体返回：" not in content:
-                    messages.append({"role": role, "content": content})
+                    messages.append({
+                        "role": role,
+                        "content": content,
+                        "created_at": self._message_created_at(msg),
+                    })
             except Exception:
                 continue
 
@@ -495,6 +514,25 @@ class OpenVikingServerBackend:
                 ctx or {},
                 max_messages or config.DEFAULT_MAX_MESSAGES,
             )
+
+            # 先起召回任务（读 jsonl + embedding），让它与下面的 find/search 并发跑；
+            # find/search 的兜底路径会调一次大模型做意图分析（1-2s），正好盖住 embedding 耗时。
+            recall_task = None
+            if query and config.SESSION_RECALL_ENABLED:
+                try:
+                    recall_task = asyncio.create_task(session_recall.recall(
+                        client,
+                        user_id=user_id,
+                        full_session_id=full_session_id,
+                        window_messages=list(messages),
+                        query=query,
+                        top_k=config.SESSION_RECALL_TOP_K,
+                        min_score=config.SESSION_RECALL_MIN_SCORE,
+                        max_messages=config.SESSION_RECALL_MAX_MESSAGES,
+                        maybe_await=self._maybe_await,
+                    ))
+                except Exception as exc:
+                    debug_log(f"session recall task failed to start (non-fatal): {exc}")
 
             # Semantic search for query-relevant memories：
             # 主路径 find（纯向量，无 LLM，target_uri 限定本会话）；session 内无结果时
@@ -564,6 +602,20 @@ class OpenVikingServerBackend:
                             })
                 except Exception as exc:
                     debug_log(f"semantic search failed (non-fatal): {exc}")
+
+            # 4) 未 commit 会话内容的向量召回：补上"窗口外、还没进长期记忆"的盲区
+            #    （messages.jsonl 不被 OpenViking 建索引，所以在本地用 embedding 算余弦）
+            if recall_task is not None:
+                try:
+                    extra_hits = await _await_session_recall(recall_task)
+                    seen_session = {m.get("content", "") for m in memories}
+                    for hit in extra_hits:
+                        if hit.get("content", "") in seen_session:
+                            continue
+                        seen_session.add(hit.get("content", ""))
+                        memories.append(hit)
+                except Exception as exc:
+                    debug_log(f"session recall failed (non-fatal): {exc}")
 
             # 达到阈值的相关记忆最多 MAX_MEMORY_HITS 条
             memories = memories[: config.MAX_MEMORY_HITS]
@@ -879,6 +931,21 @@ class OpenVikingServerBackend:
             return [], str(exc)
         finally:
             await self._close_client(client)
+
+async def _await_session_recall(task) -> list[dict[str, Any]]:
+    """等召回结果；超时只放弃本次命中 —— 任务继续在后台跑，把向量缓存热起来。"""
+    timeout = config.SESSION_RECALL_TOTAL_TIMEOUT_SECONDS
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+        debug_log(f"session recall: 超过 {timeout:g}s 未完成，本轮跳过（后台继续预热）")
+        return []
+    try:
+        return list(task.result() or [])
+    except Exception as exc:
+        debug_log(f"session recall failed (non-fatal): {exc}")
+        return []
 
 class VikingStore:
     def __init__(self):

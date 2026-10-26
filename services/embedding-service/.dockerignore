@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+app/generated/*.py
+!app/generated/.gitkeep
+.git
+.pytest_cache

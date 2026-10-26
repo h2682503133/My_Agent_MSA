@@ -51,6 +51,7 @@ deploy/
 │   ├── qq-llbot-service.yaml
 │   ├── qq-official-service.yaml      # QQ 官方机器人（WebSocket，无需公网入口）
 │   ├── qq-satori-adapter-external.yaml
+│   ├── embedding-service.yaml        # 向量计算统一入口（port 5303）
 │   ├── model-proxy-service.yaml
 │   ├── openviking-context-service.yaml
 │   ├── openviking-server.yaml

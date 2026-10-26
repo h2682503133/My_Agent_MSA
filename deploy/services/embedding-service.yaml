@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding-service
+  namespace: agent
+  annotations:
+    sidecar.istio.io/inject: "false"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: embedding-service
+  template:
+    metadata:
+      labels:
+        app: embedding-service
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: embedding-service
+          image: agent/embedding-service:v1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5303
+              protocol: TCP
+          env:
+            - name: EMBEDDING_GRPC_PORT
+              value: "5303"
+            # provider 收束在这里：换 ollama / vLLM / 任意 OpenAI 兼容服务都只改这几行
+            - name: EMBEDDING_API_BASE
+              value: "http://host.docker.internal:11434/v1/embeddings"
+            - name: EMBEDDING_MODEL
+              value: "qwen3-embedding:0.6b"
+            - name: EMBEDDING_API_KEY
+              value: "ollama"
+            - name: EMBEDDING_TIMEOUT_SECONDS
+              value: "30"
+            - name: EMBEDDING_MAX_TEXTS_PER_CALL
+              value: "64"
+            - name: EMBEDDING_MAX_TEXT_CHARS
+              value: "4000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding-service
+  namespace: agent
+spec:
+  type: ClusterIP
+  selector:
+    app: embedding-service
+  ports:
+    - name: grpc
+      port: 5303
+      targetPort: 5303
