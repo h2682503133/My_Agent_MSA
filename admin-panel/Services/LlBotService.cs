@@ -67,6 +67,10 @@ public class LlBotService
     // 旧码立即作废，所以「主动取码」永远在追一张刚被自己作废的码。
     // 读日志则零副作用，所以二维码的主路径是它。
     private static readonly Regex QrUrlRegex = new(@"二维码网址[:：]\s*(\S+)", RegexOptions.Compiled);
+    /// <summary>llbot 二维码约 121s 过期；比这更旧的码只记录、不推送。</summary>
+    private const double QrUrlFreshSeconds = 150;
+    /// <summary>本轮被跳过的历史二维码数量（遇到新鲜码时汇总记一条日志）。</summary>
+    private int _staleQrSkipped;
     private string _lastQrUrl = "";
     private DateTime _lastQrUrlAt = DateTime.MinValue;
     /// <summary>llbot 日志里出现新的「二维码网址」时触发（携带该网址）。</summary>
@@ -849,9 +853,36 @@ public class LlBotService
         var url = m.Groups[1].Value.Trim();
         if (string.IsNullOrEmpty(url) || url == _lastQrUrl) return;
 
+        // 按日志行时间戳判断这张码是否已经过期。
+        // 面板启动 / 换日志文件时会从头补读历史，历史里的码早就废了 ——
+        // 直接推送会把 Dashboard 刷成一堆扫不动的废码（实测一次推了 17 张）。
+        var age = LineAgeSeconds(line);
+
         _lastQrUrl = url;
-        _lastQrUrlAt = DateTime.UtcNow;
+        _lastQrUrlAt = age is double seconds ? DateTime.UtcNow.AddSeconds(-seconds) : DateTime.UtcNow;
+
+        if (age is double stale && stale > QrUrlFreshSeconds)
+        {
+            _staleQrSkipped++;
+            return;
+        }
+
+        if (_staleQrSkipped > 0)
+        {
+            LogReceived?.Invoke($"[系统] 已跳过 {_staleQrSkipped} 张历史二维码（已过期，不推送）");
+            _staleQrSkipped = 0;
+        }
         QrUrlChanged?.Invoke(url);
+    }
+
+    /// <summary>按日志行时间戳估算该行多久之前产生；无法解析返回 null。</summary>
+    private static double? LineAgeSeconds(string line)
+    {
+        var m = LogTimePrefix.Match(line);
+        if (!m.Success) return null;
+        if (!DateTime.TryParse(m.Value.Trim(), out var when)) return null;
+        var age = (DateTime.Now - when).TotalSeconds;
+        return age < 0 ? 0 : age;
     }
 
     private void OnLlbotExited(object? sender, EventArgs e)

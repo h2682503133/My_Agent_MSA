@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -620,18 +621,56 @@ class SkillRuntime:
         except Exception:
             return f"读取 SKILL.md 失败,请检查知识库中是否有名为{skill_name}的技能"
 
-    def run_skill(self, skill_name: str, args: Iterable[str], user_workspace: Path, timeout: int) -> str:
-        if not skill_name:
-            return "错误：技能名称不能为空"
+    # ── 技能脚本调用（参数边界）──────────────────────────────────
 
-        skill_dir = self.skill_root / skill_name
-        script_file = skill_dir / "scripts" / f"{skill_name}.py"
+    # 明显是“占位说明”而不是真参数的标记
+    _PLACEHOLDER_MARKERS = ("参数留空", "占位符", "请填写", "请输入", "待填", "示例参数")
 
-        if not script_file.exists():
-            return "本技能无法通过该方式调用，请阅读下面文档学习该任务的执行流程\n"+self.skill_overview(skill_name)
+    @classmethod
+    def _looks_like_placeholder(cls, arg: str) -> bool:
+        """判断一个参数是不是“占位说明”而不是真参数。
 
-        command = [sys.executable, str(script_file), *[str(arg) for arg in args]]
-        proc = subprocess.run(
+        真实模型会写出 `,参数留空)`、`<关键词>`、`【商品名】` 这类东西 ——
+        直接塞进 argv 只会换来 argparse 的 `invalid choice`，对模型毫无指向性。
+        """
+        text = str(arg or "").strip()
+        if not text:
+            return True
+        # <...>、【...】、[...]、（...）
+        if re.fullmatch(r"[<【\[（(].*[>】\]）)]", text):
+            return True
+        if any(marker in text for marker in cls._PLACEHOLDER_MARKERS):
+            return True
+        # 形如 ",参数留空)" 的残片
+        if text[0] in ",，" and ("参数" in text or "留空" in text):
+            return True
+        return False
+
+    @classmethod
+    def _sanitize_skill_args(cls, args: Iterable[str]) -> tuple[list[str], list[str]]:
+        """清洗参数：去引号/反引号/空白，剔除占位说明。返回 (有效参数, 被丢弃的)。"""
+        cleaned: list[str] = []
+        dropped: list[str] = []
+        for raw in args or []:
+            text = str(raw).strip().strip("`").strip()
+            text = text.strip('"').strip("'").strip()
+            if not text:
+                continue
+            if cls._looks_like_placeholder(text):
+                dropped.append(text)
+                continue
+            cleaned.append(text)
+        return cleaned, dropped
+
+    def _run_skill_capture(
+        self,
+        command: list[str],
+        skill_dir: Path,
+        user_workspace: Path,
+        timeout: int,
+    ) -> subprocess.CompletedProcess:
+        """执行技能脚本（与 run_skill 同一套 env/cwd）。"""
+        return subprocess.run(
             command,
             cwd=str(skill_dir),
             text=True,
@@ -645,9 +684,94 @@ class SkillRuntime:
                 "MY_AGENT_SKILL_DIR": str(skill_dir),
             },
         )
-        output = self._format_completed_process(proc)
-        command_text = " ".join(command)
-        return f"【执行完成：{skill_name}】\n命令：{command_text}\n结果：{output}"
 
+    def _skill_usage(
+        self,
+        script: list[str],
+        skill_dir: Path,
+        user_workspace: Path,
+        timeout: int,
+    ) -> tuple[str, bool]:
+        """跑一次 `<script> --help`，返回 (输出, 是否成功)。"""
+        try:
+            proc = self._run_skill_capture(script + ["--help"], skill_dir, user_workspace, timeout)
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}", False
+        text = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        return text or "（无输出）", proc.returncode == 0
+
+    @staticmethod
+    def _looks_like_usage_error(proc: subprocess.CompletedProcess) -> bool:
+        """argparse 的参数错误：退出码 2 且带 usage:/error:。"""
+        if proc.returncode != 2:
+            return False
+        stderr = proc.stderr or ""
+        return ("usage:" in stderr) or ("error:" in stderr)
+
+    def run_skill(self, skill_name: str, args: Iterable[str], user_workspace: Path, timeout: int) -> str:
+        if not skill_name:
+            return "错误：技能名称不能为空"
+
+        skill_dir = self.skill_root / skill_name
+        script_file = skill_dir / "scripts" / f"{skill_name}.py"
+
+        if not script_file.exists():
+            return (
+                "本技能无法通过该方式调用，请阅读下面文档学习该任务的执行流程\n"
+                + self.skill_overview(skill_name)
+            )
+
+        script = [sys.executable, str(script_file)]
+        cleaned, dropped = self._sanitize_skill_args(args)
+        dropped_note = (
+            f"（已忽略无效参数：{'、'.join(dropped)}）\n" if dropped else ""
+        )
+
+        # 1) 没有有效参数 → 不执行脚本本体，先给用法（让模型下一轮能写对）
+        if not cleaned:
+            usage, ok = self._skill_usage(script, skill_dir, user_workspace, timeout)
+            if ok:
+                return (
+                    f"【缺少参数：{skill_name}】\n"
+                    f"{dropped_note}"
+                    f"用法（{script_file.name} --help）：\n{usage}\n"
+                    f"请按上面的用法补参数后重试，例如：工具调用:{skill_name}|<子命令>|<参数>"
+                )
+            return (
+                f"【缺少参数：{skill_name}】\n"
+                f"{dropped_note}"
+                f"该技能需要参数，但 --help 没有可用输出：\n{usage}\n"
+                "请阅读技能文档（SKILL.md）后再调用。"
+            )
+
+        command = script + cleaned
+        command_text = " ".join(command)
+        proc = self._run_skill_capture(command, skill_dir, user_workspace, timeout)
+        output = self._format_completed_process(proc)
+
+        if proc.returncode == 0:
+            return f"【执行完成：{skill_name}】\n命令：{command_text}\n结果：{output}"
+
+        # 2) 参数不正确（argparse usage 错误）→ 直接附上正确用法
+        if self._looks_like_usage_error(proc):
+            usage, ok = self._skill_usage(script, skill_dir, user_workspace, timeout)
+            hint = (
+                f"用法（{script_file.name} --help）：\n{usage}"
+                if ok
+                else "（该技能没有 --help 输出，请阅读技能文档 SKILL.md）"
+            )
+            return (
+                f"【参数不正确：{skill_name}】\n"
+                f"命令：{command_text}\n{dropped_note}"
+                f"结果：{output}\n{hint}"
+            )
+
+        # 3) 真失败：保留原始输出，另给一条自查指引
+        return (
+            f"【执行失败：{skill_name}】\n"
+            f"命令：{command_text}\n{dropped_note}"
+            f"结果：{output}\n"
+            f"（若怀疑是参数问题，可用 工具调用:{skill_name}|--help 查看用法）"
+        )
 
 skill_runtime = SkillRuntime()
