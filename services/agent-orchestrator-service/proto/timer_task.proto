@@ -18,6 +18,9 @@ message CreateTimerTaskRequest {
   string schedule = 10;
   // 第5参「重复计划」（可选）：空/0/无=不重复；每30分钟/每5-10分钟=间隔重复
   string repeat_str = 11;
+  // 第6参「执行时段」（可选）：09:00-22:00；触发时刻不在时段内则跳过不执行
+  // 支持跨天（22:00-02:00）
+  string window_str = 12;
 }
 
 message CreateTimerTaskResponse {
@@ -46,6 +49,8 @@ message TimerTaskInfo {
   string schedule_str = 12;
   // 重复计划 JSON
   string schedule = 13;
+  // 执行时段（09:00-22:00），空=不限制
+  string window_str = 14;
 }
 
 message ListUserTasksResponse {

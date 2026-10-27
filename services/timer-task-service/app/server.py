@@ -39,6 +39,7 @@ class TimerTaskService(timer_task_pb2_grpc.TimerTaskServicer):
                 user_id=user_id,
                 channel_id=request.channel_id or "web",
                 trigger_timestamp=request.trigger_timestamp,
+        window_str=getattr(request, "window_str", ""),
                 content=request.content or "system:auto_commit",
                 task_type=request.task_type or "submit_task",
                 session_id=request.session_id or None,

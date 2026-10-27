@@ -13,7 +13,17 @@ from pathlib import Path
 from app import config
 from app.logger import timer_log
 from app.scheduler_client import SchedulerClient
-from app.time_parser import next_trigger, parse_repeat_spec, parse_time_spec, schedule_to_str
+from app.time_parser import (
+    catch_up_in_window,
+    in_task_window,
+    in_window,
+    next_trigger,
+    parse_repeat_spec,
+    parse_time_spec,
+    parse_window,
+    schedule_to_str,
+    window_to_str,
+)
 
 # ======================
 # 定时任务配置
@@ -52,16 +62,23 @@ def add_timer_task(
     agent_id: str = "",
     time_str: str = "",
     repeat_str: str = "",
+    window_str: str = "",
 ) -> str:
     """创建定时任务。
 
-    协议格式：定时任务:任务类别|智能体id|任务内容|开始时间|重复计划(可选,0=不重复)
+    协议格式：定时任务:任务类别|智能体id|任务内容|开始时间|重复计划(可选)|执行时段(可选)
     - time_str   ：第 4 参「开始时间」，空=立即；「现在/立即/马上」=立即
     - repeat_str ：第 5 参「重复计划」，空/0/无/不重复=一次性；每30分钟/每5-10分钟=间隔重复
+    - window_str ：第 6 参「执行时段」，如 09:00-22:00；**随机算法不变**，
+      只是到点时若不在窗口内就跳过不执行（等下一次触发；一次性任务直接作废）
     - 兼容旧格式：第 4 参直接写重复计划（如 每30分钟）且第 5 参为空时，
       视为 立即开始 + 该重复计划。
     """
     global NEED_FAST_SCAN, LAST_TASK_ADD_TIME
+
+    # 第 6 参：执行时段（随机算法不动，只在到点时判定）
+    window = parse_window(window_str)
+    window_label = window_to_str(window) if window else ""
 
     try:
         task_id = f"task_{int(time.time() * 1000)}_{user_id}"
@@ -110,6 +127,8 @@ def add_timer_task(
             "session_id": session_id,
             "client_message_id": client_message_id,
             "agent_id": agent_id,
+            "window": window,
+            "window_str": window_label,
             "trigger_time": trigger_timestamp,
             "content": content,
             "task_type": task_type,
@@ -130,9 +149,14 @@ def add_timer_task(
         if schedule:
             desc = schedule_to_str(schedule)
             timer_log(f"创建定时任务：{user_id} {task_type} {trigger_timestamp} {content} [{desc}]")
-            return f"定时任务{task_type}:{content}创建成功，首次将于 {next_str} 执行，此后{desc}重复"
+            suffix = f"（仅在执行时段 {window_label} 内执行，时段外跳过）" if window_label else ""
+            return (
+                f"定时任务{task_type}:{content}创建成功，首次将于 {next_str} 执行，"
+                f"此后{desc}重复{suffix}"
+            )
         timer_log(f"创建定时任务：{user_id} {task_type} {trigger_timestamp} {content}")
-        return f"定时任务{task_type}:{content}创建成功，将于 {next_str} 执行"
+        suffix = f"（仅在执行时段 {window_label} 内执行，时段外跳过）" if window_label else ""
+        return f"定时任务{task_type}:{content}创建成功，将于 {next_str} 执行{suffix}"
 
     except Exception as e:
         timer_log(f"定时任务创建失败：{user_id} {task_type} {trigger_timestamp} {content}")
@@ -159,6 +183,7 @@ def list_user_tasks(user_id: str) -> list[dict]:
                     "%Y-%m-%d %H:%M:%S", time.localtime(trigger_time)
                 )
                 task["schedule_str"] = schedule_to_str(task.get("schedule") or {})
+                task["window_str"] = task.get("window_str") or window_to_str(task.get("window"))
                 tasks.append(task)
 
         tasks.sort(key=lambda x: x["trigger_time"])
@@ -248,10 +273,34 @@ def timer_scan_loop():
 
                     trigger_time = task.get("trigger_time", 0)
                     if now >= trigger_time:
-                        execute_timer_task(task)
+                        if not in_task_window(task, now):
+                            # 窗口外：不执行（不补发、不报错），只等下一次触发
+                            timer_log(
+                                f"定时任务[{task.get('task_id')}]触发时刻 "
+                                f"{time.strftime('%H:%M:%S', time.localtime(now))} "
+                                f"不在执行时段 {task.get('window_str') or ''} 内，跳过不执行"
+                            )
+                        else:
+                            execute_timer_task(task)
                         schedule = task.get("schedule")
                         if schedule:
                             nxt = next_trigger(schedule, now)
+                            # 执行时段策略：realign = 时段外就对齐到时段内；
+                            # skip = 错过就错过（固定间隔 + 时段可能永远不执行）
+                            window = task.get("window")
+                            if (
+                                nxt
+                                and window
+                                and getattr(config, "TIMER_MISSED_WINDOW_POLICY", "realign") == "realign"
+                                and not in_task_window(task, nxt)
+                            ):
+                                nxt = catch_up_in_window(
+                                    now, window, _interval_range_of(schedule)
+                                )
+                                timer_log(
+                                    f"定时任务[{task.get('task_id')}]下一次触发不在执行时段内，"
+                                    f"改到 {time.strftime('%m-%d %H:%M', time.localtime(nxt))}"
+                                )
                             if nxt and nxt > now:
                                 # 重复任务：重排下一次触发时间，继续保留
                                 task["trigger_time"] = nxt
@@ -278,6 +327,14 @@ def timer_scan_loop():
 # ======================
 # 执行任务：通过 gRPC 回调 scheduler
 # ======================
+def in_task_window(task_data: dict, now: float) -> bool:
+    """到点时刻是否落在任务的执行时段内（没有时段 = 恒 True）。"""
+    window = task_data.get("window")
+    if not window:
+        return True
+    return in_window(window, now)
+
+
 def execute_timer_task(task_data: dict):
     task_type = task_data.get("task_type", "submit_task")
     user_id = task_data["user_id"]

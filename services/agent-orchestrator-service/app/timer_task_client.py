@@ -38,6 +38,7 @@ class TimerTaskClient:
         client_message_id: str = "",
         time_str: str = "",
         repeat_str: str = "",
+        window_str: str = "",
     ) -> dict:
         try:
             with grpc.insecure_channel(self.target) as channel:
@@ -53,6 +54,7 @@ class TimerTaskClient:
                     client_message_id=client_message_id,
                     time_str=time_str,
                     repeat_str=repeat_str,
+                    window_str=window_str,
                 )
                 response = stub.CreateTimerTask(request, timeout=10)
                 return {

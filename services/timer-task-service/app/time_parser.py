@@ -432,3 +432,111 @@ def schedule_to_str(schedule: dict) -> str:
     if lo == hi:
         return f"每{_fmt_interval(lo)}"
     return f"每{_fmt_interval_range(lo, hi)}随机间隔"
+
+# ======================
+# 执行时段（第 6 参）：只在时段内执行，时段外按策略处理
+# ======================
+def parse_window(spec: str) -> list[int] | None:
+    """解析执行时段，返回 [起始秒, 结束秒]（一天内秒数）。
+
+    - `09:00-22:00` → [32400, 79200]
+    - `22:00-02:00` → 跨天窗口（起 > 止 即视为跨天）
+    - 无法解析返回 None（= 不限制）
+    """
+    text = _normalize(spec or "")
+    if not text:
+        return None
+    win = _parse_time_window(text)
+    if win:
+        return [int(win[0]), int(win[1])]
+    parts = re.split(r"\s*[-至到~]\s*", text)
+    if len(parts) == 2:
+        t1 = _parse_time_of_day(parts[0].strip())
+        t2 = _parse_time_of_day(parts[1].strip())
+        if t1 is not None and t2 is not None and t1 > t2:
+            return [int(t1), int(t2)]      # 跨天
+    return None
+
+
+def in_window(window, ts: float) -> bool:
+    """ts 是否落在窗口内。window 为空/None → 视为不限制（True）。"""
+    if not window or len(window) < 2:
+        return True
+    start, end = int(window[0]), int(window[1])
+    if start == end:
+        return True
+    lt = _time.localtime(ts)
+    sec = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+    if start < end:
+        return start <= sec <= end
+    return sec >= start or sec <= end      # 跨天
+
+
+def window_to_str(window) -> str:
+    """[32400, 79200] → '09:00-22:00'。"""
+    if not window or len(window) < 2:
+        return ""
+
+    def fmt(sec: int) -> str:
+        sec = int(sec) % 86400
+        return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}"
+
+    return f"{fmt(window[0])}-{fmt(window[1])}"
+
+def in_task_window(task_data: dict, ts: float) -> bool:
+    """到点时刻是否落在任务的执行时段内（没有时段 = 恒 True）。
+
+    定时任务的随机算法不变；这里只负责"到点了，该不该执行"的判断。
+    """
+    window = (task_data or {}).get("window")
+    if not window:
+        return True
+    return in_window(window, ts)
+
+def next_window_start(after_ts: float, window) -> float:
+    """after_ts 之后**最近一次**窗口起点（窗口为 [起始秒, 结束秒]，支持跨天）。"""
+    if not window or len(window) < 2:
+        return after_ts
+    start = int(window[0])
+    lt = _time.localtime(after_ts)
+    midnight = _time.mktime(
+        (lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst)
+    )
+    for day in range(0, 8):
+        cand = midnight + day * 86400 + start
+        if cand > after_ts:
+            return cand
+    return after_ts
+
+
+def catch_up_in_window(after_ts: float, window, interval_range) -> float:
+    """把下一次触发挪进窗口：锚在窗口起点 + 一次重复偏移。
+
+    - 没有窗口 → 原样返回
+    - 偏移（interval_range 随机值）后仍落在窗口内 → 用它（保留节奏）
+    - 偏移越界 → 退回窗口起点（保证一定会执行，且不平白少一天）
+    """
+    if not window or len(window) < 2:
+        return after_ts
+    # 已经在窗口内：不动（本函数只负责"把窗口外的时刻挪进来"）
+    if in_window(window, after_ts):
+        return after_ts
+    anchor = next_window_start(after_ts, window)
+    if anchor <= after_ts:
+        return after_ts
+    lo, hi = (int(interval_range[0]), int(interval_range[1])) if interval_range else (0, 0)
+    if hi <= 0:
+        return anchor
+
+    # 窗口长度：偏移达到窗口长度就会跨过这一天的机会 → 直接锚在窗口起点
+    start, end = int(window[0]), int(window[1])
+    window_len = (end - start) if start < end else (86400 - start + end)
+    if window_len <= 0:
+        return anchor
+
+    off = random.randint(lo, hi) if hi > lo else lo
+    if off >= window_len:
+        return anchor
+    cand = anchor + off
+    return cand if in_window(window, cand) else anchor
+

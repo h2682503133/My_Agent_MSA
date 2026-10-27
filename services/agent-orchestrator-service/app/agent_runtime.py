@@ -1319,10 +1319,12 @@ class AgentRuntime:
                     # 否则用户只会看到"没反应"（模型也拿不到纠正机会）。
                     reply = (
                         "定时任务指令格式不对。正确写法：\n"
-                        "  定时任务:submit_task|智能体id|内容|时间|重复\n"
-                        "  定时任务:send_message|智能体id|内容|时间|重复\n"
+                        "  定时任务:submit_task|智能体id|内容|时间|重复|执行时段\n"
+                        "  定时任务:send_message|智能体id|内容|时间|重复|执行时段\n"
                         "  定时任务:query|用户id\n"
-                        "  定时任务:delete|任务id"
+                        "  定时任务:delete|任务id\n"
+                        "（第 6 参「执行时段」可省略；写法如 09:00-22:00，"
+                        "到点若不在时段内则本轮跳过不执行，等下一次触发）"
                     )
                     task.set_temp_dialog_output(reply)
 

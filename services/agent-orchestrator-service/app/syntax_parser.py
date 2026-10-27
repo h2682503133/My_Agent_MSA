@@ -508,6 +508,7 @@ def parse_syntax(agent, task):
                 "time_str": "",
                 "repeat_str": "",
                 "trigger_timestamp": 0.0,
+                "window_str": "",
                 "raw": timer_line,
             }
 
@@ -540,11 +541,14 @@ def parse_syntax(agent, task):
                 agent_id, content = rest[0], rest[1]
                 start_time = rest[2] if len(rest) > 2 else ""
                 repeat_str = rest[3] if len(rest) > 3 else ""
+                # 第 6 参（可选）：执行时段，如 09:00-22:00；到点不在时段内则跳过不执行
+                window_str = rest[4] if len(rest) > 4 else ""
                 if content:
                     timer_task = {
                         "task_type": task_type,
                         "time_str": start_time,
                         "repeat_str": repeat_str,
+                        "window_str": window_str,
                         "trigger_timestamp": 0.0,
                         "content": content,
                         "agent_id": agent_id,
