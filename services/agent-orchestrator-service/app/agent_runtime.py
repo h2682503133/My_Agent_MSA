@@ -1388,8 +1388,18 @@ class AgentRuntime:
                 # 最终输出面向用户的自然语言时才结束。
                 # 若不压帧，结果会经 user 帧直接 emit 成给用户的回复，
                 # 模型拿不到结果，多步操作（查→删）会中断在半路。
+                # 压帧内容与工具帧对齐：**既要有指令、也要有结果**。
+                # 之前这里 push_context(self, "") → 弹栈后模型只看到【收到返回】，
+                # 完全不知道自己下的是什么定时任务指令（无法据此继续决策）。
+                raw_command = str(timer.get("raw", "") or "").strip()
+                if raw_command:
+                    task.tool_log.append("定时任务指令:" + raw_command)
                 task.tool_log.append("定时任务结果:" + str(reply))
-                task.push_context(self, "", kind="timer")
+                task.push_context(
+                    self,
+                    "【本轮已执行的工具】\n" + "\n".join(task.tool_log),
+                    kind="timer",
+                )
                 task.set_temp_dialog_output("【定时任务执行结果】\n" + str(reply))
 
             elif result["world_info_task"]:

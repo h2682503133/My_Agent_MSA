@@ -508,6 +508,7 @@ def parse_syntax(agent, task):
                 "time_str": "",
                 "repeat_str": "",
                 "trigger_timestamp": 0.0,
+                "raw": timer_line,
             }
 
         if task_type in ("delete", "query"):
@@ -526,6 +527,7 @@ def parse_syntax(agent, task):
                     "time_str": "",
                     "repeat_str": "",
                     "trigger_timestamp": 0.0,
+                    "raw": timer_line,
                 }
             else:
                 timer_task = _invalid_timer_task(timer_line)
@@ -546,6 +548,7 @@ def parse_syntax(agent, task):
                         "trigger_timestamp": 0.0,
                         "content": content,
                         "agent_id": agent_id,
+                        "raw": timer_line,
                     }
                 else:
                     timer_task = _invalid_timer_task(timer_line)

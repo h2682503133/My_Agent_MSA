@@ -158,3 +158,37 @@ export TIMER_TASK_DIR=./roaming/tasks
 ```
 
 迁移后的区别：原代码通过 HTTP 调 `main /submit_task`，这里改为直接构造 `ScheduledTask` 并调用 `submit_task(scheduled_task)`，仍然不构造 Agent Runtime Task。
+
+## 渠道投递与回退
+
+任务事件按 `event.channel` 找对应订阅者直投（`qq-llbot-1` / `qq-official-1` / `web-gateway-1` …）。
+直投失败（无订阅者、队列满、消费端 ack 失败）时会走**跨渠道转投**：
+
+1. 用 user-service 里该用户绑定的渠道列表，按 `priority` 升序挑下一个；
+2. 跳过已尝试过的渠道与事件显式屏蔽的渠道（`metadata.suppress_channels`）；
+3. 按目标渠道重建身份与 session（`user_id` 改写成该渠道的 `channel_user_id`，
+   `session_id` 由 `_channel_session_id()` 重算）；
+4. 全部失败则进缓冲（按用户），渠道恢复后按目标渠道回放；超过尝试上限丢弃。
+
+### 定时任务允许的渠道
+
+`SCHEDULED_EXCLUDED_CHANNELS`（env，逗号分隔）声明**定时任务结果不允许投递**的渠道，默认**空**。
+
+历史上默认屏蔽 `qqofficial`（当时认为官方主动消息额度紧张、定时推送等于丢消息）。
+实测额度足够，故已放开：
+
+- Bot 维度：企业/个人身份证认证 **10/qps**；未认证 **5/qps 且 30/qpm**
+- 单关系维度：**20/qpm**，每个好友每天最多 **1000 条**
+- 互动召回（`is_wakeup`）：用户主动对话后 30 天内，每周期可下发 1 条（当天 / 1-3 天 / 3-7 天 / 7-30 天）
+
+因此 `qqofficial` 现在既能**直接接收定时消息**，也能作为 llbot 掉线后的**转投渠道**
+（前提：该用户绑定了 `qqofficial` 的 openid，且 `qq-official-1` 在线）。
+
+需要收回时：
+
+```bash
+export SCHEDULER_EXCLUDED_CHANNELS=qqofficial      # 可写多个，逗号分隔
+```
+
+相关自检：`tools/scheduled_channel_default_smoke_test.py`（新默认 + 转投 + 显式收回）、
+`tools/scheduled_channel_suppression_smoke_test.py`（屏蔽机制本身）。

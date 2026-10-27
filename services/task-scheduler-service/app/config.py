@@ -36,10 +36,15 @@ MAX_OFFLINE_REPLIES = env_int("SCHEDULER_MAX_OFFLINE_REPLIES", 3)
 STOP_REQUEST_TIMEOUT_SECONDS = env_int("STOP_REQUEST_TIMEOUT_SECONDS", 10)
 
 # 定时任务（timer_task）的结果**不允许**投递到的渠道。
-# 官方 QQ bot 的主动消息受限（用户可关闭、有频控），定时推送走它基本等于丢失，
-# 所以默认屏蔽 qqofficial：事件会按用户其它渠道的优先级转投（如 qq / web）。
+#
+# 历史上默认屏蔽 qqofficial（"官方主动消息受限，定时推送等于丢失"）。实测额度够用：
+#   - Bot 维度：企业/个人身份证认证 10/qps；未认证 5/qps 且 30/qpm
+#   - 单关系维度：20/qpm，每个好友每天最多 1000 条
+# 所以默认改为**不屏蔽**：qqofficial 既能直接接收定时消息，也能作为 llbot 掉线后的
+# 转投渠道（见 event_bus 的 fallback chain）。
+# 需要收回时设 `SCHEDULER_EXCLUDED_CHANNELS=qqofficial` 即可（逗号分隔可写多个）。
 SCHEDULED_EXCLUDED_CHANNELS = {
     item.strip()
-    for item in os.getenv("SCHEDULER_EXCLUDED_CHANNELS", "qqofficial").split(",")
+    for item in os.getenv("SCHEDULER_EXCLUDED_CHANNELS", "").split(",")
     if item.strip()
 }
