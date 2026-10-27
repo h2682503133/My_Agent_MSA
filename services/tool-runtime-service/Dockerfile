@@ -17,6 +17,9 @@ RUN pip install \
 # 无头浏览器：Playwright + Chromium（--with-deps 自动 apt 安装系统依赖）
 RUN python -m playwright install --with-deps chromium
 
+# dsh 工具用的 WS 客户端：单独一层，避免改动时让上面的 Playwright 层缓存失效
+RUN pip install --no-cache-dir --timeout 120 --retries 10 websockets==13.1
+
 COPY . /app
 
 RUN find /app -type f \( \

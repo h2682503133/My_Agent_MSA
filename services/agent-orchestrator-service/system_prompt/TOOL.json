@@ -20,21 +20,6 @@
           ]
         },
         {
-          "name": "list-workspace",
-          "desc": "列出工作空间所有文件",
-          "groups": [
-            "文件"
-          ]
-        },
-        {
-          "name": "dir-list",
-          "args": "目录|通配符",
-          "desc": "列出目录内容，可用 *.py|recursive=true 递归 等过滤",
-          "groups": [
-            "文件"
-          ]
-        },
-        {
           "name": "fetch",
           "args": "url|method|data",
           "desc": "发送 HTTP 请求",
@@ -70,6 +55,47 @@
           "desc": "搜索网页（条数可选，默认10，最多50）",
           "groups": [
             "网络"
+          ]
+        },
+        {
+          "name": "codex",
+          "args": "工作目录|需求",
+          "desc": "生成代码",
+          "groups": [
+            "生成"
+          ]
+        },
+        {
+          "name": "dsh",
+          "args": "工作区路径|任务内容",
+          "desc": "交给 dsh（外部大脑）跑一整轮，返回它的结果",
+          "groups": [
+            "生成"
+          ],
+          "notes": [
+            "第一段是工作区（可写 `.`），第二段才是任务内容，顺序不能反",
+            "给本机路径 → 该目录的独立会话（本机命令如 pwsh 只在本地路径下可用）"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "文件操作工具",
+      "title": "## 文件操作工具",
+      "tools": [
+        {
+          "name": "list-workspace",
+          "desc": "列出工作空间所有文件",
+          "groups": [
+            "文件"
+          ]
+        },
+        {
+          "name": "dir-list",
+          "args": "目录|通配符",
+          "desc": "列出目录内容，可用 *.py|recursive=true 递归 等过滤",
+          "groups": [
+            "文件"
           ]
         },
         {
@@ -113,24 +139,6 @@
           ]
         },
         {
-          "name": "windows-file-copy",
-          "args": "源路径|目标路径",
-          "desc": "与windows宿主机复制文件/目录",
-          "groups": [
-            "文件",
-            "宿主机"
-          ]
-        },
-        {
-          "name": "windows-file-move",
-          "args": "源路径|目标路径",
-          "desc": "与windows宿主机移动或重命名文件/目录",
-          "groups": [
-            "文件",
-            "宿主机"
-          ]
-        },
-        {
           "name": "file-tail",
           "args": "文件路径|行数",
           "desc": "读取文件末尾 N 行（默认50）",
@@ -163,11 +171,21 @@
           ]
         },
         {
-          "name": "codex",
-          "args": "工作目录|需求",
-          "desc": "生成代码",
+          "name": "windows-file-copy",
+          "args": "源路径|目标路径",
+          "desc": "与windows宿主机复制文件/目录",
           "groups": [
-            "生成"
+            "文件",
+            "宿主机"
+          ]
+        },
+        {
+          "name": "windows-file-move",
+          "args": "源路径|目标路径",
+          "desc": "与windows宿主机移动或重命名文件/目录",
+          "groups": [
+            "文件",
+            "宿主机"
           ]
         },
         {

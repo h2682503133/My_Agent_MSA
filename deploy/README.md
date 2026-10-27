@@ -60,3 +60,7 @@ deploy/
 │   └── istio/istio.yaml
 └── tool-runtime-apply.sh   # tool-runtime 外部 VM 模式部署
 ```
+
+## 外部系统
+
+- **dsh（DeepSeek Harness）对接**：在 Windows 宿主机上做，不在集群内 —— 见 [`dsh/对接方式.md`](dsh/对接方式.md)（含通道配置模板 `dsh/onebot.patch.yml` 与绑定脚本 `dsh/dsh-bind.ps1`）。

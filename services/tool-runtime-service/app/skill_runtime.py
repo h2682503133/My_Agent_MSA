@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app import config
+from app.dsh_client import dsh_client
 
 
 def _run_coro_sync(coro):
@@ -317,6 +318,120 @@ class SkillRuntime:
         return self._run_external_vm_shell(command, timeout=timeout)
 
     @staticmethod
+    @staticmethod
+    @staticmethod
+    @staticmethod
+    def _looks_like_dsh_path(token: str) -> bool:
+        """是不是"路径样"的参数：`.`、含分隔符或盘符，且**纯 ASCII 无空格**。
+
+        纯 ASCII 这条是为了防止把中文提示词里带 `/` 的句子误判成路径。
+        """
+        text = str(token or "").strip()
+        if not text or len(text) > 260:
+            return False
+        if text in {".", "./", ".\\", ".."}:
+            return True
+        if " " in text or "\t" in text:
+            return False
+        try:
+            text.encode("ascii")
+        except UnicodeEncodeError:
+            return False
+        return (
+            "/" in text
+            or "\\" in text
+            or (len(text) > 2 and text[1] == ":")
+        )
+
+    @classmethod
+    @staticmethod
+    def _dsh_args_are_placeholders(parts: list[str]) -> bool:
+        """参数是不是没替换的占位符（`<工作区>`、`<任务>`、`{task}` 之类）。"""
+        for raw in parts or []:
+            token = str(raw or "").strip()
+            if not token:
+                continue
+            if token.startswith("<") and token.endswith(">"):
+                return True
+            if token.startswith("{") and token.endswith("}"):
+                return True
+            if "<工作区>" in token or "<任务>" in token or "<workspace>" in token.lower():
+                return True
+        return False
+
+    # 参数里一旦混进这些字样，说明是把上一轮的报错/用法文本当参数传了
+    _DSH_DIRTY_MARKERS = (
+        "工具调用:", "【dsh ", "工作区要写在", "用法 工具调用",
+    )
+
+    @classmethod
+    def _dsh_args_are_dirty(cls, parts: list[str]) -> bool:
+        """参数里是否混进了报错/用法文本（会把 dsh 那边污染成垃圾回合）。"""
+        tokens = [str(raw or "") for raw in parts or []]
+        for token in tokens:
+            for marker in cls._DSH_DIRTY_MARKERS:
+                if marker in token:
+                    return True
+        # 只有"报错三件套"齐全才当脏（正常任务里可能只出现其中一个词）
+        joined = "\n".join(tokens)
+        if "错误:" in joined and "用法" in joined and "工具调用" in joined:
+            return True
+        # 多段参数里出现"工作区路径"/"任务"这种说明词，基本是把用法抄进来了
+        stripped = [token.strip() for token in tokens if token.strip()]
+        if len(stripped) >= 3 and any(token in {"工作区路径", "任务"} for token in stripped):
+            return True
+        return False
+
+    @classmethod
+    def _split_dsh_args(cls, parts: list[str]) -> tuple[str, str, str]:
+        """把 `工具调用:dsh|...` 的参数拆成 (工作区, 权限预设, 要求)。
+
+        约定（与 TOOL.json 里的 `args: 工作区路径|任务内容` 一致，不做位置猜测）：
+        - 第一段位置参数 = 工作区（`.\` 或路径）；不给就写 `.` 或留空；
+        - 其余位置参数拼成任务内容；
+        - `ws=<路径>` / `perm=<预设>` 是显式声明，可放在任意位置。
+        """
+        workspace = ""
+        preset = ""
+        prompt_parts: list[str] = []
+
+        for raw in parts or []:
+            part = str(raw).strip()
+            if not part:
+                continue
+            lowered = part.lower()
+            head = lowered.split("=", 1)[0]
+            if "=" in part and head in {
+                "ws", "workspace", "cwd", "dir", "perm", "permission"
+            }:
+                key, value = part.split("=", 1)
+                value = value.strip()
+                if head in {"perm", "permission"}:
+                    preset = value
+                elif value:
+                    workspace = value
+                continue
+            prompt_parts.append(part)
+
+        # 位置写法：只有**第一段**才算工作区
+        if not workspace and prompt_parts and cls._looks_like_dsh_path(prompt_parts[0]):
+            workspace = prompt_parts.pop(0)
+
+        return workspace, preset, "\n".join(prompt_parts)
+
+    @classmethod
+    def _dsh_args_misordered(cls, parts: list[str]) -> bool:
+        """第一段不是路径、但后面某段像路径 → 说明顺序写反了。"""
+        positional = [
+            str(raw).strip() for raw in parts or []
+            if str(raw).strip() and "=" not in str(raw)
+        ]
+        if len(positional) < 2:
+            return False
+        if cls._looks_like_dsh_path(positional[0]):
+            return False
+        return any(cls._looks_like_dsh_path(token) for token in positional[1:])
+
     def _first_arg(args: list[str], kwargs: dict[str, str], *names: str) -> str:
         for name in names:
             value = kwargs.get(name)
@@ -446,6 +561,44 @@ class SkillRuntime:
         if name == "add-skill-to-viking":
             skill_slug = self._first_arg(args, kwargs, "skill_slug", "skill", "name")
             return self.add_skill_to_viking(skill_slug)
+
+        # dsh（DeepSeek Harness）外部大脑：`工具调用:dsh|工作区|要求`
+        # 工作区可留空（用调用者的工作区，服务端按 DSH_PATH_MAP 翻译）；
+        # 只给一个参数且不像路径时，当作“要求”。会话由工作区决定（同一工作区=同一 dsh 会话）。
+        if name in {"dsh", "dsh-chat"}:
+            parts = [str(a).strip() for a in args]
+            if self._dsh_args_are_dirty(parts):
+                return (
+                    "错误：dsh 的参数里混进了上次的报错/用法文本，已拒绝发送。\n"
+                    "请重新组织成两段：工具调用:dsh|工作区|任务，例如 "
+                    "工具调用:dsh|.|用 pwsh 打印当前目录"
+                )
+            if self._dsh_args_are_placeholders(parts):
+                return (
+                    "错误：dsh 的参数是占位符，没有替换成真实值。\n"
+                    "用法 工具调用:dsh|工作区路径|任务，例如："
+                    "工具调用:dsh|.|用 pwsh 打印当前目录"
+                )
+            if self._dsh_args_misordered(parts):
+                return (
+                    "错误：工作区要写在**最前面**。用法 工具调用:dsh|工作区路径|任务\n"
+                    "默认工作区写 `.`，例如：工具调用:dsh|.|打印当前目录"
+                )
+            workspace, preset, prompt = self._split_dsh_args(parts)
+            if not prompt:
+                return (
+                    "错误：dsh 需要任务内容。用法 工具调用:dsh|工作区路径|任务"
+                    "（默认工作区写 `.`）"
+                )
+            return dsh_client.ask(
+                prompt,
+                workspace=workspace,
+                preset=preset,
+                session_id=str(kwargs.get("session_id") or ""),
+                user_id=str(kwargs.get("user_id") or ""),
+                user_workspace=user_workspace,
+                timeout=timeout,
+            )
 
         return self.run_skill(name, args=args, user_workspace=user_workspace, timeout=timeout)
 

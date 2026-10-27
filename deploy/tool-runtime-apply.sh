@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agent}"
-TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v64}"
+TOOL_RUNTIME_IMAGE="${TOOL_RUNTIME_IMAGE:-agent/tool-runtime-service:v98}"
 
 OPENVIKING_SERVER_URL="${OPENVIKING_SERVER_URL:-http://openviking.agent.svc.cluster.local:1933}"
 OPENVIKING_API_KEY="${OPENVIKING_API_KEY:-/app/system_prompts/openviking/api_key}"
@@ -512,6 +512,27 @@ spec:
               value: "${ENABLE_CODEX}"
             - name: ENABLE_OPENVIKING
               value: "${ENABLE_OPENVIKING}"
+            # dsh（DeepSeek Harness）外部大脑：本服务充当 OneBot v11 反向 WS 客户端
+            - name: DSH_ONEBOT_WS
+              value: "${DSH_ONEBOT_WS:-ws://host.docker.internal:8644/ws}"
+            - name: DSH_ONEBOT_TOKEN
+              value: "${DSH_ONEBOT_TOKEN:-dshlink-4ef3ef4c7979f46eae4e120920ea8b39}"
+            - name: DSH_SELF_ID
+              value: "${DSH_SELF_ID:-10001}"
+            - name: DSH_SENDER_ID
+              value: "${DSH_SENDER_ID:-10086}"
+            - name: DSH_WORKSPACE_ROOT
+              value: "${DSH_WORKSPACE_ROOT:-\\\\wsl.localhost\\Ubuntu-24.04\\srv\\nfs\\my-agent\\workspace}"
+            - name: DSH_REPLY_TIMEOUT_SECONDS
+              value: "${DSH_REPLY_TIMEOUT_SECONDS:-300}"
+            - name: DSH_DEFAULT_CHAT_WORKSPACE
+              value: "${DSH_DEFAULT_CHAT_WORKSPACE:-}"
+            - name: DSH_SHARED_CHAT_TIMEOUT_SECONDS
+              value: "${DSH_SHARED_CHAT_TIMEOUT_SECONDS:-300}"
+            - name: DSH_REPLY_TIMEOUT_SECONDS
+              value: "${DSH_REPLY_TIMEOUT_SECONDS:-300}"
+            - name: DSH_MERGE_MILLIS
+              value: "${DSH_MERGE_MILLIS:-2500}"
             - name: IMAGE_ASSET_DIR
               value: "/app/assets/images"
             - name: IMAGE_BASE_URL

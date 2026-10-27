@@ -81,6 +81,31 @@ FETCH_EXTRACT_PROFILE = os.getenv("FETCH_EXTRACT_PROFILE", "default-reader")
 # LLM 提取最多处理的块数（超出按关键词得分取前 N 块）
 FETCH_LLM_EXTRACT_CHUNKS = env_int("FETCH_LLM_EXTRACT_CHUNKS", 10)
 
+# ─── dsh（DeepSeek Harness）外部大脑 ──────────────────────────
+# 本服务充当 OneBot v11 反向 WS 客户端，拨 dsh-onebot-qq 的专用通道。
+DSH_ONEBOT_WS = os.getenv("DSH_ONEBOT_WS", "ws://host.docker.internal:8644/ws")
+DSH_ONEBOT_TOKEN = os.getenv("DSH_ONEBOT_TOKEN", "")
+DSH_SELF_ID = env_int("DSH_SELF_ID", 10001)
+# 发信人 id：必须写进 dsh 侧 adminUsers（插件 /workspace 仅管理员可用）
+DSH_SENDER_ID = env_int("DSH_SENDER_ID", 10086)
+DSH_REPLY_TIMEOUT_SECONDS = env_int("DSH_REPLY_TIMEOUT_SECONDS", 300)
+# 走共用会话（默认 chat，绑在你正在聊的那条）时的等待上限：那会话同时只能跑一轮
+DSH_SHARED_CHAT_TIMEOUT_SECONDS = env_int("DSH_SHARED_CHAT_TIMEOUT_SECONDS", 300)
+DSH_MERGE_MILLIS = env_int("DSH_MERGE_MILLIS", 2500)
+# 会话权限预设：留空则不切。workspace-noapproval = 只写工作区 + 提权请求自动拒绝（不阻塞）
+# 请求里没声明工作区时用的那条 chat（按名称绑定到你在 Web 里聊的会话）；
+# 留空则按 session/user 派生。
+DSH_DEFAULT_CHAT = os.getenv("DSH_DEFAULT_CHAT", "group:548018")
+# 默认会话的工作目录（dsh 侧本地路径；留空=沿用插件配置，UNC 路径会导致 pwsh 不可用）
+DSH_DEFAULT_CHAT_WORKSPACE = os.getenv("DSH_DEFAULT_CHAT_WORKSPACE", "")
+# 默认权限预设（留空 = 不在请求里声明 perm=<预设> 就不发 /permission）
+DSH_PERMISSION_PRESET = os.getenv("DSH_PERMISSION_PRESET", "")
+# 绑定到已有 dsh 会话（不新建 onebot-* 会话）：填 session id，空 = 用 chat 派生会话
+DSH_TARGET_SESSION = os.getenv("DSH_TARGET_SESSION", "")
+# dsh 侧看到的"同一个工作区"的根（Windows 路径/UNC）；留空则沿用 dsh 侧默认工作区
+DSH_WORKSPACE_ROOT = os.getenv("DSH_WORKSPACE_ROOT", "")
+# ─────────────────────────────────────────────────────────────
+
 SKILL_ROOT_DIR = os.getenv("SKILL_ROOT_DIR", os.path.join(WORKSPACE_DIR, "skill"))
 
 OPENVIKING_SERVER_URL = os.getenv("OPENVIKING_SERVER_URL", "http://openviking.agent.svc.cluster.local:1933")

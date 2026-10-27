@@ -28,6 +28,20 @@ def to_mnt_path(raw) -> str:
     return ""
 
 
+def from_mnt_path(raw) -> str:
+    """`/mnt/<drive>/...` 转回 Windows 盘路径（`D:\\...`）；不是该形式返回空串。
+
+    与 `to_mnt_path` 互为逆运算 —— dsh 这类跑在 Windows 上的外部进程需要 Windows 形态的路径。
+    """
+    text = str(raw or "").strip().replace("\\", "/")
+    match = re.match(r"^/mnt/([A-Za-z])(?:/(.*))?$", text)
+    if not match:
+        return ""
+    drive = match.group(1).upper()
+    rest = (match.group(2) or "").replace("/", "\\")
+    return f"{drive}:\\{rest}" if rest else f"{drive}:\\"
+
+
 def is_windows_path(raw) -> bool:
     return bool(to_mnt_path(raw))
 

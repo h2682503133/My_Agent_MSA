@@ -1,0 +1,41 @@
+# dsh-onebot 通道配置模板
+#
+# 用法：把下面 `- id: dsh-onebot` 那一段**整块**粘进
+#   %USERPROFILE%\.dsh\profiles\web\cordis.patch.yml
+# 同 id 的 config 覆盖是「整块替换」，不要只写一行。
+#
+# 替换占位符：
+#   <PORT>                反向 WS 端口（别和 NapCat 常用的 8643 冲突）
+#   <ACCESS_TOKEN>        通道 token，必须与本项目 DSH_ONEBOT_TOKEN 一致
+#   <BOT_SELF_ID>         机器人 QQ 号（= 本项目 DSH_SELF_ID）
+#   <SENDER_ID>           发信人 id（= 本项目 DSH_SENDER_ID，必须进 adminUsers）
+#   <DSH_WORKSPACE_ROOT>  工作区在 Windows 侧的真实路径
+
+- id: dsh-onebot
+  config:
+    # 反连模式：等客户端拨到 ws://127.0.0.1:<PORT>/ws
+    mode: reverse
+    host: 127.0.0.1
+    port: <PORT>
+    accessToken: '<ACCESS_TOKEN>'
+
+    # 机器人自身 id：@ 判定与 meta 事件都用它
+    botQQ: '<BOT_SELF_ID>'
+
+    # 管理员：/workspace、/permission、/session 等命令仅管理员可用
+    adminUsers: ['<SENDER_ID>']
+
+    # 私聊策略（本项目只用群 chat，这两项可保持默认）
+    dmPolicy: open
+    allowAllUsers: false
+
+    # 群聊策略：本项目用「群 chat」承载会话隔离
+    groupPolicy: open
+    # true = 群里必须 @ 机器人才起回合（客户端会自动带 at 段）
+    requireMention: true
+
+    # 会话默认工作目录；每个 chat 之后可用 /workspace <路径> 覆盖
+    workspacePath: '<DSH_WORKSPACE_ROOT>'
+
+    # 不要限制成纯聊天：本项目需要它真的去执行工具
+    chatOnly: false

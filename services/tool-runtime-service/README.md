@@ -68,6 +68,48 @@
 - `add-skill-to-viking|技能名`
 - 未命中的工具名自动按已安装技能执行（`skill_runtime`）
 
+### dsh（外部大脑 / OneBot 反向 WS）
+
+把任务交给一台 dsh（DeepSeek Harness）执行，取回它的结果。
+本服务充当 **OneBot v11 反向 WebSocket 客户端**，拨到 dsh 侧 `dsh-onebot-qq` 插件的专用通道。
+
+```
+工具调用:dsh|工作区路径|任务内容
+```
+
+- 工作区可省；写 `.` 或留空 = 服务端配置的默认 chat
+- **一个工作区 = 一个 chat = 一条 dsh 会话**：首次自动新建，之后复用同一上下文
+- 可选声明（可放任意位置）：`ws=<路径>`、`perm=<权限预设>`
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `DSH_ONEBOT_WS` | `ws://host.docker.internal:8644/ws` | dsh 侧反向 WS 地址 |
+| `DSH_ONEBOT_TOKEN` | 空 | 与 dsh 侧 `accessToken` 一致，空则直接报错 |
+| `DSH_SELF_ID` | `10001` | 机器人自身 id（= dsh 侧 `botQQ`） |
+| `DSH_SENDER_ID` | `10086` | 发信人 id，**必须进 dsh 侧 `adminUsers`** |
+| `DSH_DEFAULT_CHAT` | `group:548018` | 不带工作区时使用的 chat（按部署改） |
+| `DSH_DEFAULT_CHAT_WORKSPACE` | 空 | 默认 chat 的工作目录；留空则不改它的 cwd |
+| `DSH_PERMISSION_PRESET` | 空 | 默认权限预设；也可用 `perm=` 逐次声明 |
+| `DSH_TARGET_SESSION` | 空 | 填了就对默认 chat 发一次 `/session` 做绑定核对 |
+| `DSH_REPLY_TIMEOUT_SECONDS` | `300` | 单次调用总上限（与工具超时取小） |
+| `DSH_SHARED_CHAT_TIMEOUT_SECONDS` | `300` | 共用会话的等待上限 |
+| `DSH_WORKSPACE_ROOT` | 空 | 容器工作区 → dsh 侧根（如 `Z:\users`）的映射根 |
+| `DSH_MERGE_MILLIS` | `2500` | 多条回复的静默合并窗口 |
+
+参数守卫（命中即拒，不会发往 dsh）：
+
+| 判据 | 示例 |
+|---|---|
+| 顺序写反 | `dsh\|任务\|.` |
+| 未替换的占位符 | `dsh\|<工作区>\|<任务>` |
+| 混进上次报错/用法文本 | 含 `工具调用:`、`【dsh `、`工作区要写在`、`用法 工具调用`，或「错误: + 用法 + 工具调用」同时出现 |
+
+返回形态：正常时返回 dsh 的回复（多段会合并，带工作区后缀）；异常时返回
+`【dsh 会话忙】` / `【dsh 会话冲突】` / `【dsh 无回复】` 之一，并给出下一步建议。
+
+排查顺序：8644 是否 LISTENING → token 是否一致 → 是否有第二个反向 WS 客户端占端口 →
+目标会话是否被 Web 端占用。dsh 侧的安装与绑定步骤见 `deploy/dsh/对接方式.md`。
+
 ## fetch 行为矩阵（v50+）
 
 `fetch|url|method|data`，GET 时第 4 参 `data` 是搜索/定位依据（多词空格分隔），行为按清洗后文本长度 L 路由：
