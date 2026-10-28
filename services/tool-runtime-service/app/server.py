@@ -376,7 +376,11 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         # 图片本身由 orchestrator 收到消息时自动落盘，不需要模型先"保存"。
         if name in {"image-view", "view-image"}:
             target = self._first_arg(args, kwargs, "path", "url", "image", default="")
-            return self._image_view(target=target, root=root)
+            # 第 2 参：本次看图的关注方向（_first_arg 只取位置参数 0，这里按位置取）
+            hint = str(kwargs.get("hint") or kwargs.get("focus") or kwargs.get("需求方向") or "").strip()
+            if not hint and len(args) > 1:
+                hint = str(args[1]).strip()
+            return self._image_view(target=target, root=root, hint=hint)
 
         if name in {"send-message", "notify"}:
             text = self._first_arg(args, kwargs, "text", "message", default="")
@@ -660,11 +664,14 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 
         return f"此图片URL为：{url}"
 
-    def _image_view(self, target: str, root: Path) -> ToolResult:
+    def _image_view(self, target: str, root: Path, hint: str = "") -> ToolResult:
         """image-view：读书/下载图片并交给模型（不发给用户）。
 
         事件类型用 `model_image` 而不是 `image`：`image` 会被 orchestrator 当成
         "推送给用户"，而这里的图是喂给模型看的，两者不能混。
+
+        `hint` 是本次看图的**需求方向**（例如"看清表格第三列"），随图片一起交给模型；
+        任何轮次都可以调用，不限制"只在新图/首次"。
         """
         try:
             payload = load_image(target, root, config.IMAGE_VIEW_MAX_BYTES)
@@ -672,11 +679,16 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             debug(f"image-view failed: {exc}")
             return f"图片读取失败：{exc}"
 
+        hint = (hint or "").strip()
+        if len(hint) > 200:
+            hint = hint[:200] + "…"
         text = (
             f"已载入图片：{payload.relpath}"
             f"（{payload.dimension_text}，{payload.mime}，{payload.size_text}）。"
-            "图片内容已附加到本轮上下文，直接据此回答，不要重复调用 image-view。"
         )
+        if hint:
+            text += f"本次关注方向：{hint}。"
+        text += "图片内容已附加到本轮上下文，据此回答。"
         return ToolResult(
             output=text,
             events=[

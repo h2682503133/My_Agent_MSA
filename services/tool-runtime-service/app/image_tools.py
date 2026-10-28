@@ -231,7 +231,7 @@ def load_image(target: str, root: Path, max_bytes: int | None = None) -> ImagePa
     """
     raw = str(target or "").strip()
     if not raw:
-        raise ValueError("缺少图片路径（用法：image-view|图片路径）")
+        raise ValueError("缺少图片路径（用法：image-view|图片路径|需求方向）")
 
     limit = int(max_bytes or config.IMAGE_VIEW_MAX_BYTES)
 
