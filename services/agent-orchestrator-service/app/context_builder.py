@@ -150,6 +150,10 @@ _OPTION_BLOCK_RE = re.compile(
 # 口径与 openviking-context-service 的会话共享判定完全一致（那边只看 session_id）
 GROUP_SESSION_PREFIXES = ("grp_", "qq_g_")
 
+# 正文首部是否已是"权威归属"：可带时间戳前缀，如 `[10-28 20:45] <main>:`
+# 与 agent_runtime._HAS_SPEAKER_PREFIX_RE / text_utils.AUTHOR_PREFIX_RE 同口径。
+_SPEAKER_PREFIX_RE = re.compile(r"^\s*(\[[^\]\n]{1,32}\]\s*)?<[^>\n]{1,64}>\s*[:：]")
+
 # ─── 短期 session 记忆（对话历史）的加载期 role 重分配 ──────────
 # 历史块的免责框：**作用范围覆盖它下面的整个历史块**（会话摘要 / 相关记忆 / 对话历史），
 # 而不只是"历史对话记录"。带优先级裁决，所以不是空泛的"仅供参考"。
@@ -1190,9 +1194,17 @@ class ContextBuilder:
                 )},
             ]
         else:
+            # 智能体间对话的正文可能已经带 `<caller>:` 前缀（call_agent 打的），别再加一次
+            raw_content = str(content)
+            caller_id = getattr(task.caller, "id", "user")
+            # 已带归属（可带时间戳，如 `[10-28 20:45] <main>:`）就不要再加一次
+            if _SPEAKER_PREFIX_RE.match(raw_content):
+                prefixed = raw_content
+            else:
+                prefixed = f"<{caller_id}>" + raw_content
             current_input_messages = [
                 {"role": "system", "content": "以下为本次单轮对话内容"},
-                {"role": "user", "content": f"<{getattr(task.caller, 'id', 'user')}>" + str(content)},
+                {"role": "user", "content": prefixed},
             ]
         if dialog_images:
             if agent.id == "main" and image_enabled:

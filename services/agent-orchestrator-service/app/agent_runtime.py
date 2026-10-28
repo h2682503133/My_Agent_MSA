@@ -1,5 +1,6 @@
 import re
 import threading
+import time
 from collections import OrderedDict
 from typing import Callable
 
@@ -36,6 +37,10 @@ from app.timer_task_client import TimerTaskClient
 # /stop 打断后的用户可见提示。措辞上必须点明「进度已保留」：
 # 打断是暂停而不是销毁，用户看到这句才敢直接接着说下一句。
 INTERJECT_PAUSE_TEXT = "⏹ 已停止。当前进度已保留，直接发消息即可接着继续。"
+
+# 正文首部是否已有"权威归属"：可带时间戳，形如 `[10-28 20:45] <main>:`
+# 与 context_builder._SPEAKER_PREFIX_RE / text_utils.AUTHOR_PREFIX_RE 的口径保持一致。
+_HAS_SPEAKER_PREFIX_RE = re.compile(r"^\s*(\[[^\]\n]{1,32}\]\s*)?<[^>\n]{1,64}>\s*[:：]")
 
 
 def should_write_return_log(frame_kind: str) -> bool:
@@ -812,6 +817,47 @@ class AgentRuntime:
             cls._unregister_running(task)
 
     @classmethod
+    def _record_callee_turn(cls, task, agent_id: str, dispatch_text: str, output: str) -> bool:
+        """把"被调用智能体这一轮"写进**它自己**的记忆（用户调用同口径）。
+
+        - 跳过 `INTER_AGENT_MEMORY_SKIP_AGENTS`（默认 tool,reader：它们是"手"和"检索器"）
+        - 群共享 session（grp_/qq_g_）跳过：写入会污染共享历史（与扇出退化逻辑一致）
+        - 只记被调用者；调用者的记录仍由任务收尾那一处负责
+        - 幂等：弹栈只发生一次；挂起/恢复不重写
+        """
+        agent_id = str(agent_id or "").strip()
+        dispatch_text = str(dispatch_text or "").strip()
+        output = str(output or "").strip()
+        if not agent_id or not dispatch_text or not output:
+            return False
+        if agent_id in config.INTER_AGENT_MEMORY_SKIP_AGENTS:
+            return False
+        session_id = str(getattr(task.user, "session_id", "") or "")
+        if session_id.startswith(GROUP_SESSION_PREFIXES):
+            debug_log(f"[{task.user.id}] [callee_memory] 群共享 session，跳过 {agent_id} 的回合记录")
+            return False
+
+        try:
+            callee = cls.get_agent(agent_id, task.user.session_id, task.user.id)
+            callee_config = getattr(callee, "config", {}) or {}
+            ok = cls.context_client.append_turn(
+                user_id=task.user.id,
+                session_id=task.user.session_id,
+                task_id=task.task_id,
+                user_message=dispatch_text,
+                assistant_message=output,
+                agent_id=agent_id,
+                tool_summaries=[],
+                commit_limit=int(callee_config.get("commit_limit", 0) or 0),
+                max_messages=int(callee_config.get("max_messages", 6) or 6),
+            )
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"[{task.user.id}] [callee_memory] {agent_id} 写入失败: {exc}")
+            return False
+        debug_log(f"[{task.user.id}] [callee_memory] {agent_id} 回合已记录 ok={ok}")
+        return bool(ok)
+
+    @classmethod
     def _append_turn_for_recipients(
         cls,
         task,
@@ -939,6 +985,15 @@ class AgentRuntime:
                 debug_log(f"[{task.user.id}] [frame] 未标注 kind 的帧（来自 {returning_agent_id}），按非对话帧处理")
             if should_record_main_return(frame_kind, getattr(task.target, "id", None)):
                 task.main_memory.append(render_return_memory(returning_agent_id, str(output)))
+
+            # 被调用者（非 tool/reader）这一轮写进它自己的记忆：下次被叫时才有连续性
+            if frame_kind == "dialog":
+                cls._record_callee_turn(
+                    task,
+                    agent_id=returning_agent_id,
+                    dispatch_text=(context or {}).get("dispatch") or (context or {}).get("request") or "",
+                    output=str(raw_output or ""),
+                )
 
             if cls._is_user_object(task.target, task):
                 agent_id = getattr(getattr(task, "default_agent", None), "id", "") or getattr(task, "agent_id", "") or "main"
@@ -1487,13 +1542,30 @@ class AgentRuntime:
         # 派发即入账（任务级 tool_log）：与 main_memory 的「已转交」同点同条件。
         # 放在这里而不是 syntax_parser，是为了让"这一轮被派了什么活"**无条件**留下 ——
         # 否则对方若不调工具直接回话，日志里就只有回复、没有请求，模型读不出上下文。
-        record_dispatch(task, target_agent_id, content, self.id)
-        task.push_context(self, "【已发送给" + target_agent_id + "】\n" + content, kind="dialog", request=content)
-        chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{content}")
+        # 智能体间对话要标注来源与时间：`[MM-DD HH:MM] <caller_id>:` 前缀。
+        # 这样接收方（以及它的记忆、tool_log 的 `收到请求:`）都能看出这条是哪个智能体、
+        # 什么时候说的。时间格式与 history_time_stamp 一致。
+        dispatch_text = content
+        raw_content = str(content or "")
+        if raw_content and not _HAS_SPEAKER_PREFIX_RE.match(raw_content):
+            stamp = time.strftime("%m-%d %H:%M")
+            dispatch_text = f"[{stamp}] <{self.id}>:" + raw_content
+
+        record_dispatch(task, target_agent_id, dispatch_text, self.id)
+        task.push_context(
+            self,
+            "【已发送给" + target_agent_id + "】\n" + dispatch_text,
+            kind="dialog",
+            request=dispatch_text,
+        )
+        # `request` 会被 begin_work_episode() 清空，单独留一份派发原文给"被调用者记忆"用
+        if task.agent_context:
+            task.agent_context[-1]["dispatch"] = dispatch_text
+        chat_log(f"[{self.user_id}] <{self.session_id}>:{self.id}->{target_agent_id}\n{dispatch_text}")
         debug_log(f"[{self.user_id}] [agent_call] <{self.session_id}>:{self.id}->{target_agent_id}")
         task.target = AgentRuntime.get_agent(target_agent_id, self.session_id, task.user.id)
         task.caller = self
-        task.set_temp_dialog_input(content)
+        task.set_temp_dialog_input(dispatch_text)
         task.target.send(task, emit)
 
     def _run_tool(self, task, emit: Callable[[TaskEventDTO], None]):

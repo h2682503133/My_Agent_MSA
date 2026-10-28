@@ -60,3 +60,10 @@ WORLD_INFO_MAX_TOKENS = int(os.getenv("WORLD_INFO_MAX_TOKENS", "1500"))
 WORLD_INFO_MAX_ENTRIES = int(os.getenv("WORLD_INFO_MAX_ENTRIES", "20"))
 # 世界书注入总开关（默认开启）
 WORLD_INFO_ENABLED = os.getenv("WORLD_INFO_ENABLED", "true").lower() == "true"
+
+# 智能体间被调用时**不**记录其回合记忆的名单（tool=手，reader=检索器，它们不需要成长记性）
+INTER_AGENT_MEMORY_SKIP_AGENTS = {
+    item.strip().lower()
+    for item in os.getenv("INTER_AGENT_MEMORY_SKIP_AGENTS", "tool,reader").split(",")
+    if item.strip()
+}
