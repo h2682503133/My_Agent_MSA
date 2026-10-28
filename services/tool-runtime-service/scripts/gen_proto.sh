@@ -12,7 +12,8 @@ python -m grpc_tools.protoc \
   --python_out="$OUT_DIR" \
   --grpc_python_out="$OUT_DIR" \
   "$BASE_DIR/proto/tool_runtime.proto" \
-  "$BASE_DIR/proto/model_proxy.proto"
+  "$BASE_DIR/proto/model_proxy.proto" \
+  "$BASE_DIR/proto/openviking_context.proto"
 
 touch "$OUT_DIR/__init__.py"
 

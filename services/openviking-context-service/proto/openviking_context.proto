@@ -34,6 +34,23 @@ message SearchContextResponse {
   string error = 4;
 }
 
+message SearchVikingRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string agent_id = 3;
+  string query = 4;
+  // session（默认，本会话已 commit 的记忆）/ user（该用户全部）
+  string scope = 5;
+  int32 top_k = 6;
+}
+
+message SearchVikingResponse {
+  repeated MemoryHit hits = 1;
+  // 实际使用的 target_uri，便于排障
+  string target_uri = 2;
+  string error = 3;
+}
+
 message SearchSkillDocsRequest {
   string query = 1;
   repeated string skill_names = 2;
@@ -138,6 +155,7 @@ message ReadSkillDocResponse {
 
 service OpenVikingContext {
   rpc SearchContext(SearchContextRequest) returns (SearchContextResponse);
+  rpc SearchViking(SearchVikingRequest) returns (SearchVikingResponse);
   rpc SearchSkillDocs(SearchSkillDocsRequest) returns (SearchSkillDocsResponse);
   rpc AddSkillDocument(AddSkillDocumentRequest) returns (AddSkillDocumentResponse);
   rpc AppendTurn(AppendTurnRequest) returns (AppendTurnResponse);

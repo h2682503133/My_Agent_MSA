@@ -903,6 +903,75 @@ class OpenVikingServerBackend:
         finally:
             await self._close_client(client)
 
+    async def find_viking(
+        self,
+        user_id: str,
+        agent_id: str,
+        full_session_id: str,
+        query: str,
+        scope: str = "session",
+        top_k: int = 8,
+    ) -> dict[str, Any]:
+        """主动检索已 commit 的语料（memory/resource/skill）。
+
+        与 search_context 的区别：不组装会话上下文、不做 session recall —— 只跑一次
+        `client.find()`，让它能被工具直接调用。
+        """
+        query = (query or "").strip()
+        if not query:
+            return {"hits": [], "target_uri": "", "error": "query 不能为空"}
+
+        scope = (scope or "session").strip().lower()
+        if scope in {"user", "all", "global"}:
+            target_uri = f"viking://user/{user_id}"
+        else:
+            scope = "session"
+            target_uri = f"viking://user/{user_id}/sessions/{full_session_id}"
+
+        client = await self._new_client(user_id=user_id, agent_id=agent_id)
+        try:
+            find_method = getattr(client, "find", None)
+            if find_method is None:
+                return {"hits": [], "target_uri": target_uri, "error": "client has no find API"}
+            threshold = (
+                config.GLOBAL_SIMILARITY_THRESHOLD
+                if scope != "session"
+                else config.CONTEXT_SIMILARITY_THRESHOLD
+            )
+            try:
+                result = await self._maybe_await(find_method(
+                    query=query,
+                    target_uri=target_uri,
+                    limit=max(int(top_k or 8), 1),
+                    score_threshold=threshold,
+                ))
+            except TypeError:
+                result = await self._maybe_await(find_method(
+                    query=query,
+                    target_uri=target_uri,
+                    limit=max(int(top_k or 8), 1),
+                ))
+
+            raw_hits = list((result or {}).get("memories", []) or []) if isinstance(result, dict) else []
+            hits: list[dict[str, Any]] = []
+            for hit in raw_hits:
+                if not isinstance(hit, dict):
+                    continue
+                content = self._hit_to_content(hit)
+                if not content:
+                    continue
+                hits.append({
+                    "memory_id": str(hit.get("id") or hit.get("memory_id") or hit.get("uri") or ""),
+                    "content": content,
+                    "score": float(hit.get("score", 0.0) or 0.0),
+                    "token_count": int(hit.get("token_count", 0) or 0),
+                })
+            return {"hits": hits, "target_uri": target_uri, "error": ""}
+        except Exception as exc:  # noqa: BLE001
+            return {"hits": [], "target_uri": target_uri, "error": str(exc)}
+        finally:
+            await self._close_client(client)
+
     async def search_skill_docs(
         self, query: str, skill_names: list[str], top_k: int, max_tokens: int
     ) -> tuple[list[dict], str]:
@@ -1015,6 +1084,34 @@ class VikingStore:
             ],
             "error": "",
         }
+
+    def find_viking_sync(
+        self,
+        user_id: str,
+        agent_id: str,
+        session_id: str,
+        query: str,
+        scope: str = "session",
+        top_k: int = 8,
+    ) -> dict[str, Any]:
+        """主动检索已 commit 语料（按 mode 分派，与 search_context 一致）。"""
+        if self.mode == "mock":
+            return {"hits": [], "target_uri": "", "error": ""}
+        if self.mode != "server" or self.server is None:
+            return {"hits": [], "target_uri": "", "error": f"openviking 后端未连接（mode={self.mode}）"}
+        try:
+            # 群共享：user 映射为群账号；agent 缺省 main
+            return _run_coro_sync(self.server.find_viking(
+                user_id=self._storage_user_id(user_id, session_id),
+                agent_id=agent_id or "main",
+                full_session_id=self.full_session_id(agent_id or "main", session_id),
+                query=query,
+                scope=scope,
+                top_k=top_k,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"server find_viking failed: {exc}")
+            return {"hits": [], "target_uri": "", "error": str(exc)}
 
     def search_context(
         self,

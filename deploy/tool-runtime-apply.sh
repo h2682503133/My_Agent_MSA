@@ -510,6 +510,8 @@ spec:
               value: "${ENABLE_CLAWHUB}"
             - name: ENABLE_CODEX
               value: "${ENABLE_CODEX}"
+            - name: OPENVIKING_CONTEXT_TARGET
+              value: "openviking-context-service:5301"
             - name: ENABLE_OPENVIKING
               value: "${ENABLE_OPENVIKING}"
             # dsh（DeepSeek Harness）外部大脑：本服务充当 OneBot v11 反向 WS 客户端

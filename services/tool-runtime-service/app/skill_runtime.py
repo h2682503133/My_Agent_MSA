@@ -432,6 +432,60 @@ class SkillRuntime:
             return False
         return any(cls._looks_like_dsh_path(token) for token in positional[1:])
 
+    def viking_search(self, query: str, scope: str = "session", top_k: int = 8,
+                      user_id: str = "", session_id: str = "", agent_id: str = "") -> str:
+        """主动检索 OpenViking 已 commit 的语料（memory/resource/skill）。
+
+        只查已 commit 的内容；未 commit 的 messages.jsonl 不建索引，上下文组装阶段已覆盖。
+        """
+        query = (query or "").strip()
+        if not query:
+            return "错误：viking-search 需要关键词，用法 工具调用:viking-search|关键词|范围|条数"
+        scope = (scope or "session").strip().lower() or "session"
+        if scope not in {"session", "user"}:
+            return f"错误：范围只能是 session 或 user（收到 {scope}）"
+        try:
+            top_k = int(str(top_k or "8").strip() or "8")
+        except ValueError:
+            top_k = 8
+        top_k = max(1, min(top_k, 20))
+
+        import grpc
+
+        from app.generated import openviking_context_pb2, openviking_context_pb2_grpc
+
+        target = config.OPENVIKING_CONTEXT_TARGET
+        try:
+            with grpc.insecure_channel(target) as channel:
+                stub = openviking_context_pb2_grpc.OpenVikingContextStub(channel)
+                resp = stub.SearchViking(
+                    openviking_context_pb2.SearchVikingRequest(
+                        user_id=str(user_id or ""),
+                        session_id=str(session_id or ""),
+                        agent_id=str(agent_id or ""),
+                        query=query,
+                        scope=scope,
+                        top_k=top_k,
+                    ),
+                    timeout=15,
+                )
+        except Exception as exc:  # noqa: BLE001
+            return f"viking-search 调用失败：{exc}"
+
+        if resp.error:
+            return f"viking-search 检索失败：{resp.error}"
+        hits = list(resp.hits or [])
+        if not hits:
+            return f"未命中（范围 {scope}｜{resp.target_uri}）"
+
+        lines = [f"检索结果（范围 {scope}，共 {len(hits)} 条）："]
+        for index, hit in enumerate(hits, 1):
+            content = str(hit.content or "").strip().replace("\n", " ")
+            if len(content) > 300:
+                content = content[:300] + "…"
+            lines.append(f"{index}. [{hit.score:.2f}] {content}")
+        return "\n".join(lines)
+
     def _first_arg(args: list[str], kwargs: dict[str, str], *names: str) -> str:
         for name in names:
             value = kwargs.get(name)
@@ -561,6 +615,22 @@ class SkillRuntime:
         if name == "add-skill-to-viking":
             skill_slug = self._first_arg(args, kwargs, "skill_slug", "skill", "name")
             return self.add_skill_to_viking(skill_slug)
+
+        if name in {"viking-search", "viking-search-memory"}:
+            def _positional(index: int) -> str:
+                return str(args[index]).strip() if len(args) > index and str(args[index]).strip() else ""
+
+            query = str(kwargs.get("query") or kwargs.get("text") or kwargs.get("关键词") or "").strip() or _positional(0)
+            scope = str(kwargs.get("scope") or kwargs.get("范围") or "").strip() or _positional(1) or "session"
+            top_k = str(kwargs.get("top_k") or kwargs.get("limit") or kwargs.get("条数") or "").strip() or _positional(2) or "8"
+            return self.viking_search(
+                query,
+                scope=scope,
+                top_k=top_k,
+                user_id=str(kwargs.get("user_id") or ""),
+                session_id=str(kwargs.get("session_id") or ""),
+                agent_id=str(kwargs.get("agent_id") or ""),
+            )
 
         # dsh（DeepSeek Harness）外部大脑：`工具调用:dsh|工作区|要求`
         # 工作区可留空（用调用者的工作区，服务端按 DSH_PATH_MAP 翻译）；

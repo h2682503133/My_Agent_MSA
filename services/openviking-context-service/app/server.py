@@ -83,6 +83,36 @@ class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServ
             error=error,
         )
 
+    def SearchViking(self, request, context):
+        """主动检索已 commit 的语料（memory/resource/skill）；只跑一次 find()。"""
+        try:
+            result = store.find_viking_sync(
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                session_id=request.session_id,
+                query=request.query,
+                scope=request.scope or "session",
+                top_k=request.top_k or 8,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"SearchViking failed: {exc}")
+            return openviking_context_pb2.SearchVikingResponse(hits=[], target_uri="", error=str(exc))
+
+        hits = [
+            openviking_context_pb2.MemoryHit(
+                memory_id=item.get("memory_id", ""),
+                content=item.get("content", ""),
+                score=float(item.get("score", 0.0) or 0.0),
+                token_count=int(item.get("token_count", 0) or 0),
+            )
+            for item in (result.get("hits") or [])
+        ]
+        return openviking_context_pb2.SearchVikingResponse(
+            hits=hits,
+            target_uri=result.get("target_uri", ""),
+            error=result.get("error", ""),
+        )
+
     def SearchSkillDocs(self, request, context):
         hits, error = store.search_skill_docs(
             query=request.query,

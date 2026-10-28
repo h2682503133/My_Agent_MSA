@@ -132,6 +132,10 @@ ENABLE_CODEX = env_bool("ENABLE_CODEX", True)
 ENABLE_CLAWHUB = env_bool("ENABLE_CLAWHUB", True)
 # 技能知识库（OpenViking）开关：未勾选 openviking-server 时技能查询/导入会提示未启用
 ENABLE_OPENVIKING = env_bool("ENABLE_OPENVIKING", True)
+# OpenViking 统一收束口（openviking-context-service）：viking-search 走它检索
+OPENVIKING_CONTEXT_TARGET = os.getenv(
+    "OPENVIKING_CONTEXT_TARGET", "openviking-context-service:5301"
+)
 
 ENABLE_SHELL_TOOLS = env_bool("ENABLE_SHELL_TOOLS", True)
 

@@ -1,0 +1,165 @@
+syntax = "proto3";
+
+package openviking_context.v1;
+
+message SearchContextRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string agent_id = 3;
+  string query = 4;
+  int32 top_k = 5;
+  int32 max_tokens = 6;
+  int32 max_messages = 7;
+  int32 commit_limit = 8;
+}
+
+message MemoryHit {
+  string memory_id = 1;
+  string content = 2;
+  double score = 3;
+  int32 token_count = 4;
+}
+
+message ChatMessage {
+  string role = 1;
+  string content = 2;
+  // 该条消息的写入时间（ISO8601，UTC）。老数据可能为空 —— 空则不渲染时间戳。
+  string created_at = 3;
+}
+
+message SearchContextResponse {
+  string session_summary = 1;
+  repeated MemoryHit memories = 2;
+  repeated ChatMessage recent_messages = 3;
+  string error = 4;
+}
+
+message SearchVikingRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string agent_id = 3;
+  string query = 4;
+  // session（默认，本会话已 commit 的记忆）/ user（该用户全部）
+  string scope = 5;
+  int32 top_k = 6;
+}
+
+message SearchVikingResponse {
+  repeated MemoryHit hits = 1;
+  // 实际使用的 target_uri，便于排障
+  string target_uri = 2;
+  string error = 3;
+}
+
+message SearchSkillDocsRequest {
+  string query = 1;
+  repeated string skill_names = 2;
+  int32 top_k = 3;
+  int32 max_tokens = 4;
+}
+
+message SkillDocHit {
+  string skill_name = 1;
+  string doc_id = 2;
+  string chunk_id = 3;
+  string version = 4;
+  string title = 5;
+  string content = 6;
+  int32 token_count = 7;
+  double score = 8;
+}
+
+message SearchSkillDocsResponse {
+  repeated SkillDocHit hits = 1;
+  string error = 2;
+}
+
+message AddSkillDocumentRequest {
+  string skill_name = 1;
+  string version = 2;
+  string content = 3;
+  string source_path = 4;
+}
+
+message AddSkillDocumentResponse {
+  bool ok = 1;
+  string skill_name = 2;
+  string version = 3;
+  string uri = 4;
+  string error = 5;
+}
+
+// ─── 世界书（World Info）检索 ─────────────────────────────────
+// 纯本地文件 + 关键词匹配，不依赖 OpenViking server / embedding。
+
+message SearchWorldInfoRequest {
+  string user_id = 1;
+  string agent_id = 2;
+  string query = 3;                    // 当前用户消息
+  repeated string recent_messages = 4; // 最近消息（触发源）
+  int32 max_tokens = 5;                // 注入 token 预算
+  int32 max_entries = 6;               // 最多注入条数
+}
+
+message WorldInfoHit {
+  string entry_id = 1;
+  repeated string keys = 2;
+  string content = 3;
+  int32 priority = 4;
+  bool constant = 5;
+  int32 token_count = 6;
+}
+
+message SearchWorldInfoResponse {
+  repeated WorldInfoHit hits = 1;
+  string error = 2;
+}
+
+message AppendTurnRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string agent_id = 3;
+  string task_id = 4;
+  string user_message = 5;
+  string assistant_message = 6;
+  repeated string tool_summaries = 7;
+  map<string, string> metadata = 8;
+  int32 commit_limit = 9;
+  int32 max_messages = 10; // commit 时保留的最近消息条数（与 search_context 读取窗口对齐）
+}
+
+message AppendTurnResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message ListSkillDocsRequest {
+  bool simple = 1;
+}
+
+message ListSkillDocsResponse {
+  repeated string names = 1;
+  string error = 2;
+}
+
+message ReadSkillDocRequest {
+  string skill_name = 1;
+  string doc_type = 2; // abstract / overview / manual
+}
+
+message ReadSkillDocResponse {
+  bool ok = 1;
+  string content = 2;
+  string error = 3;
+}
+
+service OpenVikingContext {
+  rpc SearchContext(SearchContextRequest) returns (SearchContextResponse);
+  rpc SearchViking(SearchVikingRequest) returns (SearchVikingResponse);
+  rpc SearchSkillDocs(SearchSkillDocsRequest) returns (SearchSkillDocsResponse);
+  rpc AddSkillDocument(AddSkillDocumentRequest) returns (AddSkillDocumentResponse);
+  rpc AppendTurn(AppendTurnRequest) returns (AppendTurnResponse);
+  rpc ListSkillDocs(ListSkillDocsRequest) returns (ListSkillDocsResponse);
+  rpc ReadSkillDoc(ReadSkillDocRequest) returns (ReadSkillDocResponse);
+  rpc SearchWorldInfo(SearchWorldInfoRequest) returns (SearchWorldInfoResponse);
+}
