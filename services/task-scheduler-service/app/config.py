@@ -48,3 +48,22 @@ SCHEDULED_EXCLUDED_CHANNELS = {
     for item in os.getenv("SCHEDULER_EXCLUDED_CHANNELS", "").split(",")
     if item.strip()
 }
+
+# ─── 同渠道短窗口合并（转发+回复合成一条）─────────────────────
+# 适配层拿不到转发内容（satori 1.3.2 无 call_api、官方无节点接口），只能在任务层按到达时间合并。
+# 实测成对间隔：108ms / 924ms → 滞留窗口取 1200ms。
+SCHEDULER_MERGE_QUEUED = (
+    os.getenv("SCHEDULER_MERGE_QUEUED", "true").strip().lower() not in {"0", "false", "no", "off"}
+)
+SCHEDULER_MERGE_HOLD_MS = env_int("SCHEDULER_MERGE_HOLD_MS", 1200)
+SCHEDULER_MERGE_HOLD_MAX_MS = env_int("SCHEDULER_MERGE_HOLD_MAX_MS", 2500)
+# 带图片的消息滞留更久：QQ 侧图片常分成多条到达（实测先来文字再来图）
+SCHEDULER_MERGE_HOLD_MS_IMAGE = env_int("SCHEDULER_MERGE_HOLD_MS_IMAGE", 3000)
+SCHEDULER_MERGE_HOLD_MAX_MS_IMAGE = env_int("SCHEDULER_MERGE_HOLD_MAX_MS_IMAGE", 6000)
+SCHEDULER_MERGE_MAX_PARTS = env_int("SCHEDULER_MERGE_MAX_PARTS", 3)
+# 需要滞留的渠道（逗号分隔）；写 all 或留空字符串以外的 `*` 表示所有渠道
+SCHEDULER_MERGE_HOLD_CHANNELS = {
+    item.strip().lower()
+    for item in os.getenv("SCHEDULER_MERGE_HOLD_CHANNELS", "qq,qqofficial").split(",")
+    if item.strip()
+}

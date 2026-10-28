@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: qq-official-service
-          image: agent/qq-official-service:v3
+          image: agent/qq-official-service:v8
           imagePullPolicy: Always
           env:
             - name: QQ_OFFICIAL_CONFIG_PATH

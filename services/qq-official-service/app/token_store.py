@@ -10,6 +10,23 @@ import time
 import aiohttp
 
 
+def _looks_transient(message: str) -> bool:
+    """网络类瞬时错误（值得重试）判定。"""
+    text = (message or "").lower()
+    return any(
+        hint in text
+        for hint in (
+            "name resolution",
+            "cannot connect",
+            "timeout",
+            "timed out",
+            "server disconnected",
+            "connection reset",
+            "temporary failure",
+        )
+    )
+
+
 class TokenStore:
     def __init__(self, api_base: str, app_id: str, client_secret: str):
         self.api_base = api_base
@@ -38,7 +55,7 @@ class TokenStore:
                 print("[qq-official] access_token 获取失败，沿用旧值", flush=True)
             return self._token
 
-    async def _fetch(self) -> tuple[str, int]:
+    async def _fetch_once(self) -> tuple[dict, str]:
         url = f"{self.api_base}/app/getAppAccessToken"
         payload = {"appId": self.app_id, "clientSecret": self.client_secret}
         timeout = aiohttp.ClientTimeout(total=10)
@@ -46,8 +63,26 @@ class TokenStore:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(url, json=payload) as resp:
                     body = await resp.json(content_type=None)
+            return (body if isinstance(body, dict) else {}), ""
         except Exception as exc:
-            print(f"[qq-official] getAppAccessToken 请求异常: {exc}", flush=True)
+            return {}, str(exc)
+
+    async def _fetch(self) -> tuple[str, int]:
+        # 瞬时网络错误（DNS 抖动/连不上）重试两次，别让一次抖动白等一个周期
+        body: dict = {}
+        last_error = ""
+        for attempt in range(3):
+            body, last_error = await self._fetch_once()
+            if body or not _looks_transient(last_error):
+                break
+            print(
+                f"[qq-official] getAppAccessToken 瞬时失败，重试 {attempt + 1}/2: {last_error[:80]}",
+                flush=True,
+            )
+            await asyncio.sleep(0.4 if attempt == 0 else 1.2)
+        if not body:
+            if last_error:
+                print(f"[qq-official] getAppAccessToken 请求异常: {last_error}", flush=True)
             return "", 0
 
         if not isinstance(body, dict):

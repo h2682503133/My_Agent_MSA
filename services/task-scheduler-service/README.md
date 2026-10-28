@@ -192,3 +192,41 @@ export SCHEDULER_EXCLUDED_CHANNELS=qqofficial      # 可写多个，逗号分隔
 
 相关自检：`tools/scheduled_channel_default_smoke_test.py`（新默认 + 转投 + 显式收回）、
 `tools/scheduled_channel_suppression_smoke_test.py`（屏蔽机制本身）。
+
+## 短窗口合并（转发 + 回复 → 一个任务）
+
+QQ 的「转发 + 回复」会作为**两条消息**到达；适配层拿不到转发内容
+（satori 1.3.2 无 `call_api` / `message.get`，官方渠道也没有合并转发节点接口），
+所以合并放在**任务层**，按到达时间判定。
+
+实测成对间隔（qqofficial 日志）：
+
+```
+06:36:40.539 → 06:36:40.647   Δ 108 ms
+06:38:01.175 → 06:38:02.099   Δ 924 ms
+```
+
+规则：
+
+| 到达时状态 | 处理 |
+|---|---|
+| 用户空闲（会立刻开跑） | 先**滞留** `SCHEDULER_MERGE_HOLD_MS`（默认 1200ms），期间来的消息并入 |
+| 已有「排队未开跑」任务 | 直接并入（零延迟） |
+| 正在跑 | 不合并，按原逻辑排队 |
+| 推送类（timer `send_message` / `offline_fallback`）、定时任务 | 不合并 |
+
+合并形态：`第一条内容` + `\n\n【续】[MM-DD HH:MM] <user_id>:\n` + `第二条内容`
+（前段对齐平时消息的时间戳前缀 `context_builder.history_time_stamp`；时间取合并发生时刻，不额外查询，任一部分缺失则省略），`images` 顺序拼接，
+`metadata` 记 `_merge_parts` 与 `_merged_from`；日志 `[merge] … (parts=2)`。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `SCHEDULER_MERGE_QUEUED` | `true` | 总开关 |
+| `SCHEDULER_MERGE_HOLD_MS` | `1200` | 滞留窗口（覆盖实测 924ms） |
+| `SCHEDULER_MERGE_HOLD_MAX_MS` | `2500` | 滞留总上限（避免长转发被无限延长） |
+| `SCHEDULER_MERGE_MAX_PARTS` | `3` | 最多合并几段 |
+| `SCHEDULER_MERGE_HOLD_CHANNELS` | `qq,qqofficial` | 需要滞留的渠道；`*`/`all` = 全部 |
+| `SCHEDULER_MERGE_HOLD_MS_IMAGE` | `3000` | **带图片**时的滞留窗口（QQ 图片常分多条到达） |
+| `SCHEDULER_MERGE_HOLD_MAX_MS_IMAGE` | `6000` | 带图片时的滞留总上限 |
+
+自检：`tools/task_merge_smoke_test.py`（20 项）。

@@ -4,7 +4,37 @@
 - 鉴权头 Authorization: QQBot {ACCESS_TOKEN}
 - 业务错误也返回 HTTP 200，必须以 body 的 err_code 判定成功与否
 """
+import asyncio
 import aiohttp
+
+# 瞬时网络错误：DNS 抖动 / 连不上 / 超时 / 连接被断
+_TRANSIENT_HINTS = (
+    "name resolution",
+    "cannot connect",
+    "timeout",
+    "timed out",
+    "server disconnected",
+    "connection reset",
+    "connection aborted",
+    "network is unreachable",
+    "temporary failure",
+)
+
+# 重试退避（秒）；长度 = 重试次数
+_RETRY_BACKOFF = (0.4, 1.2)
+
+
+def is_transient(body: dict) -> bool:
+    """这次失败是不是"网络抖动"（值得重试）。"""
+    if not body:
+        return False
+    if body.get("http_status") not in (0, None):
+        return False
+    code = body.get("err_code")
+    if code not in (-1, None):
+        return False
+    message = str(body.get("message") or "").lower()
+    return any(hint in message for hint in _TRANSIENT_HINTS)
 
 
 class OpenApiClient:
@@ -21,7 +51,7 @@ class OpenApiClient:
             "X-Union-Appid": "",
         }
 
-    async def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+    async def _request_once(self, method: str, path: str, payload: dict | None = None) -> dict:
         url = f"{self.api_base}{path}"
         headers = await self._headers()
         headers.pop("X-Union-Appid", None)
@@ -38,6 +68,21 @@ class OpenApiClient:
                     return body
         except Exception as exc:
             return {"err_code": -1, "message": f"request failed: {exc}", "http_status": 0}
+
+    async def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        """带瞬时错误重试的请求（DNS 抖动不要直接算失败）。"""
+        body = await self._request_once(method, path, payload)
+        for attempt, delay in enumerate(_RETRY_BACKOFF, start=1):
+            if not is_transient(body):
+                break
+            print(
+                f"[qq-official] 请求瞬时失败，重试 {attempt}/{len(_RETRY_BACKOFF)} "
+                f"{method} {path} :: {str(body.get('message'))[:80]}",
+                flush=True,
+            )
+            await asyncio.sleep(delay)
+            body = await self._request_once(method, path, payload)
+        return body
 
     async def get_gateway(self) -> tuple[str, int]:
         """GET /gateway/bot → (wss url, 建议分片数)。失败返回 ("", 0)。"""

@@ -1,30 +1,44 @@
 """会话 id ↔ 推送目标：纯函数，不依赖 satori / aiohttp，便于单测。
 
-会话 id 的两种形式由 `qq_bridge._session_key` 确定性产出：
+推送目标从 session_id **直接重建**，不依赖"用户先发过一条消息"而缓存下来的 event
+对象（进程内缓存重启即空，定时提醒/离线转投/缓冲补发会因此静默丢失）。
 
-    私聊: qq_{QQ号}
-    群聊: qq_g_{群号}
-
-所以推送目标可以从 session_id **直接重建**，不需要依赖"用户先发过一条消息"而缓存下来的
-event 对象。这一点很关键：`QQBridge._sessions` 是进程内字典，只在收到消息时填充，
-服务重启后必然为空 —— 那时所有被动推送（定时提醒、离线转投、缓冲补发）都会以
-"会话不在线"被静默丢弃。
+支持带渠道前缀的形态：`qq_…` / `qq_g_…` / `qqofficial_…` / `qqofficial_g_…`。
 """
 
 
 def parse_session_target(session_id: str) -> tuple[str, str] | None:
-    """把会话 id 解析成推送目标：("private", QQ号) / ("group", 群号)。
+    """把会话 id 解析成推送目标：("private", id) / ("group", id)。
 
-    解析不出目标返回 None（不认识的会话格式 → 无法送达，调用方应回报投递失败）。
-    注意 `qq_g_` 必须**先于** `qq_` 判断，否则群会话会被误判成私聊。
+    兼容的形态（前导渠道前缀会被剥掉）：
+
+        qq_2195239690            → ("private", "2195239690")     # 主渠道
+        qq_g_12345               → ("group", "12345")
+        qqofficial_2195239690    → ("private", "2195239690")     # 定时任务/转投
+        qqofficial_4F9ECB5FB5…   → ("private", "4F9ECB5FB5…")    # openid 直传
+        qqofficial_g_12345       → ("group", "12345")
+
+    解析不出返回 None（调用方回报投递失败）。
     """
     key = str(session_id or "").strip()
     if not key:
         return None
-    if key.startswith("qq_g_"):
-        group_id = key[len("qq_g_"):].strip()
-        return ("group", group_id) if group_id else None
-    if key.startswith("qq_"):
-        qq_id = key[len("qq_"):].strip()
-        return ("private", qq_id) if qq_id else None
-    return None
+
+    # 剥渠道前缀：长的先剥，避免 "qqofficial_" 被 "qq_" 抢走
+    for prefix in ("qqofficial_g_", "qqofficial_", "qqo_", "qq_g_", "qq_"):
+        if key.startswith(prefix):
+            key = key[len(prefix):].strip()
+            is_group = prefix.endswith("_g_")
+            break
+    else:
+        is_group = False
+
+    if not key:
+        return None
+    if is_group:
+        return ("group", key)
+    # 无前缀且以 g_ 开头：视为群
+    if key.startswith("g_"):
+        gid = key[len("g_"):].strip()
+        return ("group", gid) if gid else None
+    return ("private", key)

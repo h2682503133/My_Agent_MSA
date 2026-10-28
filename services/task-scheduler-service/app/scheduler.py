@@ -13,6 +13,7 @@ from app.event_bus import event_bus, task_event
 from app.logger import gateway_log
 from app.orchestrator_client import OrchestratorClient
 from app import commands
+from app import task_merge
 from app.scheduled_task import DeliveryTarget, ScheduledTask
 
 # ======================
@@ -83,6 +84,110 @@ class SubmitResult:
 # 必须在 CreateTask 入口就拦下：/stop 若按普通任务入队，会排在正在执行的任务
 # 之后，永远没机会抢占 —— 而「用户正需要它生效」恰恰就是有任务在跑的时候。
 # 全角斜杠一并接受（中文输入法下很容易打成 ／stop）。
+# ─── 短窗口合并状态 ───────────────────────────────────────
+_QUEUED_REFS: dict[str, ScheduledTask] = {}
+_QUEUED_REFS_LOCK = threading.Lock()
+
+
+def _merge_channel_allowed(channel: str) -> bool:
+    allowed = config.SCHEDULER_MERGE_HOLD_CHANNELS
+    if not allowed:
+        return False
+    if "*" in allowed or "all" in allowed:
+        return True
+    return (channel or "").strip().lower() in allowed
+
+
+def _enqueue_task(task: ScheduledTask) -> SubmitResult:
+    """把任务放进该用户的队列并发事件（滞留释放与普通提交共用）。"""
+    user_id = task.user_id
+    with USER_LOCK:
+        if user_id not in USER_QUEUES:
+            USER_QUEUES[user_id] = queue.Queue(maxsize=config.USER_QUEUE_SIZE)
+        q = USER_QUEUES[user_id]
+        try:
+            q.put_nowait(task)
+        except queue.Full:
+            return SubmitResult(
+                ok=False,
+                task_id=task.task_id,
+                status="queue_full",
+                waiting=waiting_count(),
+                error=f"user queue full: {user_id}",
+            )
+        with _QUEUED_REFS_LOCK:
+            _QUEUED_REFS[user_id] = task
+
+    current_waiting = waiting_count()
+    task.waiting = current_waiting
+    notify_queue_update()
+    event_bus.publish(task_event(task, "task_queued", waiting=current_waiting))
+    _wake_scheduler()
+    return SubmitResult(ok=True, task_id=task.task_id, status=task.status, waiting=current_waiting)
+
+
+def _release_held_task(user_id: str, task: ScheduledTask) -> None:
+    gateway_log(f"[merge] {user_id} 滞留结束，入队 {task.task_id}")
+    _enqueue_task(task)
+
+
+_HOLD_QUEUE = task_merge.HoldQueue(_release_held_task, logger=gateway_log)
+
+
+def _merge_or_hold(task: ScheduledTask, is_push_only: bool) -> SubmitResult | None:
+    """合并/滞留判定。返回 None 表示按原逻辑排队。"""
+    if not config.SCHEDULER_MERGE_QUEUED or is_push_only:
+        return None
+    if str(task.metadata.get("source") or "") == "timer_task":
+        return None
+    if not _merge_channel_allowed(task.channel):
+        return None
+
+    user_id = task.user_id
+    with BUSY_LOCK:
+        busy = user_id in BUSY_USERS
+    if busy:
+        return None
+
+    max_parts = int(config.SCHEDULER_MERGE_MAX_PARTS or 3)
+
+    # 已有排队未开跑的任务 → 直接并入（零延迟）
+    with _QUEUED_REFS_LOCK:
+        target = _QUEUED_REFS.get(user_id)
+    if target is not None:
+        with USER_LOCK:
+            still_queued = target.task_id in {
+                t.task_id for t in list(USER_QUEUES.get(user_id).queue)
+            } if USER_QUEUES.get(user_id) is not None else False
+        if still_queued and task_merge.merge_task(target, task, max_parts):
+            gateway_log(
+                f"[merge] {user_id} 并入排队任务 {target.task_id} <- {task.task_id} "
+                f"(parts={target.metadata.get('_merge_parts')})"
+            )
+            return SubmitResult(
+                ok=True,
+                task_id=target.task_id,
+                status="merged",
+                waiting=waiting_count(),
+            )
+
+    hold_ms, hold_max_ms = task_merge.hold_window(
+        task,
+        int(config.SCHEDULER_MERGE_HOLD_MS or 1200),
+        int(config.SCHEDULER_MERGE_HOLD_MAX_MS or 2500),
+        int(getattr(config, "SCHEDULER_MERGE_HOLD_MS_IMAGE", 3000) or 3000),
+        int(getattr(config, "SCHEDULER_MERGE_HOLD_MAX_MS_IMAGE", 6000) or 6000),
+    )
+    if task_merge.has_images(task):
+        gateway_log(f"[merge] {user_id} 带图片，滞留窗口用 {hold_ms}ms")
+    verdict = _HOLD_QUEUE.hold(user_id, task, hold_ms, hold_max_ms, max_parts)
+    if verdict == "merged":
+        held = _HOLD_QUEUE._items.get(user_id)  # noqa: SLF001 - 仅取 id 用于回执
+        task_id = held["task"].task_id if held else task.task_id
+        return SubmitResult(ok=True, task_id=task_id, status="merged", waiting=waiting_count())
+    return SubmitResult(ok=True, task_id=task.task_id, status="holding", waiting=waiting_count())
+
+
 def is_stop_command(content: str) -> bool:
     """内容是否是 /stop 打断指令（保留此名给既有调用点；解析见 app/commands.py）。"""
     command = commands.parse(content)
@@ -173,6 +278,8 @@ def slot_scheduler():
                 # ------------------------------
                 # 🔥 禁用重试：永远只执行一次
                 # ------------------------------
+                with _QUEUED_REFS_LOCK:
+                    _QUEUED_REFS.pop(user_id, None)
                 task.retry_count = 0
                 task.status = "running"
                 task.slot_index = slot_idx
@@ -644,33 +751,11 @@ def submit_task(task: ScheduledTask) -> SubmitResult:
         else:
             return _resume_suspended(suspended_entry[0], task)
 
-    with USER_LOCK:
-        if user_id not in USER_QUEUES:
-            USER_QUEUES[user_id] = queue.Queue(maxsize=config.USER_QUEUE_SIZE)
-        q = USER_QUEUES[user_id]
-        try:
-            q.put_nowait(task)
-        except queue.Full:
-            return SubmitResult(
-                ok=False,
-                task_id=task.task_id,
-                status="queue_full",
-                waiting=waiting_count(),
-                error=f"user queue full: {user_id}",
-            )
+    merged_result = _merge_or_hold(task, bool(is_push_only))
+    if merged_result is not None:
+        return merged_result
 
-    current_waiting = waiting_count()
-    task.waiting = current_waiting
-    notify_queue_update()
-    event_bus.publish(task_event(task, "task_queued", waiting=current_waiting))
-    _wake_scheduler()
-
-    return SubmitResult(
-        ok=True,
-        task_id=task.task_id,
-        status=task.status,
-        waiting=current_waiting,
-    )
+    return _enqueue_task(task)
 
 
 def start_scheduler(orchestrator_client: OrchestratorClient | None = None):
