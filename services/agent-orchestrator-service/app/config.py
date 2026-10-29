@@ -31,6 +31,12 @@ TOOL_TIMEOUT_SECONDS = int(os.getenv("TOOL_TIMEOUT_SECONDS", "120"))
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "300"))
 CONTEXT_TIMEOUT_SECONDS = int(os.getenv("CONTEXT_TIMEOUT_SECONDS", "30"))
 
+# 视觉模型路由方式（image_model_profile）：
+#   explicit（默认）—— 只有「本轮输入自带图片」或「本轮显式调用 image-view」才切视觉模型；
+#                     历史里残留的图片不再让每一轮都走视觉模型。
+#   auto            —— 旧行为：上下文里只要有图片就切。
+VISION_ROUTE_MODE = os.getenv("VISION_ROUTE_MODE", "explicit").strip().lower()
+
 # no-mock build: orchestrator always calls downstream services.
 MOCK_DOWNSTREAM = False
 

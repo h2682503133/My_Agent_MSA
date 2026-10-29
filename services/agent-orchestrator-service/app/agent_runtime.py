@@ -27,6 +27,7 @@ from app.response_parser import parse_model_response
 from app.syntax_parser import (
     has_misformatted_directive,
     parse_syntax,
+    strip_self_prefix,
     render_dispatch_memory,
     render_return_memory,
 )
@@ -1169,16 +1170,38 @@ class AgentRuntime:
         effective = self.effective_config()
         model_profile = effective.get("model_profile") or effective.get("model") or self.id
         base_model_profile = model_profile
-        # 多模态路由：本次请求带图片时切换到 image_model_profile（如豆包多模态），纯文本保持 model_profile
+        # 多模态路由：**别一有图就切**。
+        #   explicit（默认）：只有本轮输入自带图片（用户刚发的图，"开头"这一轮），
+        #                    或本轮显式调用了 image-view（model_image 回填）才切视觉模型；
+        #                    历史里残留的图片不再让每一轮都走视觉模型。
+        #   auto：旧行为（上下文里只要 image_count > 0 就切）。
+        # 文本里出现图片链接不算视觉请求 —— 链接只是文字，除非模型主动调 image-view。
         image_count = context.image_count
-        if image_count > 0:
+        fresh_images = len(dialog_images)
+        explicit_vision = str(task.metadata.pop("_vision_explicit", "0")) == "1"
+        vision_reason = ""
+        if fresh_images:
+            vision_reason = f"本轮新增 {fresh_images} 张图"
+        elif explicit_vision:
+            vision_reason = "显式调用 image-view"
+        if config.VISION_ROUTE_MODE == "auto":
+            if image_count > 0:
+                vision_reason = vision_reason or f"上下文共 {image_count} 张图（auto 模式）"
+        elif not vision_reason:
+            image_count = 0  # explicit 模式下不因历史图片切换；仅用于日志口径
+        if vision_reason:
             vision_profile = effective.get("image_model_profile")
             if vision_profile:
                 chat_log(
-                    f"[{self.user_id}] {self.id} 检测到 {image_count} 张图片，"
+                    f"[{self.user_id}] {self.id} 视觉路由（{vision_reason}），"
                     f"模型 {model_profile} -> {vision_profile}"
                 )
                 model_profile = vision_profile
+            else:
+                debug_log(
+                    f"[{self.user_id}] {self.id} 需要视觉模型（{vision_reason}），"
+                    "但 agent_list 未配置 image_model_profile，沿用文本模型"
+                )
         # 采样参数白名单：agent 配置里配了才透传（model_proxy 已支持透传；
         # 模型级默认放 model profile 的 model_params，agent 级此处覆盖）
         _SAMPLE_PARAM_KEYS = (
@@ -1247,7 +1270,16 @@ class AgentRuntime:
         try:
             parsed = parse_model_response(self.id, model_response)
             raw_model_text = parsed.text or raw_model_text
-            task.set_temp_dialog_output(parsed.text)
+            # 模型会模仿历史格式，给自己产出加首段（`[10-28 23:09] <main>: …`）。
+            # 那个时间戳是它编的（定时任务轮尤其不对），只清**自己**的归属，别人的引用不动。
+            cleaned_text = strip_self_prefix(raw_model_text, self.id)
+            if cleaned_text != raw_model_text:
+                debug_log(
+                    f"[{self.user_id}] [prefix] {self.id} 去掉了自己写的首段"
+                    f"（{raw_model_text[:24]!r} → {cleaned_text[:24]!r}）"
+                )
+                raw_model_text = cleaned_text
+            task.set_temp_dialog_output(cleaned_text)
 
             parse_syntax(self, task)
             result = task.consume_temp_dialog_output()
@@ -1420,11 +1452,19 @@ class AgentRuntime:
                 else:
                     # submit_task / send_message
                     timer_agent_id = timer.get("agent_id", "") or getattr(self, "id", "")
-                    timer_session_id = f"{task.channel}_{task.user.id}"
+                    # 统一 qq 渠道：定时任务不再写 `qqofficial_<uid>`，一律 `qq_<uid>`；
+                    # 否则同一个人的记忆会被劈成 main_qq_* 与 main_qqofficial_* 两个 session。
+                    timer_channel = (
+                        "qq"
+                        if str(task.channel or "").strip().lower()
+                        in {"qq", "qqofficial", "qq_llbot", "qq-llbot", "llbot"}
+                        else str(task.channel or "").strip()
+                    )
+                    timer_session_id = f"{timer_channel}_{task.user.id}"
                     resp = client.create_timer_task(
                         user_id=task.user.id,
                         session_id=timer_session_id,
-                        channel_id=task.channel,
+                        channel_id=timer_channel,
                         trigger_timestamp=timer.get("trigger_timestamp", 0),
                         time_str=timer.get("time_str", ""),
                         repeat_str=timer.get("repeat_str", ""),
@@ -1674,16 +1714,17 @@ class AgentRuntime:
 
             if event_type == "model_image":
                 # image-view 的回填：图片不是发给用户的，而是**给模型看的**。
-                # 挂到 task.images 上 —— 这就是 main 每轮用户消息里那份图片列表，
-                # 于是「下一次模型调用」就能真正看到这张老图（纯文本档案会自动
-                # 切到 image_model_profile 视觉模型，见 send() 的 image_count 路由）。
+                # 这是唯一"允许自动切视觉模型"的显式路径（工具调用 = 模型主动要看图），
+                # 所以打一次性标记：只让紧接着的那次模型调用走视觉模型，
+                # 之后回到文本模型（见 send() 的视觉路由）。
                 artifact = event.get("artifact") or {}
                 viewed_url = artifact.get("asset_url", "")
                 if viewed_url and viewed_url not in task.images:
                     task.images.append(viewed_url)
                 if viewed_url:
+                    task.metadata["_vision_explicit"] = "1"
                     debug_log(
-                        f"[{task.user.id}] image-view 回填图片: "
+                        f"[{task.user.id}] image-view 回填图片（本轮下一次调用走视觉模型）: "
                         f"{artifact.get('local_path', '')}"
                     )
                 continue

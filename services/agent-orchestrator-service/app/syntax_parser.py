@@ -93,12 +93,16 @@ _INLINE_SHELL_RE = re.compile(r"工具调用\s*:\s*shell\s*\|\s*")
 # 询问指令：必须是独立关键字，前面不能是汉字/字母/数字，
 # 避免「请询问:」「我询问:」「想询问:」这类自然语言被误判为询问指令。
 _QUESTION_CMD_RE = re.compile(r"(?<![一-龥A-Za-z0-9])询问\s*:\s*(.*)$", re.S)
-# 任意指令关键字的起始位置（约束与各 _find_* 一致），
-# 用于提取指令前的说明文本，供中间过程转发给用户。
+# 指令关键字的起始位置，用于提取指令前的说明文本（中间过程转发给用户）。
+# **必须与 _find_command_block 的口径一致：只认行首**（可带前导空白与列表符）。
+# 反例（真实事故）：正文里写了 `对话:` 这种带反引号的词，未锚定时会被当成指令起点，
+# 说明文本被从词中间截断推给用户（"…反而把" 之后全丢），而指令本身又没被识别。
+# 询问仍按它自己的边界规则（任意位置，但前面不能是汉字/字母/数字）。
 _INSTRUCTION_START_RE = re.compile(
-    r"(?:对话|工具调用|切换|定时任务|世界书)\s*:"
+    r"^[ \t]*(?:[-*•`]\s*)?(?:对话|工具调用|切换|模式|定时任务|世界书)\s*:"
     r"|(?<![一-龥A-Za-z0-9])询问\s*:"
-    r"|切换到\w+智能体"
+    r"|^[ \t]*切换到\w+智能体",
+    re.MULTILINE,
 )
 
 
@@ -121,6 +125,33 @@ def clean_ai_thinking(text: str) -> str:
     if "</think>" in text:
         text = text.split("</think>")[-1]
     return text.strip()
+
+
+# 模型自己写出的"首段"：可带时间戳 + 自己的 id，形如
+#   `[10-28 23:09] <main>: …` / `<main>: …`
+# 这是它在模仿历史注入格式（history_time_stamp + 说话人前缀），会污染回复；
+# 尤其定时任务轮，它编的时间戳和实际触发时间对不上。
+_SELF_PREFIX_RE = re.compile(r"^[ \t]*(?:\[[^\]\n]{1,32}\][ \t]*)?<(?P<who>[^>\n]{1,64})>[ \t]*[:：][ \t]*")
+
+
+def strip_self_prefix(text: str, agent_id: str) -> str:
+    """去掉模型自己加的开头归属（只清**自己**，别人的发言不动）。
+
+    - `[10-28 23:09] <main>: 你好` → `你好`（agent_id == "main"）
+    - `<main>: 你好` → `你好`
+    - `[10-28 23:09] <luna>: 她说…` → 原样（那是引用别人）
+    - 无前缀 → 原样
+    """
+    raw = str(text or "")
+    who = str(agent_id or "").strip()
+    if not raw or not who:
+        return raw
+    match = _SELF_PREFIX_RE.match(raw)
+    if not match:
+        return raw
+    if match.group("who").strip().lower() != who.lower():
+        return raw
+    return raw[match.end():]
 
 
 def _normalize_text(text: str) -> str:
@@ -204,8 +235,11 @@ def _find_command_block(full_text: str, command_name: str, allow_multiline: bool
         value = "\n".join(value_lines).strip()
         return value or None
 
-    # 行首匹配失败，尝试内联 fallback
-    return _find_command_inline(full_text, command_name)
+    # 行首匹配失败时，原来会退回"整段任意位置"的匹配（兼容「先说一句话再挂指令」）。
+    # 按要求收紧为**只认行首**：先注释掉观察几天，确认无碍后再决定删或恢复。
+    # 恢复：取消下面这行注释，并去掉 `return None`。
+    # return _find_command_inline(full_text, command_name)
+    return None
 
 
 def _find_question_tail(full_text: str) -> str | None:
@@ -333,8 +367,11 @@ def _find_priority_shell_call(full_text: str) -> tuple[str, dict] | tuple[None, 
             "kwargs": {"command": command},
         }
 
-    # 行首匹配失败，尝试内联 fallback
-    return _find_priority_shell_inline(full_text)
+    # 行首匹配失败时，原来会退回"整段任意位置"的匹配（同 _find_command_block）。
+    # 按要求收紧为**只认行首**：先注释掉观察几天。
+    # 恢复：取消下面这行注释，并去掉 `return None, None`。
+    # return _find_priority_shell_inline(full_text)
+    return None, None
 
 
 def _find_priority_shell_inline(full_text: str):
