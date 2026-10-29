@@ -19,11 +19,16 @@ spec:
     spec:
       containers:
         - name: gateway-backend-service
-          image: agent/gateway-backend-service:v37
+          image: agent/gateway-backend-service:v41
           imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 5210
+            # 整站反代：端口沿用各自服务的原号（admin_proxy.py）
+            - name: llbot-webui
+              containerPort: 3080
+            - name: dashboard-panel
+              containerPort: 5700
           env:
             - name: SCHEDULER_CLIENT_MODE
               value: "grpc"
@@ -35,7 +40,8 @@ spec:
               value: ""
             - name: ASSETS_DIR
               value: "/app/assets"
-            # 离线兜底缓冲：每用户最多缓存条数与保留秒数�?=不按时间过期�?            - name: OFFLINE_BUFFER_MAX
+            # 离线兜底缓冲：每用户最多缓存条数与保留秒数，TTL=0 表示不按时间过期
+            - name: OFFLINE_BUFFER_MAX
               value: "50"
             - name: OFFLINE_BUFFER_TTL
               value: "0"
@@ -66,3 +72,9 @@ spec:
     - name: http
       port: 5210
       targetPort: 5210
+    - name: llbot-webui
+      port: 3080
+      targetPort: 3080
+    - name: dashboard-panel
+      port: 5700
+      targetPort: 5700

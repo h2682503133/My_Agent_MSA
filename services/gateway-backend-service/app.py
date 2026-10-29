@@ -31,6 +31,15 @@ APP_NAME = "gateway-backend-service"
 
 app = FastAPI(title=APP_NAME)
 
+# 管理面板反代：/admin/<service>/… → 各内部服务（dashboard/user/assets/openviking）
+# 以及 5211 端口的 LLBot WebUI 整站反代（见 admin_proxy.py 顶部说明）
+try:
+    from admin_proxy import register_admin_proxy
+
+    register_admin_proxy(app)
+except Exception as _admin_proxy_exc:  # noqa: BLE001 - 代理挂不上不能拖垮聊天主链路
+    print(f"[gateway] admin_proxy 挂载失败（不影响聊天）: {_admin_proxy_exc}", flush=True)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").split(","),

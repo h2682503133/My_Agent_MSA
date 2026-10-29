@@ -23,6 +23,8 @@ COPY scheduler_client.py /app/scheduler_client.py
 COPY user_client.py /app/user_client.py
 COPY tool_client.py /app/tool_client.py
 COPY conversations.py /app/conversations.py
+COPY admin_proxy.py /app/admin_proxy.py
+COPY serve.py /app/serve.py
 
 RUN sed -i 's/\r$//' /app/generate_proto.sh && \
     chmod +x /app/generate_proto.sh && \
@@ -37,6 +39,7 @@ ENV TOOL_RUNTIME_GRPC_TARGET=tool-runtime-service.agent.svc.cluster.local:5303
 
 ENV TZ=Asia/Shanghai
 
-EXPOSE 5210
+EXPOSE 5210 3080 5700
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5210"]
+# 5210 = 主 API；5211 = LLBot WebUI 整站反代（见 admin_proxy.py）
+CMD ["python", "serve.py"]
