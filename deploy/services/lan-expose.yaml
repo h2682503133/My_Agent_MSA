@@ -1,0 +1,52 @@
+# 局域网暴露：给需要「保留原端口」的界面各建一个 NodePort。
+# 真正的宿主端口由 deploy/lan-expose.sh 起 socat 容器发布（Docker 发布端口绕过
+# Windows 防火墙，这也是 80 端口能直连的原因）。
+#
+# 端口对照（NodePort 用 30xxx 段，避开系统保留区）：
+#   5210 网关 API      → 30521
+#   5700 管理面板      → 30570
+#   3080 LLBot WebUI  → 30080
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-lan
+  namespace: agent
+spec:
+  type: NodePort
+  selector:
+    app: gateway-backend-service
+  ports:
+    - name: http
+      port: 5210
+      targetPort: 5210
+      nodePort: 30521
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-lan
+  namespace: agent
+spec:
+  type: NodePort
+  selector:
+    app: dashboard-service
+  ports:
+    - name: http
+      port: 5700
+      targetPort: 5700
+      nodePort: 30570
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llbot-webui-np
+  namespace: agent
+spec:
+  type: NodePort
+  selector:
+    app: llbot
+  ports:
+    - name: webui
+      port: 3080
+      targetPort: 3080
+      nodePort: 30080
