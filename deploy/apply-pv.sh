@@ -8,7 +8,7 @@ set -euo pipefail
 #   渲染 my-agent-nfs-pv-pvc.yaml.tpl，然后 kubectl apply。
 #
 # 使用方式：
-#   NFS_SERVER=172.27.146.29 NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh
+#   NFS_SERVER=<你的 NFS IP> NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh
 #
 # 注意：
 #   如果之前已经用错误 StorageClass 创建过 PVC/PV，
@@ -22,13 +22,13 @@ set -euo pipefail
 
 if [ -z "${NFS_SERVER:-}" ]; then
   echo "[ERROR] NFS_SERVER 未设置，请指定 NFS 服务器地址："
-  echo "  NFS_SERVER=172.27.146.29 NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh"
+  echo "  NFS_SERVER=<你的 NFS IP> NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh"
   exit 1
 fi
 
 if [ -z "${NFS_ROOT:-}" ]; then
   echo "[ERROR] NFS_ROOT 未设置，请指定 NFS 根路径："
-  echo "  NFS_SERVER=172.27.146.29 NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh"
+  echo "  NFS_SERVER=<你的 NFS IP> NFS_ROOT=/srv/nfs/my-agent bash apply-nfs-pv.sh"
   exit 1
 fi
 

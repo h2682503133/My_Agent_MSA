@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: my-agent-llbot-pmhq-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: ${NFS_SERVER}
+    path: ${NFS_PATH_PMHQ}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-agent-llbot-pmhq-pvc
+  namespace: agent
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 5Gi
+---
+# 有头模式的 QQ 客户端容器：Xvfb + Linux QQ + pmhq（监听 13000）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pmhq
+  namespace: agent
+  labels:
+    app: pmhq
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: pmhq
+  template:
+    metadata:
+      labels:
+        app: pmhq
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: pmhq
+          image: ${PMHQ_IMAGE}
+          imagePullPolicy: IfNotPresent
+          # QQ 客户端需要：Xvfb、dbus、注入 pmhq 到 QQ 进程
+          securityContext:
+            privileged: true
+          env:
+            # 敏感值全部来自 Secret（由 deploy/llbot-apply.sh 交互式录入）
+            - name: AUTO_LOGIN_QQ
+              valueFrom:
+                secretKeyRef:
+                  name: llbot-secrets
+                  key: auto-login-qq
+            - name: PMHQ_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llbot-secrets
+                  key: pmhq-auth-token
+            - name: TZ
+              value: Asia/Shanghai
+          ports:
+            - name: pmhq
+              containerPort: 13000
+          volumeMounts:
+            # QQ 登录态/配置
+            - name: qq-config
+              mountPath: /root/.config/QQ
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: 200m
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: qq-config
+          persistentVolumeClaim:
+            claimName: my-agent-llbot-pmhq-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pmhq
+  namespace: agent
+spec:
+  selector:
+    app: pmhq
+  ports:
+    - name: pmhq
+      port: 13000
+      targetPort: 13000

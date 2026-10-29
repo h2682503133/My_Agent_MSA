@@ -518,7 +518,7 @@ spec:
             - name: DSH_ONEBOT_WS
               value: "${DSH_ONEBOT_WS:-ws://host.docker.internal:8644/ws}"
             - name: DSH_ONEBOT_TOKEN
-              value: "${DSH_ONEBOT_TOKEN:-dshlink-4ef3ef4c7979f46eae4e120920ea8b39}"
+              value: "${DSH_ONEBOT_TOKEN:?请先 export DSH_ONEBOT_TOKEN=<onebot 的 Bearer token>}"
             - name: DSH_SELF_ID
               value: "${DSH_SELF_ID:-10001}"
             - name: DSH_SENDER_ID

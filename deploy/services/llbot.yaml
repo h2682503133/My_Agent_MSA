@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: my-agent-llbot-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: ${NFS_SERVER}
+    path: ${NFS_PATH_LLBOT}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-agent-llbot-pvc
+  namespace: agent
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llbot
+  namespace: agent
+  labels:
+    app: llbot
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: llbot
+  template:
+    metadata:
+      labels:
+        app: llbot
+    spec:
+      containers:
+        - name: llbot
+          image: ${LLBOT_IMAGE}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: WEBUI_PORT
+              value: "3080"
+            # QQ 号来自 Secret（deploy/llbot-apply.sh 录入）；有头模式下 llbot 改用
+            # PROTOCOL_MODE=pmhq + PMHQ_HOST，见 llbot-pmhq.yaml
+            - name: AUTO_LOGIN_QQ
+              valueFrom:
+                secretKeyRef:
+                  name: llbot-secrets
+                  key: auto-login-qq
+          ports:
+            - name: satori
+              containerPort: 5600
+            - name: webui
+              containerPort: 3080
+          volumeMounts:
+            - name: data
+              mountPath: /app/llbot/data
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 100m
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: my-agent-llbot-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llbot
+  namespace: agent
+spec:
+  selector:
+    app: llbot
+  ports:
+    - name: satori
+      port: 5600
+      targetPort: 5600
+    - name: webui
+      port: 3080
+      targetPort: 3080

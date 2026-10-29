@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: qq-llbot-service
-          image: agent/qq-llbot-service:v12
+          image: agent/qq-llbot-service:v15
           imagePullPolicy: Always
           env:
             - name: QQ_LLBOT_CONFIG_PATH
@@ -34,6 +34,12 @@ spec:
               value: ""
             - name: SUBSCRIBER_ID
               value: "qq-llbot-1"
+            # 同渠道多订阅者的优先级（数值大者优先）：llbot 优先，qqofficial 兜底
+            - name: SUBSCRIBER_PRIORITY
+              value: "100"
+            # 连续多少次用户可见发送失败即判定掉线 → 主动退订事件流（不用心跳）
+            - name: OFFLINE_SEND_FAILURES
+              value: "3"
           volumeMounts:
             - name: my-agent-config
               mountPath: /service/config
