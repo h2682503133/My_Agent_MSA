@@ -19,12 +19,14 @@
 from __future__ import annotations
 
 import base64
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import requests
 
 from app import config
+from app.logger import log
 from app.workspace import safe_path
 
 # 常见图片后缀 → MIME
@@ -189,8 +191,25 @@ def image_dimensions(data: bytes):
     return None
 
 
-def _download(url: str, max_bytes: int) -> tuple[bytes, str]:
-    """下载远程图片，超过 max_bytes 立即中断（避免把内存/链路打满）。"""
+# 集群 DNS 偶发抖动（CoreDNS 上游超时）会让"已经生成好的图"下载失败，
+# 这类错误重试两次基本能过；真失败也不能丢图，调用方会降级成直接发远程 URL。
+_TRANSIENT_HINTS = (
+    "name resolution",
+    "temporary failure",
+    "cannot connect",
+    "connection aborted",
+    "connection reset",
+    "timed out",
+    "timeout",
+)
+
+
+def _looks_transient(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(hint in text for hint in _TRANSIENT_HINTS)
+
+
+def _download_once(url: str, max_bytes: int):
     response = requests.get(
         url,
         timeout=config.IMAGE_VIEW_TIMEOUT_SECONDS,
@@ -208,6 +227,22 @@ def _download(url: str, max_bytes: int) -> tuple[bytes, str]:
             )
     content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
     return bytes(buffer), content_type
+
+
+def _download(url: str, max_bytes: int) -> tuple[bytes, str]:
+    """下载远程图片（瞬时网络错误重试 2 次），超过 max_bytes 立即中断。"""
+    last_error: Exception | None = None
+    for attempt, delay in enumerate((0.0, 0.5, 1.5)):
+        if delay:
+            time.sleep(delay)
+        try:
+            return _download_once(url, max_bytes)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if not _looks_transient(exc):
+                raise
+            log(f"[image] 下载重试 {attempt + 1}/3 失败: {exc}")
+    raise last_error if last_error else RuntimeError("下载失败")
 
 
 def _read_local(target: str, root: Path, max_bytes: int) -> tuple[bytes, str]:
@@ -270,6 +305,42 @@ def load_image(target: str, root: Path, max_bytes: int | None = None) -> ImagePa
         size=len(data),
         data_url=data_url,
     )
+
+
+def save_generated_image(root: Path, value: str, index: int = 0) -> tuple[str, str, str]:
+    """把生成的图片（远程 URL 或 data URL）存进工作区 outputs/images/<日期>/。
+
+    返回 (相对路径, data_url, 错误)。成功时错误为空串。
+    与 image-view 的 load_image 复用同一套下载/解码/嗅探逻辑，避免两套实现漂移。
+    """
+    import datetime
+    import hashlib
+
+    try:
+        payload = load_image(value, root, None)
+    except Exception as exc:  # noqa: BLE001
+        return "", "", str(exc)
+
+    raw = payload.data_url.split(",", 1)[-1]
+    import base64
+
+    try:
+        data = base64.b64decode(raw)
+    except Exception as exc:  # noqa: BLE001
+        return "", "", f"解码失败: {exc}"
+
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    stamp = datetime.date.today().strftime("%Y%m%d")
+    target_dir = Path(root) / "outputs" / "images" / stamp
+    target_dir.mkdir(parents=True, exist_ok=True)
+    ext = payload.ext if getattr(payload, "ext", "") else "png"
+    target = target_dir / f"gen-{digest}.{ext}"
+    target.write_bytes(data)
+    try:
+        rel = str(target.relative_to(Path(root))).replace("\\", "/")
+    except ValueError:
+        rel = str(target)
+    return rel, f"data:image/{'jpeg' if ext == 'jpg' else ext};base64,{base64.b64encode(data).decode('ascii')}", ""
 
 
 def _b64(data: bytes) -> str:

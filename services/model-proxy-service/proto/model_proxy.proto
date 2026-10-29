@@ -54,7 +54,30 @@ message EmbeddingResponse {
   string error = 5;
 }
 
+message ImageGenerationRequest {
+  string request_id = 1;
+  string task_id = 2;
+  string agent_id = 3;
+  // model_list.json 里的模型名（如 image-gen）
+  string model_profile = 4;
+  string prompt = 5;
+  // 可选：1024x1024；留空用 profile.model_params 里的默认值
+  string size = 6;
+  int32 n = 7;
+  map<string, string> params = 8;
+}
+
+message ImageGenerationResponse {
+  bool ok = 1;
+  // 每张图一个元素：远程 https URL 或 data:image/...;base64 形式
+  repeated string urls = 2;
+  string provider = 3;
+  string model = 4;
+  string error = 5;
+}
+
 service ModelProxy {
   rpc ChatCompletion(ChatCompletionRequest) returns (ChatCompletionResponse);
+  rpc ImageGeneration(ImageGenerationRequest) returns (ImageGenerationResponse);
   rpc Embedding(EmbeddingRequest) returns (EmbeddingResponse);
 }

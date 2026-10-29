@@ -95,6 +95,79 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
         base["content"] = content
         return base
 
+    @staticmethod
+    def _resolve_image_profile(name: str) -> tuple[str, dict]:
+        """解析 image profile：精确 → 连字符/下划线互换 → 任意 kind=image → 报错。"""
+        candidates: list[str] = []
+        for variant in (name, name.replace("_", "-"), name.replace("-", "_")):
+            if variant and variant not in candidates:
+                candidates.append(variant)
+
+        for candidate in candidates:
+            try:
+                return candidate, profile_store.get_profile(candidate)
+            except KeyError:
+                continue
+
+        # 兜底：配置里只要有一个 kind=image 的条目就用它（并告诉调用方实际用了哪个）
+        try:
+            data = profile_store.load()
+        except Exception:  # noqa: BLE001
+            data = {}
+        models = data.get("models") if isinstance(data, dict) else None
+        if isinstance(models, dict):
+            image_names = [
+                key for key, value in models.items()
+                if isinstance(value, dict) and str(value.get("kind", "")).lower() == "image"
+            ]
+            if image_names:
+                chosen = image_names[0]
+                return chosen, profile_store.get_profile(chosen)
+            raise KeyError(
+                f"没有找到生图模型配置（{name}）；model_list.json 里需要一条 kind=image 的条目。"
+                f"当前可用：{sorted(models)}"
+            )
+        raise KeyError(f"model profile not found: {name}")
+
+    def ImageGeneration(self, request, context):
+        """生图（model_list.json 里配置 kind=image 的条目即可，无需新页面）。"""
+        try:
+            profile_name, profile = self._resolve_image_profile(request.model_profile)
+            # 限流按 profile 名分别计数（用解析后的真实名，别名不会各算一套）
+            profile["_profile_name"] = profile_name
+            if profile_name != request.model_profile:
+                log(f"ImageGeneration profile 归一：{request.model_profile} -> {profile_name}")
+            result = provider_client.image_generation(
+                profile=profile,
+                prompt=request.prompt,
+                size=request.size,
+                n=int(request.n or 1),
+                params=dict(request.params),
+            )
+            log(
+                f"ImageGeneration model={result.get('model', '')} "
+                f"profile={request.model_profile} n={len(result.get('urls') or [])} "
+                f"error={result.get('error', '')}"
+            )
+            if result.get("error"):
+                return model_proxy_pb2.ImageGenerationResponse(
+                    ok=False,
+                    urls=[],
+                    provider=result.get("provider", ""),
+                    model=result.get("model", ""),
+                    error=result["error"],
+                )
+            return model_proxy_pb2.ImageGenerationResponse(
+                ok=True,
+                urls=list(result.get("urls") or []),
+                provider=result.get("provider", ""),
+                model=result.get("model", ""),
+                error="",
+            )
+        except Exception as exc:  # noqa: BLE001 - 显式失败，别静默
+            log(f"ImageGeneration failed: {exc}")
+            return model_proxy_pb2.ImageGenerationResponse(ok=False, urls=[], error=str(exc))
+
     def Embedding(self, request, context):
         try:
             profile = profile_store.get_profile(request.model_profile)

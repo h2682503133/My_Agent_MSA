@@ -17,6 +17,21 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
+      dnsConfig:
+        nameservers:
+          - 223.5.5.5
+          - 119.29.29.29
+        searches:
+          - agent.svc.cluster.local
+          - svc.cluster.local
+          - cluster.local
+        options:
+          - name: ndots
+            value: "2"
+          - name: timeout
+            value: "2"
+          - name: attempts
+            value: "3"
       containers:
         - name: qq-llbot-service
           image: agent/qq-llbot-service:v15

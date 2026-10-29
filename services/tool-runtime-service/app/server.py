@@ -382,6 +382,17 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 hint = str(args[1]).strip()
             return self._image_view(target=target, root=root, hint=hint)
 
+        # 生图：调 model-proxy 的 ImageGeneration，落盘后把图推给用户。
+        if name in {"image-gen", "text-to-image", "draw"}:
+            prompt = self._first_arg(args, kwargs, "prompt", "text", "提示词", default="")
+            size = str(kwargs.get("size") or (args[1] if len(args) > 1 else "")).strip()
+            profile = str(
+                kwargs.get("model") or kwargs.get("profile") or (args[2] if len(args) > 2 else "")
+            ).strip() or "image-gen"
+            return self._image_gen(
+                prompt=prompt, size=size, model_profile=profile, root=root
+            )
+
         if name in {"send-message", "notify"}:
             text = self._first_arg(args, kwargs, "text", "message", default="")
             return self._send_message(text)
@@ -663,6 +674,64 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             url = target.as_uri()
 
         return f"此图片URL为：{url}"
+
+    def _image_gen(self, prompt: str, size: str, model_profile: str, root: Path) -> ToolResult:
+        """生图：提示词 → model-proxy → 落盘到工作区 → 推图给用户。"""
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return "错误：image-gen 需要提示词，用法 工具调用:image-gen|提示词|尺寸(可选)"
+        from app.image_tools import save_generated_image
+        from app.model_proxy_client import model_proxy_client
+
+        try:
+            result = model_proxy_client.image_generation(
+                prompt=prompt, size=size, model_profile=model_profile
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"生图失败：{exc}"
+        if not result.get("ok"):
+            return f"生图失败：{result.get('error') or '未知错误'}"
+
+        refs: list[str] = []          # 已落盘的工作区路径
+        failed_saves: list[str] = []  # 落盘失败的原因（不影响发图）
+        events: list[dict] = []
+
+        # 无论落盘成功与否，**统一按远程 URL 给用户发一份**：
+        # 渠道能直接按 URL 发图，省得把已经生成好的图卡在"下载失败"这一步。
+        for index, url in enumerate(result.get("urls") or []):
+            saved, _data_url, error = save_generated_image(root, url, index)
+            if error:
+                failed_saves.append(error.split("\n")[0])
+            else:
+                refs.append(saved)
+            # 走「发图」这条通道（与 工具调用:send-image 同一套事件），
+            # 不把 URL 当文字发出去：text 只做说明，URL 放在 artifact 里由渠道取图。
+            events.append({
+                "type": "image",
+                "text": "生成的图片",
+                "artifact": {"type": "image", "local_path": saved, "asset_url": url},
+            })
+
+        if not events:
+            return "生图失败：接口没有返回图片"
+
+        parts = [
+            f"已生成 {len(events)} 张图片（模型 {result.get('model') or model_profile}"
+            f"{'，' + size if size else ''}），图片已通过发图通道发给用户"
+        ]
+        if refs:
+            parts.append("同时已存到工作区：" + "、".join(refs) + "（需要复看可再 image-view）")
+        if failed_saves:
+            parts.append("落盘失败（不影响发图）：" + failed_saves[0])
+        # 完整原图链接也给模型（它可能需要引用/记录）。明确说明这是资料，
+        # 不是让它把链接当文字复述给用户 —— 发图已经由事件通道完成。
+        links = list(result.get("urls") or [])
+        if links:
+            parts.append(
+                "原图链接（供你参考，图片已发出，不要把链接原文当消息发送）：\n"
+                + "\n".join(f"- {link}" for link in links)
+            )
+        return ToolResult(output="；".join(parts), events=events)
 
     def _image_view(self, target: str, root: Path, hint: str = "") -> ToolResult:
         """image-view：读书/下载图片并交给模型（不发给用户）。

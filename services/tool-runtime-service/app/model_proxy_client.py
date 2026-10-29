@@ -81,6 +81,36 @@ class ModelProxyClient:
             raise RuntimeError(response.error or "model proxy returned ok=false")
         return response.text
 
+    def image_generation(
+        self,
+        prompt: str,
+        size: str = "",
+        n: int = 1,
+        model_profile: str = "image-gen",
+        params: dict[str, str] | None = None,
+        timeout: int = 180,
+    ) -> dict:
+        """调 model-proxy 的生图 RPC。返回 {ok, urls, model, error}。"""
+        if model_proxy_pb2 is None:
+            return {"ok": False, "urls": [], "model": "", "error": "model_proxy proto 未生成"}
+        stub = self._get_stub()
+        request = model_proxy_pb2.ImageGenerationRequest(
+            request_id=uuid.uuid4().hex,
+            model_profile=model_profile,
+            prompt=prompt,
+            size=size or "",
+            n=int(n or 1),
+            params=dict(params or {}),
+        )
+        response = stub.ImageGeneration(request, timeout=timeout)
+        return {
+            "ok": bool(response.ok),
+            "urls": list(response.urls or []),
+            "model": response.model,
+            "provider": response.provider,
+            "error": response.error,
+        }
+
     def embedding(
         self,
         task_id: str,

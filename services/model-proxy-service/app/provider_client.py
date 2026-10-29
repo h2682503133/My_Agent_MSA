@@ -3,6 +3,7 @@ import time
 from typing import Any
 
 import requests
+from app.image_limits import decide_size, rate_limiter
 
 from app import config
 from app.logger import debug_log
@@ -36,6 +37,129 @@ class ProviderClient:
 
         # 默认按 OpenAI-compatible 尝试
         return self._call_openai_compatible(profile, messages, params)
+
+    def image_generation(
+        self,
+        profile: dict[str, Any],
+        prompt: str,
+        size: str = "",
+        n: int = 1,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """生图：按 profile 的 api_url/method/api_key 直接 POST，返回图片 URL 列表。
+
+        兼容两种返回（OpenAI Images API 与火山 ark 都用这个结构）：
+          {"data": [{"url": "https://..."}]}
+          {"data": [{"b64_json": "..."}]}
+        b64 会转成 data URL，调用方无需区分。
+        """
+        # 闸门 1：尺寸（每次调用可指定；配置里的 max_size/max_pixels 只是上限，超了显式报错）
+        decision = decide_size(profile, size)
+        if not decision.ok:
+            return {
+                "urls": [],
+                "provider": profile.get("provider", ""),
+                "model": profile.get("model", ""),
+                "error": decision.error,
+            }
+
+        # 闸门 2：频率（贵，先查再发；被限时把剩余等待秒数原样带回去）
+        profile_name = str(profile.get("_profile_name") or profile.get("model") or "image")
+        allowed, wait_seconds, limit_error = rate_limiter.check(profile_name, profile)
+        if not allowed:
+            return {
+                "urls": [],
+                "provider": profile.get("provider", ""),
+                "model": profile.get("model", ""),
+                "error": limit_error,
+                "retry_after": wait_seconds,
+            }
+
+        body: dict[str, Any] = {
+            "model": profile.get("model", ""),
+            "prompt": prompt,
+            "n": max(int(n or 1), 1),
+        }
+        if decision.size:
+            body["size"] = decision.size
+
+        # model_params（profile 级）→ 本调用 params（覆盖）→ 只保留 key/value 字符串
+        merged: dict[str, Any] = {}
+        for source in (profile.get("model_params") or {}, params or {}):
+            if isinstance(source, dict):
+                for key, value in source.items():
+                    if value is None or value == "":
+                        continue
+                    merged[str(key)] = value
+        for key, value in merged.items():
+            body.setdefault(key, value)
+
+        url = str(profile.get("api_url") or "").strip()
+        if not url:
+            raise RuntimeError("模型配置缺少 api_url（image 类型）")
+        method = str(profile.get("method") or "POST").upper()
+        headers = self._base_headers(profile)
+        headers.setdefault("Content-Type", "application/json")
+
+        response = self._request(method, url, headers, body)
+        status = getattr(response, "status_code", 0)
+        try:
+            data = response.json()
+        except Exception:
+            return {
+                "urls": [],
+                "provider": profile.get("provider", ""),
+                "model": profile.get("model", ""),
+                "error": f"生图接口返回非 JSON（HTTP {status}）",
+            }
+
+        if status >= 400:
+            message = ""
+            if isinstance(data, dict):
+                message = str(data.get("error") or data.get("message") or "")
+            return {
+                "urls": [],
+                "provider": profile.get("provider", ""),
+                "model": profile.get("model", ""),
+                "error": f"生图接口 HTTP {status}: {message or data}",
+            }
+
+        urls: list[str] = []
+        items = []
+        if isinstance(data, dict):
+            for key in ("data", "images", "output"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    items = value
+                    break
+        for item in items:
+            if isinstance(item, str):
+                urls.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            remote = str(item.get("url") or "").strip()
+            if remote:
+                urls.append(remote)
+                continue
+            b64 = item.get("b64_json") or item.get("b64") or ""
+            if b64:
+                urls.append(f"data:image/png;base64,{b64}")
+        if not urls:
+            return {
+                "urls": [],
+                "provider": profile.get("provider", ""),
+                "model": profile.get("model", ""),
+                "error": f"生图接口没返回图片：{str(data)[:300]}",
+            }
+        rate_limiter.record(profile_name)
+        return {
+            "urls": urls,
+            "provider": profile.get("provider", ""),
+            "model": profile.get("model", ""),
+            "size": decision.size,
+            "error": "",
+        }
 
     def embedding(
         self,
