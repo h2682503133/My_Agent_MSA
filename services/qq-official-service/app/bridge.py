@@ -45,7 +45,7 @@ class OfficialBridge:
         self.openapi = openapi
         # reader 智能体摘要器（可选）；没有就退化为本地头尾截断
         self.summarizer = summarizer
-        self.channel = channel or config.CHANNEL
+        self.channel = channel or config.BINDING_CHANNEL
 
         self._seen: "OrderedDict[tuple[str, str], float]" = OrderedDict()
         # (kind, address) → 最近几条用户消息的被动额度；每条各有 PASSIVE_BUDGET 次
@@ -188,7 +188,7 @@ class OfficialBridge:
             return True
 
         if command == "/id":
-            bound = await self.users.channel_user_id(address, self.channel)
+            bound = await self.users.channel_user_id(address, config.BINDING_CHANNEL)
             state = f"当前已绑定到 {bound}" if bound else "当前未绑定（会话 id 为 qq_{openid}）"
             await self._reply(
                 kind,
@@ -218,7 +218,7 @@ class OfficialBridge:
         result = await self.scheduler.create_task(
             user_id=user_id,
             content=content,
-            channel=self.channel,
+            channel=config.ROUTE_CHANNEL,
             session_id=session_id,
             client_message_id=msg_id,
             images=images,
@@ -278,7 +278,7 @@ class OfficialBridge:
             # session 里可能是群号；换回 group_openid
             return ("group", config.GROUP_REVERSE.get(ident, ident))
         # 私聊：可能是规范 user_id（如 QQ 号），也可能是未绑定的 openid
-        openid = await self.users.channel_user_id(ident, self.channel)
+        openid = await self.users.channel_user_id(ident, config.BINDING_CHANNEL)
         return ("private", openid or ident)
 
     async def deliver(self, session_id: str, text: str, images: list[str] | None = None, final: bool = False) -> bool:

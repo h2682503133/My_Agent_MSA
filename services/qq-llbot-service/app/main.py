@@ -104,66 +104,104 @@ async def main():
     bridge.on_qq_message(on_qq_message)
 
     # QQ 恢复在线 → 通知调度器补发它缓冲的可见消息（缓冲的所有者是调度器）
+    # 掉线 → 主动退订事件流，让调度器按优先级换到 qqofficial，而不是继续空投。
+    # 两者都是**边沿触发**（Satori 状态机 / 连续发送失败），不用心跳。
+    online_event = asyncio.Event()
+    online_event.set()  # 启动先当作在线；收到下线边沿再清空
+
     async def on_qq_online():
+        online_event.set()
         flushed = await scheduler.flush_buffered(channel="qq")
         if flushed:
             print(f"[qq-llbot] 已请求补发缓冲消息 {flushed} 条", flush=True)
 
-    bridge.setup_lifecycle(on_qq_online)
+    async def on_qq_offline():
+        if online_event.is_set():
+            print("[qq-llbot] QQ 掉线：退订调度器事件（让另一个后端接手）", flush=True)
+        online_event.clear()
+
+    bridge.setup_lifecycle(on_qq_online, on_qq_offline)
     bridge.setup_listener()
 
     # ── scheduler 事件 → QQ 推送 ──────────────────────────
     async def event_loop():
-        async for event in scheduler.subscribe_events(
-            subscriber_id=config.SUBSCRIBER_ID,
-            channels=["qq"],
-        ):
-            event_type = event.get("type", "")
-            event_id = event.get("event_id", "")
-            # 群聊/私聊都按会话路由，私聊时 session_id 即 qq_{user_id}
-            user_id = event.get("user_id", "")
-            session_id = event.get("session_id", "") or f"qq_{user_id}"
-            text = event.get("text", "")
-            images = event.get("images", [])
-            metadata = event.get("metadata", {})
-
-            # 调度器在需要确认的事件上打 `_ack_required=1`（与它的 is_ack_required 同源），
-            # 消费端只回报结果，不重复实现一遍判定规则。
-            needs_ack = str(metadata.get("_ack_required") or "").strip() == "1"
-
-            delivered = None  # None = 本条事件无需投递（过程类）
-            if event_type in {"assistant_message", "assistant_intermediate"} and metadata.get("visible_to_user") == "true":
-                delivered = await bridge.send(session_id, text=text, images=images)
-            elif event_type == "task_waiting_user":
-                delivered = await bridge.send(
-                    session_id, text=text or "出现某些问题，询问无法发送，请重新发送", images=[]
-                )
-            elif event_type in {
-                "task_failed",
-                "task_timeout",
-                "task_cancelled",
-                "task_error",
-                "task_finished_with_error",
-            }:
-                message = text or event.get("error") or "任务失败"
-                delivered = await bridge.send(session_id, text=f"任务失败：{message}", images=[])
-
-            if needs_ack and delivered is not None:
-                # 投递失败 → 交给调度器：按用户渠道优先级转投，全失败再缓冲
-                disposition = await scheduler.ack_event(
+        fail_streak = 0
+        while True:
+            # 掉线期间不订阅：让调度器把可见事件交给另一个后端（qqofficial），
+            # 非可见事件照旧丢弃（本来就不进用户通道）。
+            if not online_event.is_set():
+                print("[qq-llbot] QQ 离线中：已退订调度器事件，等待上线边沿", flush=True)
+                await online_event.wait()
+                print("[qq-llbot] QQ 已恢复：重新订阅调度器事件", flush=True)
+            try:
+                async for event in scheduler.subscribe_events(
                     subscriber_id=config.SUBSCRIBER_ID,
-                    event_id=event_id,
-                    ok=bool(delivered),
-                    error="" if delivered else (
-                        "satori offline" if not bridge.is_qq_online() else "send failed"
-                    ),
-                )
-                if not delivered:
-                    print(
-                        f"[qq-llbot] 投递失败已回报 event={event_id} type={event_type} "
-                        f"disposition={disposition}",
-                        flush=True,
-                    )
+                    channels=["qq"],
+                    priority=config.SUBSCRIBER_PRIORITY,
+                ):
+                    event_type = event.get("type", "")
+                    event_id = event.get("event_id", "")
+                    # 群聊/私聊都按会话路由，私聊时 session_id 即 qq_{user_id}
+                    user_id = event.get("user_id", "")
+                    session_id = event.get("session_id", "") or f"qq_{user_id}"
+                    text = event.get("text", "")
+                    images = event.get("images", [])
+                    metadata = event.get("metadata", {})
+
+                    # 调度器在需要确认的事件上打 `_ack_required=1`（与它的 is_ack_required 同源），
+                    # 消费端只回报结果，不重复实现一遍判定规则。
+                    needs_ack = str(metadata.get("_ack_required") or "").strip() == "1"
+
+                    delivered = None  # None = 本条事件无需投递（过程类）
+                    if event_type in {"assistant_message", "assistant_intermediate"} and metadata.get("visible_to_user") == "true":
+                        delivered = await bridge.send(session_id, text=text, images=images)
+                    elif event_type == "task_waiting_user":
+                        delivered = await bridge.send(
+                            session_id, text=text or "出现某些问题，询问无法发送，请重新发送", images=[]
+                        )
+                    elif event_type in {
+                        "task_failed",
+                        "task_timeout",
+                        "task_cancelled",
+                        "task_error",
+                        "task_finished_with_error",
+                    }:
+                        message = text or event.get("error") or "任务失败"
+                        delivered = await bridge.send(session_id, text=f"任务失败：{message}", images=[])
+
+                    if needs_ack and delivered is not None:
+                        # 投递失败 → 交给调度器：按用户渠道优先级转投，全失败再缓冲
+                        disposition = await scheduler.ack_event(
+                            subscriber_id=config.SUBSCRIBER_ID,
+                            event_id=event_id,
+                            ok=bool(delivered),
+                            error="" if delivered else (
+                                "satori offline" if not bridge.is_qq_online() else "send failed"
+                            ),
+                        )
+                        if not delivered:
+                            print(
+                                f"[qq-llbot] 投递失败已回报 event={event_id} type={event_type} "
+                                f"disposition={disposition}",
+                                flush=True,
+                            )
+                            # 连续发送失败 = 疑似掉线边沿：退订，让调度器换后端（不用心跳）
+                            fail_streak += 1
+                            if fail_streak >= int(config.OFFLINE_SEND_FAILURES or 3):
+                                fail_streak = 0
+                                await on_qq_offline()
+                                break
+                        else:
+                            fail_streak = 0
+
+                    # Satori 状态机已判定下线 → 立刻退订（下一条事件不该再由本后端接）
+                    if not online_event.is_set():
+                        break
+            except Exception as exc:
+                # 订阅流异常（调度器重启/网络抖动）：等一下再重订，别退出整个协程
+                print(f"[qq-llbot] 事件订阅中断：{exc}（2s 后重订）", flush=True)
+                await asyncio.sleep(2)
+                continue
 
     # ── 并行启动 ──────────────────────────────────────────
     await asyncio.gather(

@@ -48,6 +48,14 @@ SATORI_TOKEN = _env("SATORI_TOKEN", _satori.get("token", ""))
 
 SUBSCRIBER_ID = _env("SUBSCRIBER_ID", _cfg.get("subscriber_id", "qq-llbot-1"))
 
+# 同渠道多订阅者时的优先级：llbot 优先（数值大者优先），官方渠道兜底
+SUBSCRIBER_PRIORITY = int(_env("SUBSCRIBER_PRIORITY", _cfg.get("subscriber_priority", 100)))
+
+# 连续多少次"用户可见事件"发送失败，就判定为掉线边沿 → 主动退订事件流。
+# 退订后调度器会把可见事件按优先级交给 qqofficial；上线边沿（Satori 状态机）再重订。
+# 不用心跳：只靠发送结果与状态机事件这两个边沿。
+OFFLINE_SEND_FAILURES = int(_env("OFFLINE_SEND_FAILURES", _cfg.get("offline_send_failures", 3)))
+
 # 群聊消息是否必须 @ 机器人才下发（私聊不受影响）
 GROUP_AT_REQUIRED = _env("GROUP_AT_REQUIRED", _cfg.get("group_at_required", "true")).lower() == "true"
 

@@ -112,7 +112,9 @@ class SchedulerClient:
             print(f"[qq-llbot] flush_buffered failed user={user_id}: {e}", flush=True)
             return 0
 
-    async def subscribe_events(self, subscriber_id: str, channels: list[str]):
+    async def subscribe_events(
+        self, subscriber_id: str, channels: list[str], priority: int = 0
+    ):
         """订阅事件流，带**空闲看门狗**。
 
         为什么必须有：这条流在没有任务事件时是静默的（scheduler 的心跳标记
@@ -140,6 +142,7 @@ class SchedulerClient:
                     req = task_scheduler_pb2.SubscribeEventsRequest(
                         subscriber_id=subscriber_id,
                         channels=channels,
+                priority=int(priority or 0),
                     )
                     stream = stub.SubscribeEvents(req)
                     while True:

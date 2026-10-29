@@ -43,7 +43,7 @@ async def main():
 
     tokens = TokenStore(config.API_BASE, config.APP_ID, config.CLIENT_SECRET)
     openapi = OpenApiClient(config.API_BASE, tokens)
-    users = UserClient(config.USER_SERVICE_TARGET, config.CHANNEL)
+    users = UserClient(config.USER_SERVICE_TARGET, config.BINDING_CHANNEL)
     scheduler = SchedulerClient(config.SCHEDULER_TARGET)
     summarizer = ReaderSummarizer(
         config.MODEL_PROXY_TARGET,
@@ -62,7 +62,7 @@ async def main():
 
     async def on_ready():
         # 网关就绪 → 让调度器补发它缓冲的用户可见消息
-        flushed = await scheduler.flush_buffered(channel=config.CHANNEL)
+        flushed = await scheduler.flush_buffered(channel=config.ROUTE_CHANNEL)
         if flushed:
             print(f"[qq-official] 已请求补发缓冲消息 {flushed} 条", flush=True)
 
@@ -77,7 +77,8 @@ async def main():
     async def event_loop():
         async for event in scheduler.subscribe_events(
             subscriber_id=config.SUBSCRIBER_ID,
-            channels=[config.CHANNEL],
+            channels=[config.ROUTE_CHANNEL],
+            priority=config.SUBSCRIBER_PRIORITY,
         ):
             event_type = str(event.get("type") or "")
             event_id = str(event.get("event_id") or "")
@@ -124,7 +125,8 @@ async def main():
 
     print(
         f"[qq-official] starting... app_id={config.APP_ID} "
-        f"channel={config.CHANNEL} scheduler={config.SCHEDULER_TARGET}",
+        f"route={config.ROUTE_CHANNEL} binding={config.BINDING_CHANNEL} "
+        f"priority={config.SUBSCRIBER_PRIORITY} scheduler={config.SCHEDULER_TARGET}",
         flush=True,
     )
     await asyncio.gather(

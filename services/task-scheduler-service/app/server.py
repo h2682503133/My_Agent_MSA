@@ -87,7 +87,9 @@ class TaskSchedulerService(task_scheduler_pb2_grpc.TaskSchedulerServicer):
 
     def SubscribeEvents(self, request, context):
         subscriber_id = request.subscriber_id or f"subscriber-{uuid.uuid4().hex[:12]}"
-        for event in event_bus.subscribe(subscriber_id, request.channels):
+        for event in event_bus.subscribe(
+            subscriber_id, request.channels, priority=getattr(request, "priority", 0)
+        ):
             if not context.is_active():
                 # 客户端已断开：立即退出循环，让 event_bus.subscribe 的 finally
                 # 清理订阅并释放当前 gRPC 工作线程。

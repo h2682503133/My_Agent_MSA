@@ -186,23 +186,39 @@ class EventBus:
     def _get_user_channels(self, user_id: str) -> set[str]:
         return {channel for channel, _cid, _prio in self._channel_targets(user_id)}
 
-    def _match_subscriber(self, items, channel: str, exclude: str = ""):
-        """找能接收该渠道的订阅者（channels 为空 = 全收）。"""
-        for subscriber_id, (channels, q) in items:
+    def _match_subscribers(self, items, channel: str, exclude: str = "", exclude_set=None):
+        """能接收该渠道的所有订阅者，按**优先级降序**（同优先级保持注册顺序）。
+
+        统一 `qq` 渠道后，llbot 与 qqofficial 都订阅 `qq`：优先级决定"只投一个"时投谁
+        （llbot 高、qqofficial 低 —— 后者作兜底，因为官方被动窗口易失效）。
+        """
+        exclude_set = exclude_set or set()
+        matched = []
+        for order, (subscriber_id, entry) in enumerate(items):
+            channels, q = entry[0], entry[1]
+            priority = int(entry[2]) if len(entry) > 2 else 0
             if exclude and subscriber_id == exclude:
+                continue
+            if subscriber_id in exclude_set:
                 continue
             if channels and channel not in channels:
                 continue
-            return subscriber_id, q
-        return None
+            matched.append((-priority, order, subscriber_id, q))
+        matched.sort()
+        return [(subscriber_id, q) for _prio, _order, subscriber_id, q in matched]
+
+    def _match_subscriber(self, items, channel: str, exclude: str = ""):
+        """找能接收该渠道的订阅者（channels 为空 = 全收）。优先级最高者。"""
+        found = self._match_subscribers(items, channel, exclude=exclude)
+        return found[0] if found else None
 
     # ─── 订阅 ───────────────────────────────────────────────
 
-    def subscribe(self, subscriber_id: str, channels: Iterable[str]):
+    def subscribe(self, subscriber_id: str, channels: Iterable[str], priority: int = 0):
         channel_set = set(channels or [])
         q: queue.Queue = queue.Queue(maxsize=500)
         with self._lock:
-            self._subscribers[subscriber_id] = (channel_set, q)
+            self._subscribers[subscriber_id] = (channel_set, q, int(priority or 0))
         # 这里**不再回放缓冲**。
         #
         # 早先的实现会把 buffer 里"该用户任一渠道匹配本订阅"的事件原样塞进队列。
@@ -211,7 +227,10 @@ class EventBus:
         # 事件、按 QQ 身份找 web 的 SSE 落空、回报 unknown，事件继续躺在缓冲里空转）。
         # 回放统一走 `flush_buffered`：它按目标渠道重建身份与会话 id、校验可达性、
         # 并重新登记在途，语义完整。
-        _log(f"subscriber {subscriber_id} registered channels={sorted(channel_set)}")
+        _log(
+            f"subscriber {subscriber_id} registered channels={sorted(channel_set)} "
+            f"priority={int(priority or 0)}"
+        )
         try:
             while True:
                 try:
@@ -255,24 +274,31 @@ class EventBus:
             )
             return
 
-        # 第一优先：匹配原始 channel 的订阅者
-        target = self._match_subscriber(items, event_channel)
-        if target is not None:
-            subscriber_id, q = target
+        # 第一优先：匹配原始 channel 的订阅者（同渠道多订阅者按优先级，**只投一个**）
+        candidates = self._match_subscribers(items, event_channel)
+        if candidates:
             needs_ack = is_ack_required(event)
-            to_send = event
-            if needs_ack:
-                to_send = self._mark_ack(event)
-                self._register_inflight(to_send, subscriber_id, hops=0)
-            try:
-                q.put_nowait(to_send)
-                _log(f"deliver -> {subscriber_id} ack={needs_ack} {_brief(to_send)}")
-                return  # 已入队；投递结果等消费端 ack
-            except queue.Full:
-                _log(f"queue full for {subscriber_id}, falling back {_brief(event)}")
+            tried: list[str] = []
+            for subscriber_id, q in candidates:
+                to_send = event
                 if needs_ack:
-                    with self._lock:
-                        self._inflight.pop(str(to_send.get("event_id") or ""), None)
+                    to_send = self._mark_ack(event)
+                    self._register_inflight(
+                        to_send, subscriber_id, hops=0, tried_subscribers=tried + [subscriber_id]
+                    )
+                try:
+                    q.put_nowait(to_send)
+                    _log(
+                        f"deliver -> {subscriber_id} ack={needs_ack} "
+                        f"(channel={event_channel!r} 候选 {len(candidates)} 个) {_brief(to_send)}"
+                    )
+                    return  # 已入队；投递结果等消费端 ack
+                except queue.Full:
+                    _log(f"queue full for {subscriber_id}, trying next {_brief(event)}")
+                    if needs_ack:
+                        with self._lock:
+                            self._inflight.pop(str(to_send.get("event_id") or ""), None)
+                    tried.append(subscriber_id)
 
         # 第二优先：跨渠道转投（无订阅者 / 入队失败）
         _log(f"no subscriber for channel={event_channel!r}, trying fallback {_brief(event)}")
@@ -303,9 +329,45 @@ class EventBus:
         return True, self._on_undelivered(record["event"], record, reason=error or "nack")
 
     def _on_undelivered(self, event: dict, record: dict, reason: str) -> str:
+        # 1) 同渠道还能换一个订阅者（统一 qq 渠道后的主路径：
+        #    llbot 优先级高但容易掉 → 失败后自动切到 qqofficial，仍是同一个 channel）
+        event_channel = str(event.get("channel") or "")
+        tried_subs = list(record.get("tried_subscribers") or [record.get("subscriber_id") or ""])
+        with self._lock:
+            items = list(self._subscribers.items())
+        same_channel = self._match_subscribers(
+            items,
+            event_channel,
+            exclude=str(record.get("subscriber_id") or ""),
+            exclude_set={s for s in tried_subs if s},
+        )
+        for subscriber_id, q in same_channel:
+            needs_ack = is_ack_required(event)
+            to_send = event
+            if needs_ack:
+                to_send = self._mark_ack(event)
+                self._register_inflight(
+                    to_send,
+                    subscriber_id,
+                    hops=int(record.get("hops") or 0),
+                    tried_subscribers=tried_subs + [subscriber_id],
+                )
+            try:
+                q.put_nowait(to_send)
+                _log(
+                    f"switch backend -> {subscriber_id} channel={event_channel!r} "
+                    f"reason={reason} {_brief(to_send)}"
+                )
+                return f"switched:{subscriber_id}"
+            except queue.Full:
+                if needs_ack:
+                    with self._lock:
+                        self._inflight.pop(str(to_send.get("event_id") or ""), None)
+
+        # 2) 否则按原有跨渠道转投
         return self._fallback_chain(
             event,
-            exclude_channel=str(event.get("channel") or ""),
+            exclude_channel=event_channel,
             exclude_subscriber=str(record.get("subscriber_id") or ""),
             hops=int(record.get("hops") or 0) + 1,
             reason=reason,
@@ -497,7 +559,13 @@ class EventBus:
         marked["metadata"] = {**_meta(event), _META_ACK_REQUIRED: "1"}
         return marked
 
-    def _register_inflight(self, event: dict, subscriber_id: str, hops: int) -> None:
+    def _register_inflight(
+        self,
+        event: dict,
+        subscriber_id: str,
+        hops: int,
+        tried_subscribers: list[str] | None = None,
+    ) -> None:
         event_id = str(event.get("event_id") or "")
         if not event_id:
             event_id = f"event-{uuid.uuid4().hex[:12]}"
@@ -508,6 +576,7 @@ class EventBus:
                 "subscriber_id": subscriber_id,
                 "hops": hops,
                 "deadline": time.time() + ACK_TIMEOUT_SECONDS,
+                "tried_subscribers": list(tried_subscribers or [subscriber_id]),
             }
 
     def inflight_stats(self) -> dict:

@@ -60,6 +60,12 @@ MODEL_PROXY_TARGET = str(_get("model_proxy_target", "MODEL_PROXY_TARGET"))
 READER_PROFILE = str(_get("reader_profile", "QQ_OFFICIAL_READER_PROFILE"))
 SUBSCRIBER_ID = str(_get("subscriber_id", "SUBSCRIBER_ID"))
 CHANNEL = str(_get("channel", "QQ_OFFICIAL_CHANNEL"))
+
+# 路由渠道：统一走 `qq`，由调度器在两个后端之间选（llbot 优先、官方兜底）。
+# 绑定渠道仍用 `qqofficial`：user-service 里 openid 是挂在它下面的。
+ROUTE_CHANNEL = str(_get("route_channel", "QQ_OFFICIAL_ROUTE_CHANNEL") or "qq")
+BINDING_CHANNEL = CHANNEL
+SUBSCRIBER_PRIORITY = int(_get("subscriber_priority", "QQ_OFFICIAL_SUBSCRIBER_PRIORITY") or 50)
 API_BASE = str(_get("api_base", "QQ_OFFICIAL_API_BASE")).rstrip("/")
 APP_ID = str(_get("app_id", "QQ_OFFICIAL_APP_ID"))
 CLIENT_SECRET = str(_get("client_secret", "QQ_OFFICIAL_CLIENT_SECRET"))

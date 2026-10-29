@@ -87,6 +87,23 @@ def _extract_element_id(elem, attrs: dict) -> str:
         pass
     return ""
 
+_HTML_IMG_RE = re.compile(r"<img\b[^>]*?src\s*=\s*[\"']?([^\"'\s>]+)[\"']?[^>]*>", re.IGNORECASE)
+
+
+def _html_img_srcs(text: str) -> list[str]:
+    """从纯文本里抠出内嵌的 <img src="…">（QQ 图文消息/合并转发的常见形态）。"""
+    if not text or "<img" not in text.lower():
+        return []
+    return [src for src in _HTML_IMG_RE.findall(text) if src]
+
+
+def _strip_html_img(text: str) -> str:
+    """去掉内嵌 <img> 标签，避免把 HTML 当正文喂给模型。"""
+    if not text or "<img" not in text.lower():
+        return text or ""
+    return _HTML_IMG_RE.sub("", text).strip()
+
+
 def _render_element(elem) -> str:
     """把 Satori 消息元素渲染成给模型看的纯文本。
 
@@ -98,13 +115,16 @@ def _render_element(elem) -> str:
     模型容易把它当成标签/指令，长期污染上下文。
     """
     if isinstance(elem, Text):
-        return str(elem)
+        # 图文消息的图片可能就在文本里（<img src="…">），正文只留文字
+        return _strip_html_img(str(elem))
 
     kind = str(getattr(elem, "type", "") or "").strip().lower()
     if kind in ("", "text"):
         # satori 有两种表示：typed 的 Text 类，以及解析器产出的通用
         # Element(type="text")。后者的 str() 就是正文（没有标签）。
-        return str(elem)
+        # 但 QQ 的图文消息会把图片塞成正文里的 `<img src="…">`：
+        # 这里只留文字，图片由 _extract_images 单独抽（见下）。
+        return _strip_html_img(str(elem))
     attrs = getattr(elem, "attrs", {}) or {}
 
     if kind in ("face", "mface", "marketface", "emoji"):
@@ -130,6 +150,9 @@ def _render_element(elem) -> str:
         return ""
     if kind in ("image", "img", "file", "audio", "video", "sharp"):
         return ""   # 这些走 images / files 专用通道
+    if kind in ("forward", "multimsg", "mutilmsg", "json", "ark", "lightapp"):
+        # 合并转发 / 卡片：satori 不给节点内容，只能留标记（模型据此知道"这里有一段被转发的历史"）
+        return "[转发内容]"
     return f"[{kind}]" if kind else ""
 
 
@@ -139,13 +162,25 @@ def _strip_at(elements) -> str:
 
 
 def _extract_images(elements) -> list[str]:
-    """提取消息中的图片元素 src 列表（Satori Image 的 src 字段）。"""
-    urls = []
+    """提取消息中的图片 URL。
+
+    两种来源都要收：
+    1. typed `Image` 元素（Satori 标准）；
+    2. 文本里内嵌的 `<img src="…">`（QQ 图文消息 / 合并转发的常见形态）。
+    漏掉第 2 种会让"带图消息"的 images 为空，调度器的 3000ms 合并窗口也就不会生效。
+    """
+    urls: list[str] = []
     for elem in elements:
         if isinstance(elem, Image):
             src = getattr(elem, "src", "") or ""
-            if src:
+            if src and src not in urls:
                 urls.append(src)
+            continue
+        kind = str(getattr(elem, "type", "") or "").strip().lower()
+        if kind in ("", "text"):
+            for src in _html_img_srcs(str(elem)):
+                if src not in urls:
+                    urls.append(src)
     return urls
 
 
@@ -423,8 +458,14 @@ class QQBridge:
         connected = getattr(account, "connected", None)
         return True if connected is None else connected.is_set()
 
-    def setup_lifecycle(self, on_online):
-        """注册 Satori 登录状态回调：QQ 恢复在线时通知调度器补发缓冲。"""
+    def setup_lifecycle(self, on_online, on_offline=None):
+        """注册 Satori 登录状态回调。
+
+        上线 → 通知调度器补发缓冲（原有行为）。
+        下线 → 交给调用方**主动退订**调度器事件流：这样调度器会按优先级把可见事件
+        交给另一个后端（qqofficial），而不是继续往一个发不出去的通道空投。
+        全程不用心跳：Satori 的状态机事件就是边沿。
+        """
 
         @self._app.lifecycle
         async def _on_login_state(account: Account, state):
@@ -435,6 +476,10 @@ class QQBridge:
             if is_online:
                 print("[qq-llbot] Satori 已上线，通知调度器补发缓冲", flush=True)
                 await on_online()
+                return
+            print(f"[qq-llbot] Satori 状态变化 -> {state!r}（非在线）", flush=True)
+            if on_offline is not None:
+                await on_offline()
 
 
     async def run(self):
