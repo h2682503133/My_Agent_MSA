@@ -51,6 +51,30 @@ def _get_scheduler_client() -> SchedulerClient:
 # ======================
 # 1. 添加定时任务
 # ======================
+# 统一 qq 渠道：框架侧只认 `qq`，由调度器在 llbot / qqofficial 之间路由。
+QQ_UNIFIED_CHANNEL = "qq"
+_QQ_ALIASES = {"qq", "qqofficial", "qq_llbot", "qq-llbot", "qqo", "llbot"}
+
+
+def normalize_channel(channel_id: str) -> str:
+    """把 QQ 相关渠道归一成 `qq`；其它渠道（web 等）原样返回。"""
+    key = str(channel_id or "").strip()
+    if key.lower() in _QQ_ALIASES:
+        return QQ_UNIFIED_CHANNEL
+    return key
+
+
+def normalize_session(session_id: str, user_id: str) -> str:
+    """`qqofficial_<uid>` → `qq_<uid>`；群聊及其它格式不动。"""
+    raw = str(session_id or "").strip()
+    if not raw:
+        return f"{QQ_UNIFIED_CHANNEL}_{user_id}" if user_id else ""
+    prefix, _, rest = raw.partition("_")
+    if prefix.lower() in _QQ_ALIASES and rest == str(user_id or ""):
+        return f"{QQ_UNIFIED_CHANNEL}_{user_id}"
+    return raw
+
+
 def add_timer_task(
     user_id: str,
     channel_id: str,
@@ -82,7 +106,8 @@ def add_timer_task(
 
     try:
         task_id = f"task_{int(time.time() * 1000)}_{user_id}"
-        session_id = session_id or f"{channel_id}_{user_id}"
+        channel_id = normalize_channel(channel_id)
+        session_id = normalize_session(session_id or "", user_id) or f"{channel_id}_{user_id}"
 
         # ---- 第 4 参：开始时间 ----
         schedule = None
@@ -338,8 +363,10 @@ def in_task_window(task_data: dict, now: float) -> bool:
 def execute_timer_task(task_data: dict):
     task_type = task_data.get("task_type", "submit_task")
     user_id = task_data["user_id"]
-    channel_id = task_data.get("channel_id", "web")
-    session_id = task_data.get("session_id") or f"{channel_id}_{user_id}"
+    channel_id = normalize_channel(task_data.get("channel_id", "web"))
+    session_id = normalize_session(
+        task_data.get("session_id") or "", user_id
+    ) or f"{channel_id}_{user_id}"
     content = task_data["content"]
     client_message_id = task_data.get("client_message_id", "")
 
