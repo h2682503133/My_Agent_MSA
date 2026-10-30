@@ -388,20 +388,53 @@ class OfficialBridge:
         if not address:
             print(f"[qq-official] 投递地址为空 session={session_id}", flush=True)
             return False
-        if images:
-            print(
-                f"[qq-official] 官方渠道暂不支持回传图片（{len(images)} 张），仅发送文本",
-                flush=True,
-            )
-        text = (text or "").strip()
-        if not text:
-            return True  # 没有正文视为已处理（例如纯图片消息）
+        return await self._send_with_target(kind, address, text, images, reserve=reserve)
 
-        chunks = self._split(text, config.REPLY_CHUNK_CHARS)
+    async def _send_with_target(
+        self,
+        kind: str,
+        address: str,
+        text: str,
+        images: list[str] | None = None,
+        reserve: int = 0,
+    ) -> bool:
+        """已解析出 (kind, address) 之后的真正发送：先文本，再逐张图片。"""
+        text = (text or "").strip()
         delivered = False
-        for chunk in chunks:
-            ok = await self._send_chunk(kind, address, chunk, depth=0, reserve=reserve)
+
+        # 先发文本（纯图片消息时 text 为空，跳过）
+        if text:
+            chunks = self._split(text, config.REPLY_CHUNK_CHARS)
+            for chunk in chunks:
+                ok = await self._send_chunk(kind, address, chunk, depth=0, reserve=reserve)
+                delivered = delivered or ok
+
+        # 再发图片（媒体上传 + msg_type=7）
+        failures: list[tuple[str, str]] = []
+        for index, image in enumerate(images or [], 1):
+            ok, reason = await self._send_image(
+                kind, address, image, index=index, reserve=reserve
+            )
             delivered = delivered or ok
+            if not ok:
+                failures.append((str(image), reason))
+
+        # 图片发不出去时，把失败原因显式告诉用户（不让图"悄悄消失"）
+        if failures:
+            notice_lines = ["【图片发送失败】官方渠道没能发出图片："]
+            for image, reason in failures:
+                notice_lines.append(f"- {reason}")
+                notice_lines.append(f"  图片链接：{image}")
+            notice = chr(10).join(notice_lines)
+            try:
+                await self._send_chunk(kind, address, notice, depth=0, reserve=reserve)
+                delivered = True
+            except Exception as exc:  # noqa: BLE001
+                print(f"[qq-official] 发送图片失败提示也失败了: {exc}", flush=True)
+
+        if not text and not images:
+            return True  # 既无正文也无图片，视为已处理
+        # 只要用户收到了内容（正文或失败提示）就算投递成功，避免重复重投
         return delivered
 
     @staticmethod
@@ -473,6 +506,86 @@ class OfficialBridge:
             flush=True,
         )
         return False
+
+    async def _fetch_image_bytes(self, image: str) -> tuple[bytes, str]:
+        """取图片字节：data URL / http(s) / 本地路径。返回 (bytes, 来源说明)。"""
+        raw = str(image or "").strip()
+        if not raw:
+            return b"", "图片地址为空"
+        if raw.startswith("data:"):
+            try:
+                _, _, payload = raw.partition(",")
+                return base64.b64decode(payload), "data URL"
+            except Exception as exc:  # noqa: BLE001
+                return b"", f"data URL 解码失败: {exc}"
+        if raw.startswith(("http://", "https://")):
+            timeout = aiohttp.ClientTimeout(total=config.IMAGE_FETCH_TIMEOUT_SECONDS)
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(raw) as resp:
+                        if resp.status != 200:
+                            return b"", f"下载失败 HTTP {resp.status}"
+                        return await resp.read(), "http"
+            except Exception as exc:  # noqa: BLE001
+                return b"", f"下载失败: {exc}"
+        try:
+            from pathlib import Path
+
+            path = Path(raw)
+            if path.is_file():
+                return path.read_bytes(), "本地文件"
+            return b"", f"本地文件不存在: {raw}"
+        except Exception as exc:  # noqa: BLE001
+            return b"", f"读取失败: {exc}"
+
+    async def _send_image(
+        self, kind: str, address: str, image: str, index: int = 1, reserve: int = 0
+    ) -> tuple[bool, str]:
+        """发一张图：取字节 → 上传媒体（file_data）→ msg_type=7。
+
+        返回 (ok, 失败原因)。失败原因会回给用户（见 _send_with_target），
+        免得图片"悄悄消失"。
+        """
+        data, reason = await self._fetch_image_bytes(image)
+        if not data:
+            print(f"[qq-official] 图片 #{index} 取字节失败（{reason}）：{image[:100]}", flush=True)
+            return False, f"取图失败：{reason}"
+
+        upload = await self.openapi.upload_media(kind, address, data, file_type=1)
+        if not upload.get("ok"):
+            detail = (
+                f"上传失败 err={upload.get('err_code')} "
+                f"http={upload.get('http_status')} {upload.get('message') or ''}"
+            ).strip()
+            print(
+                f"[qq-official] 图片 #{index} {detail}（{len(data)} 字节，来源 {reason}）",
+                flush=True,
+            )
+            return False, detail
+
+        slot = self._passive_slot(kind, address, reserve)
+        msg_id, seq = ("", 0) if slot is None else slot
+        result = await self.openapi.send_media_message(
+            kind, address, upload["file_info"], msg_id, seq
+        )
+        if result.get("ok"):
+            print(f"[qq-official] 图片 #{index} 已发送（{len(data)} 字节，来源 {reason}）", flush=True)
+            return True, ""
+
+        err = result.get("err_code")
+        if err in _ACTIVE_SKIP_CODES or err == _DUPLICATE_CODE:
+            result = await self.openapi.send_media_message(kind, address, upload["file_info"])
+            if result.get("ok"):
+                print(f"[qq-official] 图片 #{index} 已发送（主动消息）", flush=True)
+                return True, ""
+            err = result.get("err_code")
+
+        detail = (
+            f"发送失败 err={err} http={result.get('http_status')} "
+            f"{result.get('message') or ''}"
+        ).strip()
+        print(f"[qq-official] 图片 #{index} {detail}", flush=True)
+        return False, detail
 
     async def is_online(self) -> bool:
         """官方渠道没有"在线"概念：能拿到 token 就认为可达。"""

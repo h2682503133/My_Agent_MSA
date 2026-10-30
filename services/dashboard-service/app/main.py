@@ -4,6 +4,7 @@ FastAPI 后端 + 静态前端
 """
 
 import json
+import httpx
 import os
 import re
 import subprocess
@@ -16,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile
+from fastapi import FastAPI, HTTPException, Query, UploadFile, Response
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -34,6 +35,10 @@ ASSETS_DIR = STATIC_DIR / "assets"
 NAMESPACE = os.environ.get("NAMESPACE", "agent")
 SESSION_ROOT = Path(os.environ.get("SESSION_ROOT", "/app/session-data/workspace/viking/my-agent/user"))
 OPENVIKING_SERVER_URL = os.environ.get("OPENVIKING_SERVER_URL", "http://openviking.agent.svc.cluster.local:1933")
+# 图床（表情绑定预览代理用：dashboard 与 image-assets-service 同命名空间）
+IMAGE_ASSETS_BASE = os.environ.get(
+    "IMAGE_ASSETS_BASE", f"http://image-assets-service.{NAMESPACE}.svc.cluster.local"
+)
 USER_SERVICE_URL = os.environ.get("USER_SERVICE_URL", "http://user-service.agent.svc.cluster.local:5204")
 OPENVIKING_API_KEY_FILE = Path(os.environ.get("OPENVIKING_API_KEY", "/app/config/openviking/api_key"))
 PASSWORD_FILE = CONFIG_ROOT / "dashboard_password.json"
@@ -168,6 +173,9 @@ async def list_configs():
         for f in CONFIG_ROOT.rglob("*"):
             if f.is_file() and not f.name.startswith("."):
                 rel = str(f.relative_to(CONFIG_ROOT)).replace("\\", "/")
+                # 以点开头的目录是运行时内部数据（如 .reply_images），不在配置管理里显示
+                if any(segment.startswith(".") for segment in rel.split("/")):
+                    continue
                 if "system_prompt" in rel:
                     continue
                 # PROCESS 存储由智能体维护，不挤占配置管理显示空间
@@ -1215,6 +1223,173 @@ async def dashboard():
     if (STATIC_DIR / "index.html").exists():
         return _render_index()
     return "<h1>Dashboard</h1><p>index.html not found</p>"
+
+
+
+# ─── 表情绑定（reply-image 规则）────────────────────────────────
+
+
+def reply_images_root() -> Path:
+    """orchestrator 的 .reply_images 目录。
+
+    dashboard 把整个 config PVC 挂在 CONFIG_ROOT，所以真实路径是
+    `<CONFIG_ROOT>/orchestrator/config/.reply_images`（orchestrator 视角是 /app/config/.reply_images）。
+    """
+    override = os.getenv("REPLY_IMAGES_ROOT", "")
+    if override:
+        return Path(override)
+    return CONFIG_ROOT / "orchestrator" / "config" / ".reply_images"
+
+
+def _reply_rule_files() -> list[tuple[str, str, Path]]:
+    """[(scope, owner, path)]：scope = global / user，owner = 用户 id 或空。"""
+    root = reply_images_root()
+    if not root.exists():
+        return []
+    items: list[tuple[str, str, Path]] = []
+    for scope_dir in sorted(root.iterdir()):
+        if not scope_dir.is_dir():
+            continue
+        scope = "global" if scope_dir.name == "global" else "user"
+        owner = "" if scope == "global" else scope_dir.name
+        for path in sorted(scope_dir.glob("*.json")):
+            items.append((scope, owner, path))
+    return items
+
+
+def _asset_name_of(url: str) -> str:
+    """从图床 URL 里取出文件名（用于预览代理）；不是图床地址则返回空串。"""
+    text = str(url or "").strip()
+    if "/assets/" not in text:
+        return ""
+    return text.rsplit("/assets/", 1)[-1].split("?")[0]
+
+
+@app.get("/api/reply_images")
+async def list_reply_images():
+    """列出所有表情绑定规则（全局 + 各用户），带预览地址。"""
+    rules: list[dict] = []
+    for scope, owner, path in _reply_rule_files():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for index, rule in enumerate(data.get("rules") or []):
+            if not isinstance(rule, dict):
+                continue
+            image = str(rule.get("image") or "")
+            asset = _asset_name_of(image)
+            rules.append({
+                "scope": scope,
+                "owner": owner,
+                "agent": path.stem,
+                "index": index,
+                "keywords": [str(k) for k in (rule.get("keywords") or [])],
+                "image": image,
+                "note": str(rule.get("note") or ""),
+                "updated_at": str(rule.get("updated_at") or ""),
+                "preview": f"/api/reply_images/preview?name={asset}" if asset else "",
+            })
+    source = _get_source_user()
+    for rule in rules:
+        rule["from_source_user"] = bool(source) and rule.get("owner") == source
+    return {"rules": rules, "count": len(rules), "source_user": source}
+
+
+@app.get("/api/reply_images/preview")
+async def preview_reply_image(name: str):
+    """把图床图片代理回浏览器（浏览器到不了集群内 DNS）。"""
+    safe = Path(str(name or "")).name
+    if not safe:
+        raise HTTPException(400, "缺少文件名")
+    url = f"{IMAGE_ASSETS_BASE}/assets/{safe}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"图床请求失败: {exc}")
+    if resp.status_code != 200:
+        raise HTTPException(404, f"图床返回 {resp.status_code}")
+    media = resp.headers.get("content-type") or "image/png"
+    return Response(content=resp.content, media_type=media)
+
+
+class ReplyImageDelete(BaseModel):
+    scope: str
+    owner: str = ""
+    agent: str
+    keyword: str
+
+
+@app.delete("/api/reply_images")
+async def delete_reply_image(body: ReplyImageDelete):
+    """按关键词删除一条规则（scope=global 删除全局，否则删除该用户的）。"""
+    scope_dir = "global" if body.scope == "global" else "".join(
+        ch if ch.isalnum() or ch in "_.@-" else "_" for ch in (body.owner or "default")
+    ).strip("._") or "default"
+    path = reply_images_root() / scope_dir / f"{body.agent}.json"
+    if not path.is_file():
+        raise HTTPException(404, "规则文件不存在")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(400, "规则文件损坏，无法解析")
+    rules = data.get("rules") or []
+    keyword = str(body.keyword or "").strip().casefold()
+    kept = [
+        rule for rule in rules
+        if keyword not in [str(k).casefold() for k in (rule.get("keywords") or [])]
+    ]
+    removed = len(rules) - len(kept)
+    if not removed:
+        raise HTTPException(404, "没有包含该关键词的规则")
+    data["rules"] = kept
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, "removed": removed, "left": len(kept)}
+
+
+
+
+def _source_user_path() -> Path:
+    return reply_images_root() / "_source.json"
+
+
+def _get_source_user() -> str:
+    path = _source_user_path()
+    if not path.exists():
+        return ""
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("source_user") or "")
+    except Exception:
+        return ""
+
+
+class ReplyImageSource(BaseModel):
+    user: str = ""
+
+
+@app.get("/api/reply_images/source")
+async def get_reply_image_source():
+    """当前「全局来源用户」+ 备选用户列表。"""
+    owners = sorted({owner for scope, owner, _path in _reply_rule_files() if scope == "user"})
+    return {"source_user": _get_source_user(), "candidates": owners}
+
+
+@app.put("/api/reply_images/source")
+async def set_reply_image_source(body: ReplyImageSource):
+    """把某个用户的规则设为全局（空串 = 清除）。"""
+    target = str(body.user or "").strip()
+    path = _source_user_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not target:
+        if path.exists():
+            path.unlink()
+        return {"ok": True, "source_user": ""}
+    path.write_text(
+        json.dumps({"source_user": target}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {"ok": True, "source_user": target}
 
 
 # ─── 入口 ────────────────────────────────────────────────────

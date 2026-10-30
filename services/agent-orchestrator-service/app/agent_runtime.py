@@ -5,6 +5,7 @@ from collections import OrderedDict
 from typing import Callable
 
 from app import config
+from app import reply_images
 from app import world_info_manager
 from app import mode as mode_switch
 from app import user_commands
@@ -362,6 +363,16 @@ class AgentRuntime:
         agent_id: str = "",
     ) -> str:
         final_reply = "" if text is None else str(text)
+
+        # 回复关键词 → 自动配图：只对**最终回复**生效（中间的"正在执行工具"不配图）。
+        # 规则由 reply-image 工具维护，匹配最先出现的关键词，最多补一张图。
+        if final:
+            try:
+                reply_images.attach_images(
+                    task, final_reply, agent_id=agent_id or getattr(task, "agent_id", "")
+                )
+            except Exception as exc:  # noqa: BLE001 - 配图失败不能影响回复
+                debug_log(f"[{getattr(getattr(task, 'user', None), 'id', '')}] reply-image 匹配失败: {exc}")
 
         task.send_text = final_reply
         task.set_temp_dialog_output(final_reply)
@@ -1673,6 +1684,10 @@ class AgentRuntime:
             user_id=task.user.id,
             session_id=task.user.session_id,
             agent_id=push_agent_id,
+            # PROCESS 上限来自 process*.md（构建 prompt 时解析并缓存）；
+            # 工具在另一个 pod，读不到 prompt 目录，所以由这里带过去。
+            process_max_items=getattr(self._prompt_parts, "process_max_items", 0),
+            process_max_chars=getattr(self._prompt_parts, "process_max_chars", 0),
         )
 
         output = ""

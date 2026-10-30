@@ -50,6 +50,9 @@ SYSTEM_SETTINGS_PATH = Path(
 )
 
 # PROCESS 长期事件记录存储（按 <user_id>/<agent_id>.json 分片）
+# 运行期配置目录（NFS：orchestrator/config），reply_images 等运行时数据放这里
+CONFIG_DIR = Path(os.getenv("CONFIG_DIR", str(BASE_DIR / "config")))
+
 PROCESS_DIR = Path(os.getenv("PROCESS_DIR", str(BASE_DIR / "config" / "process")))
 
 # ─── 世界书（World Info）──────────────────────────────────────

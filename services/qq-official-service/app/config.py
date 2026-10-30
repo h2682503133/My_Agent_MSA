@@ -74,6 +74,11 @@ WORKSPACE_DIR = str(_get("workspace_dir", "QQ_OFFICIAL_WORKSPACE"))
 REPLY_CHUNK_CHARS = int(_get("reply_chunk_chars", "QQ_OFFICIAL_REPLY_CHARS", int))
 SUMMARY_TIMEOUT_SECONDS = int(_get("summary_timeout_seconds", "QQ_OFFICIAL_SUMMARY_TIMEOUT", int))
 
+# 官方渠道发图：下载图片的单独超时（图床在集群内，通常很快）
+IMAGE_FETCH_TIMEOUT_SECONDS = int(
+    os.getenv("QQ_OFFICIAL_IMAGE_FETCH_TIMEOUT", "15")
+)
+
 _group_map = _get("group_map", "QQ_OFFICIAL_GROUP_MAP", dict)
 GROUP_MAP = {str(k): str(v) for k, v in (_group_map or {}).items()}
 # 反向表：群号 → group_openid（出站时把 session 里的群号换回 openid）

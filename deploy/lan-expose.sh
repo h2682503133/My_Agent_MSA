@@ -30,6 +30,7 @@ EXPOSES=(
   "5210:30521:gateway-api:/api/health"
   "5700:30570:dashboard:/"
   "3080:30080:llbot-webui:/"
+  "5102:30510:image-assets:/assets/"
 )
 
 require() {

@@ -101,6 +101,76 @@ class OpenApiClient:
             shards = 1
         return url, max(shards, 1)
 
+    async def upload_media(
+        self,
+        kind: str,
+        target: str,
+        file_data: bytes,
+        file_type: int = 1,
+    ) -> dict:
+        """上传富媒体（1=图片）。返回 {ok, file_info, file_uuid, message, err_code}。
+
+        用 file_data（base64）而不是 url：我们的图床是集群内地址，腾讯侧拉不到。
+        """
+        import base64
+
+        if kind == "private":
+            path = f"/v2/users/{target}/files"
+        elif kind == "group":
+            path = f"/v2/groups/{target}/files"
+        else:
+            return {"ok": False, "err_code": -2, "message": f"unknown kind {kind}"}
+
+        payload = {
+            "file_type": int(file_type),
+            "file_data": base64.b64encode(file_data).decode("ascii"),
+            "srv_send_msg": False,
+        }
+        body = await self._request("POST", path, payload)
+        err = body.get("err_code")
+        file_info = str(body.get("file_info") or "")
+        ok = bool(file_info) and (err in (None, 0, "0"))
+        return {
+            "ok": ok,
+            "file_info": file_info,
+            "file_uuid": str(body.get("file_uuid") or ""),
+            "err_code": err,
+            "message": body.get("message") or "",
+            "http_status": body.get("http_status"),
+        }
+
+    async def send_media_message(
+        self,
+        kind: str,
+        target: str,
+        file_info: str,
+        msg_id: str = "",
+        msg_seq: int | None = None,
+    ) -> dict:
+        """发媒体消息（msg_type=7，content 传 file_info）。"""
+        if kind == "private":
+            path = f"/v2/users/{target}/messages"
+        elif kind == "group":
+            path = f"/v2/groups/{target}/messages"
+        else:
+            return {"ok": False, "err_code": -2, "message": f"unknown kind {kind}"}
+
+        payload: dict = {"content": file_info, "msg_type": 7}
+        if msg_id:
+            payload["msg_id"] = msg_id
+            payload["msg_seq"] = int(msg_seq or 1)
+
+        body = await self._request("POST", path, payload)
+        err = body.get("err_code")
+        ok = body.get("id") is not None and (err in (None, 0, "0"))
+        return {
+            "ok": ok,
+            "err_code": err,
+            "message": body.get("message") or "",
+            "id": body.get("id") or "",
+            "http_status": body.get("http_status"),
+        }
+
     async def send_message(
         self,
         kind: str,

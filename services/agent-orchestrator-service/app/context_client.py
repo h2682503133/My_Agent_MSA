@@ -78,7 +78,7 @@ class ContextClient:
             for memory in response.memories:
                 messages.append({
                     "role": "system",
-                    "content": f"【相关记忆】{memory.content}",
+                    "content": f"【长期记忆】{memory.content}",
                 })
             for msg in response.recent_messages:
                 messages.append({

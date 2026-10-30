@@ -151,5 +151,19 @@ PROCESS_DIR = os.getenv("PROCESS_DIR", "/app/system_prompts/orchestrator/config/
 
 # 世界书（World Info）存储：与 PROCESS 同级（orchestrator 侧同目录为 /app/config/world_info）
 WORLD_INFO_DIR = os.getenv("WORLD_INFO_DIR", "/app/system_prompts/orchestrator/config/world_info")
+
+# 回复关键词 → 自动配图规则（与 orchestrator 共用同一份 NFS 文件）
+REPLY_IMAGES_DIR = os.getenv(
+    "REPLY_IMAGES_DIR", "/app/system_prompts/orchestrator/config/.reply_images"
+)
+# 回复配图用的图床地址：必须是**集群内**可达的（适配器按 URL 取图）
+REPLY_IMAGE_BASE_URL = os.getenv(
+    "REPLY_IMAGE_BASE_URL", "http://image-assets-service/assets"
+)
+
+# 图床 PVC 在容器里的挂载点（回复配图、本地图转 URL 都往这里写）
+IMAGE_ASSET_DIR = os.getenv("IMAGE_ASSET_DIR", "/app/assets/images")
+# 图床对外 URL 前缀（image-url / send-image 用；必须是集群内可达地址）
+IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "http://image-assets-service/assets")
 WORLD_INFO_PATH = os.getenv("WORLD_INFO_PATH", os.path.join(WORLD_INFO_DIR, "world_info.json"))
 WORLD_INFO_GROUPS_PATH = os.getenv("WORLD_INFO_GROUPS_PATH", os.path.join(WORLD_INFO_DIR, "groups.json"))

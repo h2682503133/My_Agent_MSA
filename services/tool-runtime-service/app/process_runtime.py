@@ -21,11 +21,17 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
 import tempfile
 from pathlib import Path
+
+
+def _now_iso() -> str:
+    """UTC ISO8601（与历史消息的 created_at 同口径，渲染时再转本地时间）。"""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
 def _safe_segment(value: str, default: str = "default") -> str:
@@ -77,7 +83,20 @@ def _parse_index(index: str) -> int | None:
         return None
 
 
-def write(process_dir: str, user_id: str, agent_id: str, index: str, title: str, content: str) -> str:
+def write(
+    process_dir: str,
+    user_id: str,
+    agent_id: str,
+    index: str,
+    title: str,
+    content: str,
+    max_items: int = 0,
+    max_chars: int = 0,
+) -> str:
+    """写一条长期事件记录（max_items / max_chars 来自该智能体 process*.md，0=不限）。
+
+    超限一律显式报错：静默截断/丢弃会让模型以为已经写进去了。
+    """
     path = _process_path(process_dir, user_id, agent_id)
     data = _load(path)
     items = data.get("items")
@@ -91,22 +110,37 @@ def write(process_dir: str, user_id: str, agent_id: str, index: str, title: str,
 
     title = str(title or "").strip()
     content = str(content or "").strip()
+
+    if max_chars and len(content) > max_chars:
+        return (
+            f"错误：单条正文 {len(content)} 字，超过上限 {max_chars} 字"
+            f"（在 process.md 里用 `max_chars: N` 调整）。请精简后再写。"
+        )
+
     entry = {"title": title, "content": content}
 
-    if idx == -1:
+    if idx == -1 or idx == len(items) + 1:
+        if max_items and len(items) >= max_items:
+            return (
+                f"错误：存储已满（{len(items)}/{max_items} 条，上限在 process.md 里用 "
+                f"`max_items: N` 调整）。请先用 process-modify 改写旧条目或 process-remove 删除。"
+            )
+        entry["created_at"] = _now_iso()
         items.append(entry)
         _save(path, data)
-        return f"已追加第 {len(items)} 条：{title or '(无标题)'}"
+        used = f"（{len(items)}/{max_items} 条）" if max_items else f"（共 {len(items)} 条）"
+        return f"已追加第 {len(items)} 条{used}：{title or '(无标题)'}"
 
     if 1 <= idx <= len(items):
+        previous = items[idx - 1]
+        # 覆写保留原记录时间（"这条何时建立"），老数据没时间就补当前
+        if isinstance(previous, dict) and previous.get("created_at"):
+            entry["created_at"] = previous["created_at"]
+        else:
+            entry["created_at"] = _now_iso()
         items[idx - 1] = entry
         _save(path, data)
         return f"已覆写第 {idx} 条：{title or '(无标题)'}"
-
-    if idx == len(items) + 1:
-        items.append(entry)
-        _save(path, data)
-        return f"已追加第 {len(items)} 条：{title or '(无标题)'}"
 
     return f"错误：index={idx} 越界（当前共 {len(items)} 条，-1 或 {len(items) + 1} 表示末尾追加，1..{len(items)} 表示覆写）"
 

@@ -398,6 +398,20 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
             return self._send_message(text)
 
         # PROCESS 长期事件记录（按 user_id + agent_id 定位存储文件）
+        if name in {"reply-image", "reply_image"}:
+            from app.reply_image_tool import handle as reply_image_handle
+
+            return reply_image_handle(
+                Path(config.REPLY_IMAGES_DIR),
+                str(kwargs.get("agent_id") or "main"),
+                list(args),
+                dict(kwargs),
+                user_id=str(kwargs.get("user_id") or "default"),
+                workspace_root=root,
+                base_url=config.REPLY_IMAGE_BASE_URL,
+                asset_dir=Path(config.IMAGE_ASSET_DIR),
+            )
+
         if name == "process-write":
             index = kwargs.get("index") or (args[0] if args else "")
             title = kwargs.get("title") or (args[1] if len(args) > 1 else "")
@@ -413,6 +427,8 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 index,
                 title,
                 content,
+                max_items=int(kwargs.get("process_max_items") or 0),
+                max_chars=int(kwargs.get("process_max_chars") or 0),
             )
 
         if name == "process-remove":
@@ -659,7 +675,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         if not source.exists() or not source.is_file():
             return f"本地文件不存在：{source}"
 
-        asset_dir = Path(os.getenv("IMAGE_ASSET_DIR", "/app/assets/images")).resolve()
+        asset_dir = Path(config.IMAGE_ASSET_DIR).resolve()
         asset_dir.mkdir(parents=True, exist_ok=True)
 
         suffix = source.suffix or mimetypes.guess_extension(mimetypes.guess_type(str(source))[0] or "") or ""
@@ -667,7 +683,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         target = asset_dir / target_name
         shutil.copyfile(source, target)
 
-        base_url = os.getenv("IMAGE_BASE_URL", "http://localhost:5102/assets").rstrip("/")
+        base_url = str(config.IMAGE_BASE_URL).rstrip("/")
         if base_url:
             url = f"{base_url}/{urllib.parse.quote(target_name)}"
         else:

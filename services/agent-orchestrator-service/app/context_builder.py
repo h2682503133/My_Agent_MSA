@@ -116,7 +116,7 @@ from app.prompt_plan import insert_messages
 from app.syntax_parser import strip_misformatted_directives
 
 # PROCESS 长期事件记录：文件名即模式声明
-# （PROCESS.md=不报时 / PROCESS_turn.md=轮次计数 / PROCESS_clock.md=时钟）
+# （PROCESS.md=只列表 / PROCESS_turn.md=轮次计数 / PROCESS_clock.md=每条带创建时间）
 _PROCESS_FILE_NAMES = {"process.md", "process_turn.md", "process_clock.md"}
 
 # 世界书（World Info）两阶段：files 含 world_info.md 即声明启用
@@ -256,6 +256,28 @@ def history_time_stamp(message) -> str:
     except Exception:
         return ""
     return local.strftime("[%m-%d %H:%M] ")
+
+
+def render_process_items(items, mode: str) -> list[str]:
+    """把 PROCESS 存储里的条目渲染成提示词行（不含 header）。
+
+    - `clock` 模式：每条前带创建时间 `[MM-DD HH:MM]`（来自 created_at，UTC→本地）；
+    - 其它模式：只列 `序号. 标题：内容`；
+    - 老数据没有 created_at → 不补假时间，原样显示正文。
+    """
+    lines: list[str] = []
+    for index, item in enumerate(items, 1):
+        stamp = ""
+        if isinstance(item, dict):
+            title = str(item.get("title") or "").strip()
+            content = str(item.get("content") or "").strip()
+            entry = f"{title}：{content}" if title else content
+            if mode == "clock":
+                stamp = history_time_stamp(item)
+        else:
+            entry = str(item)
+        lines.append(f"{index}. {stamp}{entry}")
+    return lines
 
 
 def shape_history_messages(messages, *, self_id: str) -> list[dict]:
@@ -434,15 +456,56 @@ def _read_prompt_text(path: Path, *, agent_id: str, filename: str) -> str:
     )[0]
 
 
-def _assert_process_declarative(prompt_dir: Path, filename: str, *, agent_id: str) -> None:
-    """PROCESS 声明文件的内容根本不被读取：写了指令无意义，显式报错。"""
+# process*.md 里可写这两项（其它文字一律当注释/说明，不注入 prompt）：
+#   max_items: 20   最多存多少条（写入时超了就报错，不静默丢）
+#   max_chars: 300  单条正文最多多少字（写入时超了就报错）
+_PROCESS_SETTING_RE = re.compile(
+    r"^[ \t]*(max_items|max_chars)[ \t]*[:：=][ \t]*(\d+)[ \t]*(?:#.*)?$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def parse_process_settings(text: str, *, agent_id: str = "", filename: str = "") -> tuple[int, int]:
+    """从 process*.md 解析 (max_items, max_chars)；0 表示不限制。
+
+    非法值（负数/非数字/写错键名）显式报错 —— 静默忽略会让"以为设了上限"变成
+    "其实没设"，写爆了才发现。
+    """
+    max_items = 0
+    max_chars = 0
+    for match in _PROCESS_SETTING_RE.finditer(text or ""):
+        key = match.group(1).lower()
+        value = int(match.group(2))
+        if key == "max_items":
+            max_items = value
+        else:
+            max_chars = value
+    # 形如 `max_items: abc` 的写法要暴露出来
+    for line_no, line in enumerate((text or "").splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lowered = stripped.lower()
+        if lowered.startswith("max_items") or lowered.startswith("max_chars"):
+            if not _PROCESS_SETTING_RE.match(line):
+                raise prompt_refs.PromptRefError(
+                    "PROCESS 配置写法不对（应形如 `max_items: 20` / `max_chars: 300`）",
+                    agent_id=agent_id,
+                    filename=filename,
+                    line=f"第 {line_no} 行：{stripped}",
+                )
+    return max_items, max_chars
+
+
+def _assert_process_declarative(prompt_dir: Path, filename: str, *, agent_id: str) -> tuple[int, int]:
+    """PROCESS 声明文件不注入正文，只解析 max_items / max_chars 两项设置。"""
     path = _resolve_prompt_file(prompt_dir, filename)
     if path is None:
-        return
+        return 0, 0
     try:
         text = path.read_text(encoding="utf-8")
     except Exception:
-        return
+        return 0, 0
     if prompt_refs.has_ref_directive(text):
         raise prompt_refs.PromptRefError(
             "PROCESS 声明文件（process*.md）的内容不会被读取，@ref= 不生效；"
@@ -459,6 +522,58 @@ def _assert_process_declarative(prompt_dir: Path, filename: str, *, agent_id: st
             filename=filename,
             line=prompt_refs.first_when_line(text) or "",
         )
+    return parse_process_settings(text, agent_id=agent_id, filename=filename)
+
+
+def _process_settings_for(
+    prompt_dir: Path, filename: str, *, agent_id: str
+) -> tuple[int, int]:
+    """取该智能体的 PROCESS 上限。
+
+    顺序：
+      1. `files` 里声明的那个 process 变体（精确文件名，大小写不敏感）；
+      2. 没写 / 解析不出设置 → 扫同目录其它 `process*.md`，**第一个有设置的就用**。
+    不合并多个文件：命中即返回，避免"两个文件各写一半、谁也说不清生效的是哪个"。
+    """
+    declared = _resolve_prompt_file(prompt_dir, filename)
+    if declared is not None:
+        settings = _assert_process_declarative(
+            prompt_dir, filename, agent_id=agent_id
+        )
+        if any(settings):
+            return settings
+
+    # 回退：同目录其它 process 变体（按固定顺序，结果可预期）
+    order = {"process.md": 0, "process_turn.md": 1, "process_clock.md": 2}
+    candidates: list[tuple[int, str, Path]] = []
+    try:
+        for path in prompt_dir.iterdir():
+            lower = path.name.lower()
+            if not path.is_file() or lower not in _PROCESS_FILE_NAMES:
+                continue
+            if declared is not None and path.name == declared.name:
+                continue
+            candidates.append((order.get(lower, 9), lower, path))
+    except OSError:
+        return 0, 0
+
+    for _rank, lower, path in sorted(candidates):
+        if lower not in {"process.md", "process_turn.md", "process_clock.md"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        max_items, max_chars = parse_process_settings(
+            text, agent_id=agent_id, filename=path.name
+        )
+        if any((max_items, max_chars)):
+            debug_log(
+                f"[{agent_id}] PROCESS 上限取自 {path.name}"
+                f"（声明的 {filename} 没有设置）: max_items={max_items} max_chars={max_chars}"
+            )
+            return max_items, max_chars
+    return 0, 0
 
 
 # ─── TOOL.json 工具目录 ──────────────────────────────────────
@@ -708,6 +823,9 @@ class SystemPromptParts:
     global_index: int = -1
     # TOOL 段下标：`exclude_block: ["tool"]` 靠它剔除（files 可能同时声明 TOOL.md 与 TOOL.json）
     tool_indexes: list[int] = field(default_factory=list)
+    # PROCESS 上限（来自 process*.md 里的 max_items / max_chars；0 = 不限制）
+    process_max_items: int = 0
+    process_max_chars: int = 0
 
 
 def _add_segment(parts: SystemPromptParts, content: str, when: str = "") -> int:
@@ -792,8 +910,13 @@ class ContextBuilder:
             key = str(filename).strip().lower()
 
             if key in _PROCESS_FILE_NAMES:
-                # PROCESS 变体不读 md：内容由结构化存储注入（见 build_process_message）
-                _assert_process_declarative(prompt_dir, filename, agent_id=agent.id)
+                # PROCESS 变体不注入 md 正文；只取 max_items / max_chars 两项上限。
+                # 声明的文件没写设置时，回退到同目录其它 process*.md（第一个命中的即用）。
+                max_items, max_chars = _process_settings_for(
+                    prompt_dir, filename, agent_id=agent.id
+                )
+                parts.process_max_items = max_items
+                parts.process_max_chars = max_chars
                 continue
 
             if key in _WORLD_INFO_FILE_NAMES:
@@ -901,7 +1024,8 @@ class ContextBuilder:
 
         - turn 模式：count_turn=True（用户请求首次 send）时 turn+1 并落盘，
           注入「现在时间是 第N轮对话」；工具回执/智能体转交等内部回调不计数
-        - clock / none 模式：不报时（框架请求自带时间戳）
+        - clock 模式：不报轮次，但**每条记录前带创建时间**（[MM-DD HH:MM]，来自 created_at）
+        - none 模式：既不报时间也不报轮次，只列记录
         - 无条目时返回 None（不注入空段）
         """
         agent = self._agent
@@ -947,15 +1071,7 @@ class ContextBuilder:
         if not items:
             return None
 
-        lines = [header]
-        for index, item in enumerate(items, 1):
-            if isinstance(item, dict):
-                title = str(item.get("title") or "").strip()
-                content = str(item.get("content") or "").strip()
-                entry = f"{title}：{content}" if title else content
-            else:
-                entry = str(item)
-            lines.append(f"{index}. {entry}")
+        lines = [header] + render_process_items(items, mode)
         return {"role": "system", "content": "\n".join(lines)}
 
     def build_vars_message(self) -> dict | None:

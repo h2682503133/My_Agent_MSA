@@ -67,6 +67,8 @@ class ToolRuntimeClient:
         user_id: str = "default",
         session_id: str = "",
         agent_id: str = "",
+        process_max_items: int = 0,
+        process_max_chars: int = 0,
     ):
         """流式执行工具。
 
@@ -91,6 +93,9 @@ class ToolRuntimeClient:
                     "session_id": str(session_id or ""),
                     "agent_id": str(agent_id or ""),
                     "workspace_scope": "user",
+                    # 0 = 不限制；非 0 时由 tool-runtime 的 process-* 强制执行
+                    "process_max_items": str(int(process_max_items or 0)),
+                    "process_max_chars": str(int(process_max_chars or 0)),
                 },
                 workspace_dir=workspace_dir,
                 timeout_seconds=config.TOOL_TIMEOUT_SECONDS,
