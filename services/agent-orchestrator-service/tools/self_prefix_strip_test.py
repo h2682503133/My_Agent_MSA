@@ -41,6 +41,18 @@ def main():
     check("空文本安全", strip_self_prefix("", "main") == "")
     check("空 id 不处理", strip_self_prefix("<main>: 你好", "") == "<main>: 你好")
 
+
+    print("无冒号的 <自己id> 前缀 / 整体包裹")
+    check("<main>正文 去掉标签", strip_self_prefix("<main>你好", "main") == "你好",
+          strip_self_prefix("<main>你好", "main"))
+    check("<main>工具调用 保留指令",
+          strip_self_prefix("<main>工具调用:reply-image|a|b", "main") == "工具调用:reply-image|a|b")
+    check("整体包裹时去掉闭合标签",
+          strip_self_prefix("<main>工具调用:x|a|b</main>", "main") == "工具调用:x|a|b",
+          strip_self_prefix("<main>工具调用:x|a|b</main>", "main"))
+    check("别人的标签仍不动", strip_self_prefix("<luna>她说", "main") == "<luna>她说")
+    check("大小写不敏感", strip_self_prefix("<MAIN>你好", "main") == "你好")
+
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {FAILS}")

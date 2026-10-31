@@ -131,14 +131,20 @@ def clean_ai_thinking(text: str) -> str:
 #   `[10-28 23:09] <main>: …` / `<main>: …`
 # 这是它在模仿历史注入格式（history_time_stamp + 说话人前缀），会污染回复；
 # 尤其定时任务轮，它编的时间戳和实际触发时间对不上。
-_SELF_PREFIX_RE = re.compile(r"^[ \t]*(?:\[[^\]\n]{1,32}\][ \t]*)?<(?P<who>[^>\n]{1,64})>[ \t]*[:：][ \t]*")
+# 冒号**可省略**：模型有时只写 `<main>正文` 或整个包一层 `<main>…</main>`，
+# 冒号版本没匹配上时，指令就不再处于"行首"而解析失败，工具调用会被当正文发出去。
+_SELF_PREFIX_RE = re.compile(
+    r"^[ \t]*(?:\[[^\]\n]{1,32}\][ \t]*)?<(?P<who>[^>\n]{1,64})>[ \t]*(?:[:：][ \t]*)?"
+)
 
 
 def strip_self_prefix(text: str, agent_id: str) -> str:
     """去掉模型自己加的开头归属（只清**自己**，别人的发言不动）。
 
     - `[10-28 23:09] <main>: 你好` → `你好`（agent_id == "main"）
-    - `<main>: 你好` → `你好`
+    - `<main>: 你好` / `<main>你好` → `你好`（冒号可省略）
+    - `<main>工具调用:…</main>` → `工具调用:…`（连闭合标签一起去掉，
+      否则指令不在行首，解析不到就会被当正文发给用户）
     - `[10-28 23:09] <luna>: 她说…` → 原样（那是引用别人）
     - 无前缀 → 原样
     """
@@ -151,7 +157,11 @@ def strip_self_prefix(text: str, agent_id: str) -> str:
         return raw
     if match.group("who").strip().lower() != who.lower():
         return raw
-    return raw[match.end():]
+    body = raw[match.end():]
+    # 整体被包了一层 `<main>…</main>`：把闭合标签也去掉
+    closing = re.compile(r"</" + re.escape(match.group("who").strip()) + r">\s*$", re.IGNORECASE)
+    body = closing.sub("", body)
+    return body.strip()
 
 
 def _normalize_text(text: str) -> str:

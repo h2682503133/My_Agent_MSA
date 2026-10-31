@@ -520,14 +520,21 @@ class OfficialBridge:
                 return b"", f"data URL 解码失败: {exc}"
         if raw.startswith(("http://", "https://")):
             timeout = aiohttp.ClientTimeout(total=config.IMAGE_FETCH_TIMEOUT_SECONDS)
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(raw) as resp:
-                        if resp.status != 200:
-                            return b"", f"下载失败 HTTP {resp.status}"
-                        return await resp.read(), "http"
-            except Exception as exc:  # noqa: BLE001
-                return b"", f"下载失败: {exc}"
+            last = ""
+            # 图床刚发布完可能有极短的可见性延迟，重试一次；404 也重试，第二次仍失败再报错
+            for attempt, delay in enumerate((0.0, 0.6), start=1):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(raw) as resp:
+                            if resp.status == 200:
+                                return await resp.read(), "http"
+                            last = f"下载失败 HTTP {resp.status}"
+                except Exception as exc:  # noqa: BLE001
+                    last = f"下载失败: {exc}"
+                print(f"[qq-official] 取图第 {attempt} 次失败（{last}）：{raw[:100]}", flush=True)
+            return b"", last
         try:
             from pathlib import Path
 

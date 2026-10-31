@@ -248,6 +248,30 @@ def resolve_image(value: str, workspace_root: Path | None, base_url: str, asset_
     return publish_local_image(candidate, base_url, asset_dir)
 
 
+def verify_image_url(url: str, timeout: int = 6) -> str:
+    """校验 http(s) 图片地址是否真的能取到；返回错误串（空串 = 通过）。
+
+    为什么要在写规则时校验：模型有时会"猜"一个图床文件名（或引用了还没发布完的文件），
+    等发送时才 404，用户收到的就是【图片发送失败】。这里提前挡住，让它改传工作区路径。
+    """
+    import urllib.error
+    import urllib.request
+
+    text = str(url or "").strip()
+    if not text.startswith(("http://", "https://")):
+        return ""
+    try:
+        request = urllib.request.Request(text, method="GET", headers={"Range": "bytes=0-0"})
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            if resp.status not in (200, 206):
+                return f"图片地址返回 HTTP {resp.status}：{text}"
+        return ""
+    except urllib.error.HTTPError as exc:
+        return f"图片地址返回 HTTP {exc.code}（文件可能不存在或刚发布未生效）：{text}"
+    except Exception as exc:  # noqa: BLE001
+        return f"图片地址不可达（{exc}）：{text}"
+
+
 def handle(
     rules_root: Path,
     agent_id: str,
@@ -291,6 +315,11 @@ def handle(
         )
     except Exception as exc:  # noqa: BLE001
         return f"错误：{exc}"
+
+    # 远程 URL 写规则前先验活：404 的地址存进去只会在发送时变成"图片发送失败"
+    problem = verify_image_url(image_url)
+    if problem:
+        return f"错误：{problem}。建议直接传工作区里的图片路径，会自动发布到图床。"
     return set_rule(
         rules_root, agent_id, keywords_text, image_url, str(note or "").strip(), user_id
     )
