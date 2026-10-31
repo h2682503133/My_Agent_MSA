@@ -100,6 +100,8 @@ class AgentRuntime:
     SHELL_TOOL_NAMES = {"run-shell", "shell", "command"}
     # 写入 /mnt（Windows 宿主机目录）的工具：需过 dashboard「杂项」写白名单
     MNT_WRITE_TOOLS = {"file-copy", "file-move", "windows-file-copy", "windows-file-move"}
+    # 浏览器操作：等价于"动宿主"，复用 shell 白名单（dashboard 杂项）
+    BROWSER_TOOL_NAMES = {"browser", "browser-open", "browser-click", "browser-type"}
     _agent_instances: OrderedDict[str, "AgentRuntime"] = OrderedDict()
     default_agent: dict[str, str] = {}
     # 模式开关（与 default_agent 并列）：session_id → 模式名，缺省 default。
@@ -1633,6 +1635,23 @@ class AgentRuntime:
         if tool_name in self.SHELL_TOOL_NAMES and not self._shell_allowed(task.user.id):
             block_msg = f"工具 {tool_name} 被拦截：当前用户没有使用 shell 工具的权限。"
             debug_log(f"[{task.user.id}] [shell拦截] {tool_name} 被拦截，用户未在白名单内")
+            emit(self.build_event(
+                task,
+                "assistant_intermediate",
+                text=block_msg,
+                metadata={"visible_to_user": "false", "final": "false"},
+            ))
+            task.tool_log.append("结果:" + block_msg)
+            task.set_temp_dialog_output(block_msg)
+            return
+
+        # 浏览器操作白名单拦截：与"允许访问 Windows 宿主机"复用同一份名单
+        if tool_name in self.BROWSER_TOOL_NAMES and not self._shell_allowed(task.user.id):
+            block_msg = (
+                f"工具 {tool_name} 被拦截：当前用户没有操作宿主浏览器的权限"
+                "（dashboard「杂项」→ 允许访问 Windows 宿主机的 user_id）。"
+            )
+            debug_log(f"[{task.user.id}] [browser拦截] {tool_name} 被拦截，用户未在白名单内")
             emit(self.build_event(
                 task,
                 "assistant_intermediate",

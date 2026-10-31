@@ -1,0 +1,33 @@
+<!-- 浏览器环境：一键起 Edge 调试端口 + 宿主中继 + 发布容器 -->
+<div id="tab-browser" class="tab">
+  <h2>浏览器环境 <span style="font-size:0.8rem;color:var(--dim);">（让智能体操作宿主 Edge：CDP + 宿主中继 + 发布端口）</span></h2>
+
+  <div class="card" style="margin-bottom:12px;">
+    <h3>状态</h3>
+    <div id="br-status" style="font-size:0.9rem;line-height:1.8;">加载中…</div>
+    <div class="session-toolbar" style="margin-top:10px;gap:8px;flex-wrap:wrap;">
+      <button onclick="brRefresh()">刷新</button>
+      <span style="color:var(--dim);font-size:0.85rem;">
+        启动 / 停止请用宿主上的 <strong>MyAgentAdminPanel</strong>（「🌐 浏览器环境」页）——
+        Windows 侧操作都集中在那个面板，集群这边只做状态展示。
+      </span>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:12px;">
+    <h3>最近一次执行结果</h3>
+    <div id="br-last" style="color:var(--dim);font-size:0.85rem;white-space:pre-wrap;">（还没有执行记录）</div>
+  </div>
+
+  <div class="card">
+    <h3>说明</h3>
+    <div style="color:var(--dim);font-size:0.85rem;line-height:1.7;">
+      「启动环境」只是把命令放进队列，真正执行的是宿主上的 <code>deploy/browser-boot.ps1</code>（需保持运行）。<br>
+      它会：① 用独立 profile 启动 Edge（<code>--remote-debugging-port=9222</code>）② 起宿主中继 <code>9223 → 9222</code>
+      ③ 确保 <code>cdp-relay</code> 容器发布 <code>9224</code>。<br>
+      Chromium 136+ 禁止对默认 profile 开调试端口，所以智能体看到的是 <code>C:\edge-agent-profile</code> 那个窗口 ——
+      需要登录的站点请在那个窗口登录一次。<br>
+      权限：只有「允许访问 Windows 宿主机」名单内的 user_id 能用 <code>browser</code> 工具。
+    </div>
+  </div>
+</div>

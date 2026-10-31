@@ -1,4 +1,4 @@
-<Window x:Class="MyAgentAdminPanel.MainWindow"
+﻿<Window x:Class="MyAgentAdminPanel.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="MyAgent 管理控制面板"
@@ -63,6 +63,9 @@
                         Style="{StaticResource NavButton}" Click="NavButton_Click"/>
 
                 <Button x:Name="BtnLLBot" Content="🤖 LLBot"
+                        Style="{StaticResource NavButton}" Click="NavButton_Click"/>
+
+                <Button x:Name="BtnBrowser" Content="🌐 浏览器环境"
                         Style="{StaticResource NavButton}" Click="NavButton_Click"/>
 
                 <Button x:Name="BtnDashboard" Content="📊 Dashboard"

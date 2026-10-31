@@ -118,6 +118,21 @@
             "命中判定：回复正文里**最早出现**的关键词生效，只补一张图；同位置按添加顺序",
             "规则按智能体隔离；配图失败不影响正常回复"
           ]
+        },
+        {
+          "name": "browser",
+          "args": "动作|参数1|参数2",
+          "desc": "操作宿主真实浏览器（Edge，需开 --remote-debugging-port=9222）：打开页面、读页面、点击、输入、截图",
+          "groups": [
+            "工具"
+          ],
+          "notes": [
+            "动作：open|read|click|type|key|back|tabs|wait|shot",
+            "open|url 打开页面；read 读正文与可交互元素（带 #序号）；click|#序号 或 CSS 或可见文本",
+            "type|#序号 或 CSS|内容（密码框内容不记录）；key|Enter；tabs 列标签页；shot|路径 截图",
+            "权限：只有「允许访问 Windows 宿主机的 user_id」（dashboard 杂项）里的用户能用",
+            "用的是你真实的浏览器与登录态，动作结果请在聊天里确认后再继续"
+          ]
         }
       ]
     },

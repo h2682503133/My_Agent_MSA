@@ -10,6 +10,7 @@ import re
 import subprocess
 import shutil
 import asyncio
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -1391,6 +1392,99 @@ async def set_reply_image_source(body: ReplyImageSource):
     )
     return {"ok": True, "source_user": target}
 
+
+
+# ─── 浏览器环境（Edge CDP）启动/状态 ──────────────────────────
+
+_browser_commands: "asyncio.Queue[dict]" = asyncio.Queue()
+_browser_last: dict = {}
+_browser_seq = 0
+
+
+def _browser_node_gateway() -> str:
+    """节点网段网关（Docker Desktop 下 pod 到宿主的可达地址）。"""
+    node_ip = os.environ.get("NODE_IP", "").strip()
+    if node_ip.count(".") == 3:
+        return node_ip.rsplit(".", 1)[0] + ".1"
+    return ""
+
+
+async def _probe_browser() -> dict:
+    """探活：经发布端口 9224 访问 Edge 的 DevTools。"""
+    gateway = _browser_node_gateway()
+    url = os.environ.get("BROWSER_PROBE_URL", "") or (
+        f"http://{gateway}:9224/json/version" if gateway else ""
+    )
+    if not url:
+        return {"ok": False, "reason": "缺少 NODE_IP，无法推导探测地址"}
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return {"ok": False, "reason": f"HTTP {resp.status_code}", "url": url}
+        data = resp.json()
+        return {"ok": True, "browser": data.get("Browser", ""), "url": url}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": str(exc)[:160], "url": url}
+
+
+class BrowserCommand(BaseModel):
+    action: str
+
+
+class BrowserReport(BaseModel):
+    id: int = 0
+    ok: bool = False
+    message: str = ""
+    state: dict | None = None
+
+
+@app.post("/api/browser/command")
+async def enqueue_browser_command(body: BrowserCommand):
+    """面板按钮入口：把 start/stop/status 放进队列，等宿主脚本取走。"""
+    global _browser_seq
+    action = str(body.action or "").strip().lower()
+    if action not in {"start", "stop", "status"}:
+        raise HTTPException(400, "action 只能是 start / stop / status")
+    _browser_seq += 1
+    await _browser_commands.put({"id": _browser_seq, "action": action, "at": time.time()})
+    return {"ok": True, "id": _browser_seq, "queued": action}
+
+
+@app.get("/api/browser/pending")
+async def browser_pending(wait: int = 0):
+    """宿主脚本轮询取命令；wait>0 时挂起等待（最长 25s）。"""
+    timeout = min(max(int(wait or 0), 0), 25)
+    try:
+        command = await asyncio.wait_for(_browser_commands.get(), timeout=timeout) if timeout else _browser_commands.get_nowait()
+    except (asyncio.TimeoutError, asyncio.QueueEmpty):
+        return {"command": None}
+    return {"command": command}
+
+
+@app.post("/api/browser/report")
+async def browser_report(body: BrowserReport):
+    """宿主脚本上报执行结果。"""
+    global _browser_last
+    _browser_last = {
+        "id": body.id,
+        "ok": bool(body.ok),
+        "message": body.message,
+        "state": body.state or {},
+        "at": time.time(),
+    }
+    return {"ok": True}
+
+
+@app.get("/api/browser/state")
+async def browser_state():
+    """面板状态：探活 + 最后一条执行结果 + 队列里还有几条。"""
+    return {
+        "probe": await _probe_browser(),
+        "last": _browser_last,
+        "queued": _browser_commands.qsize(),
+        "node_gateway": _browser_node_gateway(),
+    }
 
 # ─── 入口 ────────────────────────────────────────────────────
 

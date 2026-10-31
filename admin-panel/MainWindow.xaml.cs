@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Controls;
 using MyAgentAdminPanel.Pages;
@@ -11,6 +11,7 @@ public partial class MainWindow : Window
     private readonly KubectlService _kubectl = new();
     private readonly DockerService _docker = new();
     private readonly LlBotService _llbot = new();
+    private readonly BrowserService _browser = new();
     private Button? _activeNav;
 
     // 页面缓存，复用实例
@@ -18,6 +19,7 @@ public partial class MainWindow : Window
     private DeployPage? _deployPage;
     private LLBotPage? _llbotPage;
     private DashboardPage? _dashboardPage;
+    private BrowserPage? _browserPage;
 
     public MainWindow()
     {
@@ -42,6 +44,7 @@ public partial class MainWindow : Window
         else if (btn == BtnDeploy) NavigateToDeploy();
         else if (btn == BtnLLBot) NavigateToLLBot();
         else if (btn == BtnDashboard) NavigateToDashboard();
+        else if (btn == BtnBrowser) NavigateToBrowser();
     }
 
     private void NavigateToPortForward()
@@ -62,6 +65,12 @@ public partial class MainWindow : Window
         ContentFrame.Navigate(_llbotPage);
     }
 
+    private void NavigateToBrowser()
+    {
+        _browserPage ??= new BrowserPage(_browser);
+        ContentFrame.Navigate(_browserPage);
+    }
+
     private void NavigateToDashboard()
     {
         _dashboardPage ??= new DashboardPage();
@@ -72,6 +81,7 @@ public partial class MainWindow : Window
     {
         _kubectl.StopAll();
         _llbot.Dispose();
+        _browser.Dispose();
         base.OnClosed(e);
     }
 }

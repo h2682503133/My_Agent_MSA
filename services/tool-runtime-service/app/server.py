@@ -412,6 +412,18 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 asset_dir=Path(config.IMAGE_ASSET_DIR),
             )
 
+        # 浏览器操作（连宿主 Edge 的 CDP 端口）：页面级人机协作
+        if name in {"browser", "browser-open", "browser-click", "browser-type"}:
+            from app.browser_tools import browser_tools
+
+            action = str(args[0] if args else kwargs.get("action") or "").strip()
+            arg1 = str(args[1] if len(args) > 1 else kwargs.get("arg1") or "").strip()
+            arg2 = str(args[2] if len(args) > 2 else kwargs.get("arg2") or "")
+            # 允许 `browser-click|#3` 这种把动作写在工具名里的简写
+            if name != "browser" and not action:
+                action = name.split("-", 1)[1]
+            return browser_tools.run(action, arg1, arg2, root)
+
         if name == "process-write":
             index = kwargs.get("index") or (args[0] if args else "")
             title = kwargs.get("title") or (args[1] if len(args) > 1 else "")
