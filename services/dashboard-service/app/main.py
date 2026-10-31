@@ -55,6 +55,17 @@ DEFAULT_MISC_SETTINGS = {
     "mnt_write_allowed_users": [],
 }
 
+# 静态资源一律让浏览器回源校验：前端修复发布后不需要用户手动清缓存
+@app.middleware("http")
+async def _no_cache_static(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/") or path in {"/", "/index.html"}:
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 # 静态资源挂载（css / js / tabs 分片）；目录不存在时跳过，便于本地只有 index.html 的场景
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
@@ -363,10 +374,116 @@ async def world_info_delete(entry_id: str):
     return {"ok": True}
 
 
+
+# ─── 单体模式（无 k8s）：本地日志与进程 ─────────────────────
+# 单机部署时 dashboard 拿不到 kubectl，日志与 Pod 状态改从数据目录读：
+#   DASHBOARD_LOG_DIR = <DATA_DIR>/logs
+#   DASHBOARD_PIDS_PATH = <DATA_DIR>/pids.json
+LOCAL_LOG_DIR = os.environ.get("DASHBOARD_LOG_DIR", "").strip()
+LOCAL_PIDS_PATH = os.environ.get("DASHBOARD_PIDS_PATH", "").strip()
+
+
+def _pid_alive(pid: int) -> bool:
+    """跨平台判断进程是否还活着（Windows 不能用 os.kill(pid, 0)）。"""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if not handle:
+                return False
+            code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return bool(ok) and code.value == STILL_ACTIVE
+        except Exception:  # noqa: BLE001
+            return True   # 查不了就别误报"已停止"
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _local_services() -> list[dict]:
+    """把 pids.json 转成和 /api/pods 同形状的列表（供面板复用）。"""
+    if not LOCAL_PIDS_PATH:
+        return []
+    try:
+        data = json.loads(Path(LOCAL_PIDS_PATH).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    services = []
+    for item in data.get("processes", []) or []:
+        if not isinstance(item, dict):
+            continue
+        pid = item.get("pid")
+        alive = _pid_alive(pid) if isinstance(pid, int) else False
+        services.append({
+            "id": str(item.get("id") or ""),
+            "pid": pid,
+            "ports": item.get("ports") or {},
+            "status": "Running" if alive else "Stopped",
+        })
+    return services
+
+
+def _local_log_files() -> list[dict]:
+    if not LOCAL_LOG_DIR or not Path(LOCAL_LOG_DIR).is_dir():
+        return []
+    files = []
+    for path in sorted(Path(LOCAL_LOG_DIR).glob("*.log")):
+        try:
+            stat = path.stat()
+        except Exception:
+            continue
+        files.append({"name": path.name, "size": stat.st_size, "mtime": int(stat.st_mtime)})
+    return files
+
+
+def _read_local_log(name: str, tail: int) -> dict:
+    if not LOCAL_LOG_DIR:
+        return {"logs": "", "error": "未配置 DASHBOARD_LOG_DIR（非单体模式）"}
+    safe = Path(name).name                      # 只允许 logs/ 下的文件名
+    path = Path(LOCAL_LOG_DIR) / safe
+    if not path.is_file() and not safe.endswith(".log"):
+        # 前端传来的通常是服务名（pids.json 里的 id），日志文件名带 .log
+        path = Path(LOCAL_LOG_DIR) / f"{safe}.log"
+    try:
+        path.relative_to(Path(LOCAL_LOG_DIR))
+    except Exception:
+        return {"logs": "", "error": "非法日志名"}
+    if not path.is_file():
+        return {"logs": "", "error": f"日志不存在：{safe}（可选：{[f['name'] for f in _local_log_files()]}）"}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as exc:  # noqa: BLE001
+        return {"logs": "", "error": str(exc)}
+    return {"logs": "\n".join(text[-max(1, tail):]), "error": None}
+
+
 # ─── Pod 状态 ────────────────────────────────────────────────
 
 @app.get("/api/pods")
 async def list_pods():
+    if LOCAL_PIDS_PATH:
+        services = _local_services()
+        return {
+            "mode": "standalone",
+            "services": services,
+            "pods": [
+                {"name": s["id"], "deployment": s["id"], "status": s["status"],
+                 "containers": [{"name": s["id"], "ready": s["status"] == "Running",
+                                 "image": "local (standalone)", "restarts": 0}]}
+                for s in services
+            ],
+        }
     try:
         result = subprocess.run(
             ["kubectl", "-n", NAMESPACE, "get", "pods", "-o", "json"],
@@ -440,6 +557,12 @@ async def restart_service(service: str = Query("")):
 
 @app.get("/api/logs")
 async def get_logs(pod: str = Query(""), tail: int = Query(200), container: str = Query("")):
+    if LOCAL_LOG_DIR:
+        if not pod:
+            return {"mode": "standalone", "files": _local_log_files(), "logs": "", "error": None}
+        result = _read_local_log(pod, tail)
+        result["mode"] = "standalone"
+        return result
     if not pod:
         raise HTTPException(400, "缺少 pod 参数")
     args = ["kubectl", "-n", NAMESPACE, "logs", pod, f"--tail={tail}"]
@@ -453,6 +576,21 @@ async def get_logs(pod: str = Query(""), tail: int = Query(200), container: str 
 
 @app.get("/api/logs/stream")
 async def stream_logs(pod: str = Query(""), tail: int = Query(200), container: str = Query("")):
+    if LOCAL_LOG_DIR:
+        # 没有 kubectl -f：直接把当前尾部作为一帧 SSE 返回，前端按需重连
+        payload = _read_local_log(pod, tail)
+
+        async def local_generate():
+            # 与 kubectl 路径同样的帧格式：data 就是一整行日志（前端直接 append）
+            text = payload.get("logs") or ""
+            if payload.get("error"):
+                yield f"data: [error] {payload['error']}\n\n"
+            for line in text.splitlines():
+                yield f"data: {line}\n\n"
+            yield "event: end\ndata: [end]\n\n"
+
+        return StreamingResponse(local_generate(), media_type="text/event-stream")
+
     if not pod:
         raise HTTPException(400, "缺少 pod 参数")
     args = ["kubectl", "-n", NAMESPACE, "logs", "-f", pod, f"--tail={tail}"]
@@ -1734,6 +1872,79 @@ async def update_tool_permissions(body: ToolPermissionUpdate):
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return {"ok": True, **section}
+
+
+# ─── 运行环境能力（读部署程序写的 capability.json）────────────
+
+CAPABILITY_PATH = Path(os.getenv("CAPABILITY_PATH", "/app/config/capability.json"))
+
+CAPABILITY_LABELS = {
+    "tool_runtime": "工具调用",
+    "memory_mode": "记忆",
+    "openviking": "长期记忆",
+    "clawhub": "技能搜索/安装",
+    "skill_exec": "技能执行",
+    "browser": "浏览器操作",
+    "search": "联网搜索",
+    "external_exec": "外部执行（dsh/codex）",
+    "host_files": "宿主文件",
+    "image_gen": "生图",
+    "fetch_extract": "长页面抽取",
+    "qq_adapter": "QQ 接入",
+    "lan_expose": "局域网访问",
+    "storage": "存储",
+}
+
+
+@app.get("/api/capabilities")
+async def get_capabilities():
+    """运行环境：档位 + 能力取值 + 降级原因（文件由部署程序生成，缺失时按全开处理）。"""
+    data = {}
+    error = ""
+    try:
+        if CAPABILITY_PATH.exists():
+            data = json.loads(CAPABILITY_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        error = f"读取失败：{exc}"
+    features = data.get("features") if isinstance(data.get("features"), dict) else {}
+    items = []
+    for name, label in CAPABILITY_LABELS.items():
+        value = features.get(name)
+        if value is None:
+            enabled, shown = True, "未探测（按可用处理）"
+        elif isinstance(value, bool):
+            enabled, shown = value, ("可用" if value else "不可用")
+        else:
+            text = str(value)
+            enabled = text.lower() not in {"off", "none", "partial", ""}
+            shown = {
+                "builtin": "内置回落（Bing CN）",
+                "searxng": "SearXNG",
+                "local": "本地",
+                "openviking": "OpenViking",
+                "connect": "连接已有",
+                "managed": "本机托管",
+                "nfs": "NFS",
+                "local-dir": "本地目录",
+                "volume": "容器卷",
+                "hostpath": "hostPath",
+                "satori": "Satori",
+                "onebot": "OneBot",
+                "full": "完整",
+                "llm": "LLM 抽取",
+                "keyword": "关键词召回",
+            }.get(text, text)
+        items.append({"key": name, "label": label, "value": shown, "enabled": enabled})
+    return {
+        "path": str(CAPABILITY_PATH),
+        "exists": CAPABILITY_PATH.exists(),
+        "tier": str(data.get("runtime_tier") or ""),
+        "os": str(data.get("os") or ""),
+        "generated_at": str(data.get("generated_at") or ""),
+        "items": items,
+        "degraded": data.get("degraded") or [],
+        "error": error,
+    }
 
 # ─── 入口 ────────────────────────────────────────────────────
 

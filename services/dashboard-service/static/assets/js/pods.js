@@ -13,7 +13,7 @@ async function refreshPods() {
         <td>${p.name}</td>
         <td><span class="status ${p.status === 'Running' ? 'running' : p.status === 'Pending' ? 'pending' : 'failed'}">${p.status}</span></td>
         <td>${p.containers.map(c => `${c.name}${c.ready ? '✓' : '✗'}`).join(', ')}</td>
-        <td>${p.containers.map(c => c.image.split('/').pop()).join(', ')}</td>
+        <td>${p.containers.map(c => ((c.image || '').split('/').pop() || '-')).join(', ')}</td>
         <td>${p.containers.map(c => c.restarts).join(', ')}</td>
         <td><button class="btn" onclick="restartOne('${p.deployment}')">重启</button></td>
       </tr>`).join('') || '<tr><td colspan="6">无数据</td></tr>';

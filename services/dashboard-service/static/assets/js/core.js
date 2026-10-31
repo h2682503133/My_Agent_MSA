@@ -77,6 +77,10 @@ document.querySelectorAll('nav button').forEach(btn => {
     if (btn.dataset.tab === 'process') procLoadUsers();
     if (btn.dataset.tab === 'qq') { refreshQrcode(); qqLoadBindings(); }
     if (btn.dataset.tab === 'misc') loadMiscSettings();
+  // 这三页以前没接进来：切换过去只显示 HTML 骨架（数据永远为空，看着像"设置被清空"）
+  if (btn.dataset.tab === 'toolperm') tpRefresh();
+  if (btn.dataset.tab === 'replyimg') riRefresh();
+  if (btn.dataset.tab === 'browser') brRefresh();
   });
 });
 
