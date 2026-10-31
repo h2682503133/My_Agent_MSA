@@ -408,9 +408,50 @@ def _find_priority_shell_inline(full_text: str):
     }
 
 
+
+# 模型有时会用 XML 风格的 `<tool-call>…</tool-call>` 包一条工具调用
+# （尤其是从别的 agent 框架迁移来的提示词习惯）。它不在我们的协议里，
+# 原样留在正文里既不会执行，用户还会看到一坨标签。
+# 处理方式：把块内容提取出来，转换成 `工具调用:<内容>` 追加到正文末尾，
+# 让后面的解析逻辑照常吃；正文里不留标签。
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<\s*tool[-_]call\s*>(.*?)<\s*/\s*tool[-_]call\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def promote_tool_call_blocks(text: str) -> str:
+    """把 `<tool-call>X</tool-call>` 提升成末尾的 `工具调用:X` 指令。
+
+    - 单块/多块都支持；多块会逐行追加（解析层只取第一条，与既有限制一致）；
+    - 块内如果是多行，压成一行（`工具调用:` 是单行指令）；
+    - 没有块时原样返回（不做任何改写）。
+    """
+    raw = str(text or "")
+    if not raw:
+        return raw
+    blocks = [m.strip() for m in _TOOL_CALL_BLOCK_RE.findall(raw)]
+    if not blocks:
+        return raw
+
+    body = _TOOL_CALL_BLOCK_RE.sub("", raw).strip()
+    lines: list[str] = []
+    for block in blocks:
+        if not block:
+            continue
+        one_line = " ".join(part.strip() for part in block.splitlines() if part.strip())
+        if one_line:
+            lines.append(f"工具调用:{one_line}")
+    if not lines:
+        return body
+    return (body + "\n\n" if body else "") + "\n".join(lines)
+
+
 def parse_syntax(agent, task):
     raw_text = task.consume_temp_dialog_output()
     raw_text = clean_ai_thinking(raw_text)
+    # `<tool-call>…</tool-call>` → 末尾 `工具调用:…`（见 promote_tool_call_blocks）
+    raw_text = promote_tool_call_blocks(raw_text)
     full_text = _normalize_text(raw_text)
 
     reply = full_text
