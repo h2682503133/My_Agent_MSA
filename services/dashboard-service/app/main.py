@@ -1409,23 +1409,87 @@ def _browser_node_gateway() -> str:
     return ""
 
 
-async def _probe_browser() -> dict:
-    """探活：经发布端口 9224 访问 Edge 的 DevTools。"""
-    gateway = _browser_node_gateway()
+async def _probe_mcp(gateway: str) -> dict:
+    """探活 Playwright MCP：发一次 initialize，能拿到 session 就算通。"""
+    url = os.environ.get("BROWSER_MCP_PROBE_URL", "") or (
+        f"http://{gateway}:9335/mcp" if gateway else ""
+    )
+    if not url:
+        return {"ok": False, "mode": "mcp", "reason": "缺少 NODE_IP，无法推导探测地址"}
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "dashboard-probe", "version": "1.0"},
+        },
+    }
+    headers = {"Accept": "application/json, text/event-stream"}
+    try:
+        async with httpx.AsyncClient(timeout=4) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code >= 400:
+            return {"ok": False, "mode": "mcp", "url": url, "reason": f"HTTP {resp.status_code}"}
+        session = resp.headers.get("mcp-session-id", "")
+        server = ""
+        body = resp.text or ""
+        for line in body.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            try:
+                data = json.loads(line[5:].strip())
+            except Exception:  # noqa: BLE001
+                continue
+            info = (data.get("result") or {}).get("serverInfo") or {}
+            server = str(info.get("name") or "")
+            break
+        detail = server or "Playwright"
+        if session:
+            detail += "（session 已建立）"
+        return {"ok": True, "mode": "mcp", "url": url, "browser": detail}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "mode": "mcp", "url": url, "reason": str(exc)[:160]}
+
+
+async def _probe_cdp(gateway: str) -> dict:
+    """探活 CDP 兼容模式（Edge 调试端口 9224）。"""
     url = os.environ.get("BROWSER_PROBE_URL", "") or (
         f"http://{gateway}:9224/json/version" if gateway else ""
     )
     if not url:
-        return {"ok": False, "reason": "缺少 NODE_IP，无法推导探测地址"}
+        return {"ok": False, "mode": "cdp", "reason": "缺少 NODE_IP，无法推导探测地址"}
     try:
         async with httpx.AsyncClient(timeout=3) as client:
             resp = await client.get(url)
         if resp.status_code != 200:
-            return {"ok": False, "reason": f"HTTP {resp.status_code}", "url": url}
+            return {"ok": False, "mode": "cdp", "url": url, "reason": f"HTTP {resp.status_code}"}
         data = resp.json()
-        return {"ok": True, "browser": data.get("Browser", ""), "url": url}
+        return {"ok": True, "mode": "cdp", "url": url, "browser": data.get("Browser", "")}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "reason": str(exc)[:160], "url": url}
+        return {"ok": False, "mode": "cdp", "url": url, "reason": str(exc)[:160]}
+
+
+async def _probe_browser() -> dict:
+    """MCP 优先：通就用 MCP，否则再看 CDP；两者都返回给页面显示。"""
+    gateway = _browser_node_gateway()
+    if not gateway:
+        return {"ok": False, "reason": "缺少 NODE_IP，无法推导探测地址", "mcp": {}, "cdp": {}}
+
+    mcp = await _probe_mcp(gateway)
+    cdp = await _probe_cdp(gateway)
+    active = mcp if mcp.get("ok") else (cdp if cdp.get("ok") else {})
+    return {
+        "ok": bool(active),
+        "mode": active.get("mode", ""),
+        "browser": active.get("browser", ""),
+        "url": active.get("url", ""),
+        "mcp": mcp,
+        "cdp": cdp,
+        "reason": "" if active else (mcp.get("reason") or cdp.get("reason") or "两种模式都不可达"),
+    }
 
 
 class BrowserCommand(BaseModel):

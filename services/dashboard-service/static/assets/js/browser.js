@@ -17,19 +17,27 @@ function brRender(data) {
   const queued = document.getElementById('br-queued');
   if (!status) return;
 
-  const probe = data.probe || {};
-  const ok = probe.ok;
-  const color = ok ? '#4caf50' : '#e8b04b';
-  status.innerHTML = `
-    <div><span style="color:${color};">●</span> ${ok ? '浏览器可达' : '浏览器不可达'}
-      ${probe.browser ? `（${probe.browser}）` : ''}</div>
-    <div style="color:var(--dim);font-size:0.8rem;">探测地址：${probe.url || '（缺少 NODE_IP）'}</div>
-    ${ok ? '' : `<div style="color:var(--dim);font-size:0.8rem;">原因：${probe.reason || '-'}</div>`}
-  `;
+  const mcp = data.probe?.mcp || {};
+  const cdp = data.probe?.cdp || {};
+  const line = (label, probe) => {
+    const ok = probe.ok;
+    const color = ok ? '#4caf50' : '#e8b04b';
+    const extra = ok
+      ? (probe.browser ? `（${probe.browser}）` : '')
+      : (probe.reason ? `　原因：${probe.reason}` : '');
+    return `<div><span style="color:${color};">●</span> ${label}：${ok ? '可达' : '不可达'}${extra}</div>`
+      + (probe.url ? `<div style="color:var(--dim);font-size:0.78rem;margin-left:18px;">${probe.url}</div>` : '');
+  };
 
-  if (queued) {
-    queued.textContent = data.queued ? `队列中还有 ${data.queued} 条待宿主执行` : '';
-  }
+  status.innerHTML =
+    line('Playwright MCP（推荐）', mcp) +
+    line('CDP 兼容模式', cdp) +
+    `<div style="color:var(--dim);font-size:0.8rem;margin-top:6px;">
+       当前生效：${data.probe?.mode ? data.probe.mode.toUpperCase() : '无'}　
+       启动/停止请用宿主上的 MyAgentAdminPanel（「🌐 浏览器环境」页）
+     </div>`;
+
+  if (queued) queued.textContent = data.queued ? `队列中还有 ${data.queued} 条` : '';
 
   if (last) {
     const record = data.last || {};
