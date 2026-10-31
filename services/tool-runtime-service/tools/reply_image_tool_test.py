@@ -103,30 +103,25 @@ def main():
             shutil.rmtree(workspace, ignore_errors=True)
             shutil.rmtree(assets, ignore_errors=True)
 
+        print("工具不允许写全局（全局只由 dashboard 维护）")
+        out = reply_image_tool.handle(root, "main", ["全局脸", "https://img/g.png", "global"], {}, user_id="u1")
+        check("写全局被拒绝", out.startswith("错误：本工具只能维护你自己的表情绑定规则"), out)
+        check("没有生成全局规则文件", not (root / "global" / "main.json").exists())
 
-        print("全局作用域（第 3 参写 global）")
-        reply_image_tool.handle(root, "main", ["全局脸", "https://img/g.png", "global"], {}, user_id="owner")
-        check("写到 global 目录", (root / "global" / "main.json").exists(), str(list(root.rglob("*.json"))))
-        merged = reply_image_tool.load_rules(root, "main", "someone")
+        print("全局规则仍能被读取（由管理员在 dashboard 写入）")
+        reply_image_tool.save_rules(
+            root, "main", [{"keywords": ["全局脸"], "image": "https://img/g.png", "note": ""}],
+            reply_image_tool.GLOBAL_SCOPE_DIR,
+        )
+        merged = reply_image_tool.load_rules(root, "main", "u9")
         check("任意用户都能读到全局", any(r["image"] == "https://img/g.png" for r in merged), str(merged))
-        out = reply_image_tool.handle(root, "main", [], {}, user_id="someone")
-        check("列表里能看到全局段", "全局" in out, out[:80])
-
-
-        print("全局：按关键词去重（不再有 @source）")
-        reply_image_tool.save_rules(root, "main", [], reply_image_tool.GLOBAL_SCOPE_DIR)  # 清掉上一段的全局规则
-        reply_image_tool.handle(root, "main", ["去重脸", "https://img/g1.png", "global"], {}, user_id="u1")
-        out = reply_image_tool.handle(root, "main", ["去重脸", "https://img/g2.png", "global"], {}, user_id="u2")
-        check("同关键词不重复添加", "已存在" in out, out)
-        global_rules = reply_image_tool.load_rules(root, "main", reply_image_tool.GLOBAL_SCOPE_DIR)
-        check("全局只有 1 条", len(global_rules) == 1, str(global_rules))
-        check("仍是先写入的那张图", global_rules[0]["image"] == "https://img/g1.png", str(global_rules[0]))
+        check("带 scope=global 标记", merged[0].get("scope") == "global", str(merged[0]))
 
         print("本人同关键词优先（全局那条不再拼进来）")
-        reply_image_tool.handle(root, "main", ["去重脸", "https://img/mine.png"], {}, user_id="u3")
-        merged = reply_image_tool.load_rules(root, "main", "u3")
-        check("只剩本人的", len(merged) == 1 and merged[0]["image"] == "https://img/mine.png", str(merged))
-        other = reply_image_tool.load_rules(root, "main", "u4")
+        reply_image_tool.handle(root, "main", ["全局脸", "https://img/mine.png"], {}, user_id="u9")
+        mine = reply_image_tool.load_rules(root, "main", "u9")
+        check("只剩本人的", len(mine) == 1 and mine[0]["image"] == "https://img/mine.png", str(mine))
+        other = reply_image_tool.load_rules(root, "main", "u10")
         check("没设过的用户仍看到全局", len(other) == 1 and other[0]["scope"] == "global", str(other))
         check("@source 已不再生效",
               "已存在" not in reply_image_tool.handle(root, "main", ["@source", "boss"], {}, user_id="u1")

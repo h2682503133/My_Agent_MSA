@@ -274,12 +274,13 @@ def handle(
     keywords_text = str(keywords_text or "").strip()
     image = str(image or "").strip()
 
-    # 第 3 参可以是备注，也可以显式写 global / 全局（写全局规则，对所有人生效）
-    scope_raw = str(note or "").strip().lower()
-    is_global = scope_raw in {"global", "全局", "所有", "all"}
-    if is_global:
-        user_id = GLOBAL_SCOPE_DIR
-        note = ""
+    # 第 3 参只能当备注：全局规则只能由管理员在 dashboard「表情绑定」页维护，
+    # 工具侧不允许写全局（避免越权影响其他用户）。
+    if str(note or "").strip().lower() in {"global", "全局", "所有", "all"}:
+        return (
+            "错误：本工具只能维护你自己的表情绑定规则，不能写全局。"
+            "需要让某条规则对所有人生效，请让管理员在 dashboard「表情绑定」页点「加入全局」。"
+        )
 
     if not keywords_text and not image:
         return list_rules(rules_root, agent_id, user_id)

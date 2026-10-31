@@ -432,6 +432,16 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
 
             return browser_tools.run(action, arg1, arg2, root)
 
+        # 黑名单自助工具（L0）：只能改自己
+        if name in {"tool-blacklist", "blacklist"}:
+            from app.tool_blacklist import handle as blacklist_handle
+
+            return blacklist_handle(
+                list(args),
+                dict(kwargs),
+                str(kwargs.get("user_id") or "default"),
+            )
+
         if name == "process-write":
             index = kwargs.get("index") or (args[0] if args else "")
             title = kwargs.get("title") or (args[1] if len(args) > 1 else "")

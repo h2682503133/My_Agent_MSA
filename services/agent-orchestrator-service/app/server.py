@@ -191,7 +191,20 @@ class AgentOrchestratorService(agent_orchestrator_pb2_grpc.AgentOrchestratorServ
             )
 
 
+def _bootstrap_permissions() -> None:
+    """启动时把「杂项」里的 shell/宿主机权限迁到工具权限（只做一次）。"""
+    try:
+        from app import tool_permissions
+
+        moved = tool_permissions.migrate_from_misc_settings()
+        if moved:
+            log(f"[permission] 迁移完成：{moved}")
+    except Exception as exc:  # noqa: BLE001
+        log(f"[permission] 迁移失败（忽略）：{exc}")
+
+
 def serve():
+    _bootstrap_permissions()
     # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
     max_msg_bytes = 128 * 1024 * 1024
     server = grpc.server(

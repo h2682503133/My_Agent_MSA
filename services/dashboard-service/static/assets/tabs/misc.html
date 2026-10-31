@@ -22,43 +22,14 @@
         <span class="slider"></span>
       </label>
     </div>
+
     <div class="switch-row">
       <div class="switch-info">
-        <div class="sw-title">shell 权限限制</div>
-        <div class="sw-desc">开启后仅下方白名单中的 user_id 可以使用 shell 工具；关闭则不做限制（所有用户可用）。</div>
-      </div>
-      <label class="switch">
-        <input type="checkbox" id="misc-shell-restrict" onchange="saveMiscSettings()">
-        <span class="slider"></span>
-      </label>
-    </div>
-    <div class="switch-row" style="align-items:flex-start;">
-      <div class="switch-info">
-        <div class="sw-title">允许使用 shell 的 user_id</div>
-        <div class="sw-desc">逗号或换行分隔多个 user_id；仅在上方「shell 权限限制」开启时生效。</div>
-        <textarea id="misc-shell-users" rows="4" placeholder="例如：&#10;h268&#10;dujiawei" style="margin-top:10px;min-height:70px;height:70px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-size:0.85rem;"></textarea>
-        <div style="margin-top:8px;">
-          <button class="btn green" onclick="saveShellUsers()">保存白名单</button>
-        </div>
-      </div>
-    </div>
-    <div class="switch-row">
-      <div class="switch-info">
-        <div class="sw-title">Windows 宿主机访问权限</div>
-        <div class="sw-desc">开启后仅下方白名单中的 user_id 可以访问 Windows 宿主机：复制/移动写入 /mnt 目录；关闭则不做限制。</div>
-      </div>
-      <label class="switch">
-        <input type="checkbox" id="misc-mnt-restrict" onchange="saveMiscSettings()">
-        <span class="slider"></span>
-      </label>
-    </div>
-    <div class="switch-row" style="align-items:flex-start;">
-      <div class="switch-info">
-        <div class="sw-title">允许访问 Windows 宿主机的 user_id</div>
-        <div class="sw-desc">逗号或换行分隔多个 user_id；仅在上方「Windows 宿主机访问权限」开启时生效。</div>
-        <textarea id="misc-mnt-users" rows="4" placeholder="例如：&#10;h268&#10;dujiawei" style="margin-top:10px;min-height:70px;height:70px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-size:0.85rem;"></textarea>
-        <div style="margin-top:8px;">
-          <button class="btn green" onclick="saveHostUsers()">保存白名单</button>
+        <div class="sw-title">权限设置已并入「工具权限」</div>
+        <div class="sw-desc">
+          shell 权限、Windows 宿主机访问权限统一在左侧「工具权限」页维护：
+          L3 白名单 = 允许执行（含 shell、生图、删除文件等），L4 白名单 = 允许穿透宿主机（宿主文件、浏览器、dsh、codex）；
+          名单里写 <code>*</code> 表示对所有用户开放。旧的 shell / 宿主机白名单已在服务启动时自动迁移过去。
         </div>
       </div>
     </div>

@@ -1,0 +1,112 @@
+<!-- 工具权限：分级说明 + L1 黑名单 / L2-L4 白名单（只在这一页维护） -->
+<div id="tab-toolperm" class="tab">
+  <h2>工具权限 <span style="font-size:0.8rem;color:var(--dim);">（dashboard 本身是密码级特权通道，不受这些分级限制）</span></h2>
+
+  <div class="card" style="margin-bottom:8px;">
+    <h3>分级说明</h3>
+    <div id="tp-levels" style="font-size:0.85rem;line-height:1.8;"></div>
+  </div>
+
+  <div class="card" style="margin-bottom:8px;">
+    <div class="session-toolbar" style="margin-bottom:6px;gap:8px;align-items:center;">
+      <h3 style="margin:0;">工具档位一览</h3>
+      <span style="color:var(--dim);font-size:0.78rem;">（来自 TOOL.json 的 groups 标签，改文件即生效；这里只读）</span>
+      <input id="tp-tool-search" placeholder="按工具名过滤" style="min-width:200px;margin-left:auto;" oninput="tpRenderTools()">
+    </div>
+    <div id="tp-tool-list" style="max-height:260px;overflow:auto;font-size:0.78rem;font-family:Consolas;"></div>
+  </div>
+  <div class="card" style="margin-bottom:8px;">
+    <h3>名单</h3>
+    <div style="color:var(--dim);font-size:0.8rem;margin-bottom:8px;">
+      每行一个 user_id，也可以用逗号/空格分隔；留空表示该档没有名单；写 <code>*</code> 表示该档对所有用户开放。
+      <br>L1 是<b>黑名单</b>（名单内用户被屏蔽可屏蔽档）；L2/L3/L4 是<b>白名单</b>（只有名单内用户可用）。<br>原来的「杂项 → shell 权限 / Windows 宿主机权限」已经并到这里（L3 / L4），服务启动时会自动迁移一次。
+    </div>
+    <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <div style="margin-bottom:4px;">L1 黑名单（按用户屏蔽）</div>
+        <textarea id="tp-blacklist" rows="4" style="width:100%;font-family:Consolas;" placeholder="2195239690"></textarea>
+      </div>
+      <div>
+        <div style="margin-bottom:4px;">L2 白名单（全局配置写）</div>
+        <textarea id="tp-l2" rows="4" style="width:100%;font-family:Consolas;"></textarea>
+      </div>
+      <div>
+        <div style="margin-bottom:4px;">L3 白名单（执行/外发/删除）</div>
+        <textarea id="tp-l3" rows="4" style="width:100%;font-family:Consolas;"></textarea>
+      </div>
+      <div>
+        <div style="margin-bottom:4px;">L4 白名单（穿透宿主机）</div>
+        <textarea id="tp-l4" rows="4" style="width:100%;font-family:Consolas;"></textarea>
+      </div>
+    </div>
+    <div class="session-toolbar" style="margin-top:10px;gap:8px;align-items:center;">
+      <button onclick="tpSave()">保存名单</button>
+      <button onclick="tpRefresh()">刷新</button>
+      <span id="tp-status" style="color:var(--dim);font-size:0.8rem;"></span>
+    </div>
+  </div>
+
+
+  <div class="card" style="margin-bottom:8px;">
+    <h3>全局设定里注入的权限说明</h3>
+    <div style="color:var(--dim);font-size:0.8rem;margin-bottom:8px;">
+      这里写的内容会追加到「全局设定」末尾：通用注入对所有人生效，其余只注入该用户可用的<b>最高档</b>（L0 恒有；L1 未被黑名单才有；L2/L3/L4 看白名单）。
+      留空则该档不追加。工具清单本身仍由系统自动生成（只列当前能用的）。
+    </div>
+        <div style="margin-bottom:8px;">
+      <div style="margin-bottom:4px;">黑名单提示（正常用户，建议保留 tool-blacklist 用法）</div>
+      <textarea id="tp-blacklist-hint" rows="2" style="min-height:56px;font-family:Consolas;"></textarea>
+      <div style="color:var(--dim);font-size:0.75rem;margin-top:2px;">
+        留空则用默认：如需缩小自己的操作范围，可调用 工具调用:tool-blacklist|用户id| …
+      </div>
+    </div>
+    <div style="margin-bottom:8px;">
+      <div style="margin-bottom:4px;">黑名单提示（已被限制的用户）</div>
+      <textarea id="tp-blocked-hint" rows="2" style="min-height:56px;font-family:Consolas;"></textarea>
+      <div style="color:var(--dim);font-size:0.75rem;margin-top:2px;">
+        留空则用默认：注意：当前用户的操作范围被限制，只能做上面这些查询/读取类操作…
+      </div>
+    </div>
+<div style="margin-bottom:8px;">
+      <div style="margin-bottom:4px;">通用注入（所有用户都会收到，不分档位）</div>
+      <textarea id="tp-note-all" rows="3" style="width:100%;font-family:Consolas;"
+                placeholder="例如：涉及删除、付款、发送消息给第三方前，先向用户确认。"></textarea>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <div style="margin-bottom:4px;">L0 公开（所有用户都会收到）</div>
+        <textarea id="tp-note-l0" rows="3" style="width:100%;font-family:Consolas;" placeholder="例如：你只能查看与查询，不要尝试写入或执行。"></textarea>
+      </div>
+      <div>
+        <div style="margin-bottom:4px;">L1 可屏蔽</div>
+        <textarea id="tp-note-l1" rows="3" style="width:100%;font-family:Consolas;" placeholder="例如：你可以在自己的工作区写文件、维护自己的记忆。"></textarea>
+      </div>
+      <div>
+        <div style="margin-bottom:4px;">L2 白名单·配置</div>
+        <textarea id="tp-note-l2" rows="3" style="width:100%;font-family:Consolas;" placeholder="例如：你可以修改全局世界书与技能库，注意会影响所有人的提示词。"></textarea>
+      </div>
+      <div>
+        <div style="margin-bottom:4px;">L3 白名单·执行</div>
+        <textarea id="tp-note-l3" rows="3" style="width:100%;font-family:Consolas;" placeholder="例如：你可以执行 shell，注意先确认路径再操作。"></textarea>
+      </div>
+      <div>
+        <div style="margin-bottom:4px;">L4 白名单·宿主</div>
+        <textarea id="tp-note-l4" rows="3" style="width:100%;font-family:Consolas;" placeholder="例如：你可以操作宿主 Windows 的文件与浏览器。"></textarea>
+      </div>
+    </div>
+    <div class="session-toolbar" style="margin-top:10px;gap:8px;align-items:center;">
+      <button onclick="tpSaveNotes()">保存说明</button>
+      <span id="tp-notes-status" style="color:var(--dim);font-size:0.8rem;"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>说明</h3>
+    <div style="color:var(--dim);font-size:0.85rem;line-height:1.7;">
+      判定在 agent-orchestrator-service 里做（工具调用的统一入口）；本页只写配置到
+      <code>orchestrator/config/system_settings.json</code> 的 <code>tool_permission</code> 段，保存即生效、无需重启。<br>
+      提示词只告诉模型「当前能用什么」和「有个工具可以操作黑名单」，<b>不会</b>列出它无权使用的工具，也不会解释分级标准；被拦时才会在报错里说明档位。<br>
+      用户可以用 <code>工具调用:tool-blacklist|用户id|</code> 把自己加入黑名单（只能改自己）；<b>移出只能在这里手动操作</b>——移除对应 user_id 后保存即可。
+    </div>
+  </div>
+</div>

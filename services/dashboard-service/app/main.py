@@ -137,7 +137,10 @@ def _load_misc_settings() -> dict:
 
 @app.get("/api/misc/settings")
 async def get_misc_settings():
-    return _load_misc_settings()
+    data = _load_misc_settings()
+    # 权限设置单独走 /api/tool_permissions，杂项页不再展示
+    data.pop("tool_permission", None)
+    return data
 
 @app.put("/api/misc/settings")
 async def update_misc_settings(body: MiscSettingsUpdate):
@@ -1587,6 +1590,150 @@ async def browser_state():
         "queued": _browser_commands.qsize(),
         "node_gateway": _browser_node_gateway(),
     }
+
+
+
+TOOL_CATALOG_PATH = CONFIG_ROOT / "orchestrator" / "system_prompt" / "TOOL.json"
+_LEVEL_TOKENS = {"L0": 0, "L1": 1, "L2": 2, "L3": 3, "L4": 4}
+
+
+def _tool_levels_from_catalog() -> list[dict]:
+    """工具 → 档位（来自 TOOL.json 的 groups 标签）；只读展示用。"""
+    try:
+        data = json.loads(TOOL_CATALOG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows: list[dict] = []
+    for section in data.get("sections") or []:
+        for tool in section.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            levels = [
+                str(item).upper() for item in (tool.get("groups") or [])
+                if str(item).upper() in _LEVEL_TOKENS
+            ]
+            rows.append({
+                "name": str(tool.get("name") or ""),
+                "section": str(section.get("id") or ""),
+                "args": str(tool.get("args") or ""),
+                "level": min(levels, key=lambda x: _LEVEL_TOKENS[x]) if levels else "L4",
+                "levels": sorted(levels, key=lambda x: _LEVEL_TOKENS[x]) or ["L4"],
+            })
+    return rows
+
+
+# ─── 工具权限（分级配置）────────────────────────────────────
+
+PERMISSION_LEVELS = [
+    {
+        "key": "L0",
+        "name": "公开",
+        "mode": "所有用户",
+        "desc": "只读查询、对用户说话/发图、技能说明书；无副作用",
+    },
+    {
+        "key": "L1",
+        "name": "可屏蔽",
+        "mode": "所有用户 + 按用户黑名单",
+        "desc": "只影响本人的写入：工作区文件、自己的记忆与表情规则、技能执行、GET 抓取",
+    },
+    {
+        "key": "L2",
+        "name": "白名单·配置",
+        "mode": "白名单",
+        "desc": "写全局/跨用户的东西：世界书、技能库（安装/删除）、把表情规则设为全局",
+    },
+    {
+        "key": "L3",
+        "name": "白名单·执行",
+        "mode": "白名单",
+        "desc": "容器/外部 VM 内执行与外发：shell、非 GET 外发、生图、对外开端口、删除文件",
+    },
+    {
+        "key": "L4",
+        "name": "白名单·宿主",
+        "mode": "白名单（最严）",
+        "desc": "穿透到 Windows 宿主机：宿主文件复制/移动、真实浏览器、dsh、codex",
+    },
+]
+
+
+def _permission_settings() -> dict:
+    data = _load_misc_settings()
+    section = data.get("tool_permission")
+    return section if isinstance(section, dict) else {}
+
+
+class ToolPermissionUpdate(BaseModel):
+    L1_blacklist_users: list[str] | None = None
+    L2_whitelist_users: list[str] | None = None
+    L3_whitelist_users: list[str] | None = None
+    L4_whitelist_users: list[str] | None = None
+    # 按档填写的「注入到全局设定末尾」的权限说明（留空则该档不追加）
+    level_notes: dict[str, str] | None = None
+    # 黑名单提示词（留空 = 用内置默认文案）
+    blacklist_hint: str | None = None
+    blacklist_blocked_hint: str | None = None
+
+
+@app.get("/api/tool_permissions")
+async def get_tool_permissions():
+    """分级说明 + 当前名单（dashboard 是密码级特权通道，这里不受工具分级限制）。"""
+    section = _permission_settings()
+    users: set[str] = set()
+    for key, value in section.items():
+        if isinstance(value, list):
+            users.update(str(item).strip() for item in value if str(item).strip())
+    return {
+        "levels": PERMISSION_LEVELS,
+        "L1_blacklist_users": sorted(section.get("L1_blacklist_users") or []),
+        "L2_whitelist_users": sorted(section.get("L2_whitelist_users") or []),
+        "L3_whitelist_users": sorted(section.get("L3_whitelist_users") or []),
+        "L4_whitelist_users": sorted(section.get("L4_whitelist_users") or []),
+        "level_notes": {str(k): str(v) for k, v in (section.get("level_notes") or {}).items()}
+        if isinstance(section.get("level_notes"), dict) else {},
+        "blacklist_hint": str(section.get("blacklist_hint") or ""),
+        "blacklist_blocked_hint": str(section.get("blacklist_blocked_hint") or ""),
+        "blacklist_hint_default": (
+            "如需缩小自己的操作范围，可调用 `工具调用:tool-blacklist|用户id|` "
+            "把该用户加入黑名单（只能加入，解除需要管理员操作）。"
+        ),
+        "blacklist_blocked_hint_default": (
+            "注意：当前用户的操作范围被限制，只能做上面这些查询/读取类操作；需要恢复请联系管理员。"
+        ),
+        "tools": _tool_levels_from_catalog(),
+        "known_users": sorted(users),
+        "settings_path": str(MISC_SETTINGS_PATH),
+    }
+
+
+@app.put("/api/tool_permissions")
+async def update_tool_permissions(body: ToolPermissionUpdate):
+    data = _load_misc_settings()
+    section = data.get("tool_permission")
+    if not isinstance(section, dict):
+        section = {}
+    payload = body.model_dump(exclude_none=True)
+    for key, values in payload.items():
+        if key in {"blacklist_hint", "blacklist_blocked_hint"}:
+            section[key] = str(values or "").strip()
+            continue
+        if key == "level_notes":
+            notes = {
+                str(level): str(text).strip()
+                for level, text in (values or {}).items()
+                if str(level) in {"ALL", "L0", "L1", "L2", "L3", "L4"} and str(text).strip()
+            }
+            section["level_notes"] = notes
+            continue
+        cleaned = sorted({str(item).strip() for item in values if str(item).strip()})
+        section[key] = cleaned
+    data["tool_permission"] = section
+    MISC_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MISC_SETTINGS_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"ok": True, **section}
 
 # ─── 入口 ────────────────────────────────────────────────────
 

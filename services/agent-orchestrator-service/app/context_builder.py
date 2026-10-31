@@ -705,6 +705,7 @@ def _render_section(
     section_id: str,
     include_tools: set[str],
     exclude_tools: set[str],
+    allowed_levels: set[int] | None = None,
 ) -> str:
     """渲染单个段：有 text 用 text，否则按工具选择器渲染工具条目。"""
     title = str(section.get("title") or "").strip()
@@ -722,6 +723,8 @@ def _render_section(
             continue
         if not _selected(tool_name, tool.get("groups"), include_tools, exclude_tools):
             continue
+        if allowed_levels is not None and tool_level(tool) not in allowed_levels:
+            continue
         line = render_tool_line(tool)
         if line:
             lines.append(line)
@@ -732,8 +735,28 @@ def _render_section(
     return f"{title}\n\n{body}" if title else body
 
 
-def render_tool_catalog(catalog: dict, options: dict | None = None) -> str:
-    """按选项把全局工具目录渲染成待注入文本。"""
+_LEVEL_TOKENS = {"L0": 0, "L1": 1, "L2": 2, "L3": 3, "L4": 4}
+
+
+def tool_level(tool: dict) -> int:
+    """工具档位：`groups` 里的 L0–L4；没有标签按 L4（fail-closed）。"""
+    levels = []
+    for item in (tool or {}).get("groups") or []:
+        token = str(item).strip().upper()
+        if token in _LEVEL_TOKENS:
+            levels.append(_LEVEL_TOKENS[token])
+    return max(levels) if levels else 4
+
+
+def render_tool_catalog(
+    catalog: dict,
+    options: dict | None = None,
+    allowed_levels: set[int] | None = None,
+) -> str:
+    """按选项把全局工具目录渲染成待注入文本。
+
+    `allowed_levels` 为 None 时不过滤（兼容旧调用）；给定集合则只渲染档位命中的工具。
+    """
     options = options or {}
     include_sections, exclude_sections = _normalize_selector(options.get("sections"))
     include_tools, exclude_tools = _normalize_selector(options.get("tools"))
@@ -753,13 +776,18 @@ def render_tool_catalog(catalog: dict, options: dict | None = None) -> str:
             continue
         if not _selected(section_id, [], include_sections, exclude_sections):
             continue
-        rendered = _render_section(section, section_id, include_tools, exclude_tools)
+        rendered = _render_section(section, section_id, include_tools, exclude_tools, allowed_levels)
         if rendered:
             blocks.append(rendered)
     return "\n\n".join(blocks)
 
 
-def build_tool_injection(prompt_dir: Path, declared_name: str, agent_id: str = "") -> str:
+def build_tool_injection(
+    prompt_dir: Path,
+    declared_name: str,
+    agent_id: str = "",
+    allowed_levels: set[int] | None = None,
+) -> str:
     """构建某智能体的 TOOL 注入文本；无内容返回 ""。
 
     - files 里写 `TOOL.md`：读该文件（支持 `@ref=` 跳到另一处，见 prompt_refs），
@@ -796,7 +824,7 @@ def build_tool_injection(prompt_dir: Path, declared_name: str, agent_id: str = "
         debug_log("[tool] 全局 TOOL.json 缺失或为空，仅注入 TOOL.md 正文")
         return body
 
-    text = render_tool_catalog(catalog, options)
+    text = render_tool_catalog(catalog, options, allowed_levels)
     if body:
         if str(options.get("body_position") or "after").strip().lower() == "before":
             text = f"{body}\n\n{text}" if text else body
@@ -906,6 +934,16 @@ class ContextBuilder:
                 # 记下下标供锚点 before_persona 定位（它也可能被 @when= 过滤掉）
                 parts.global_index = _add_segment(parts, content, when)
 
+            # 紧跟全局设定：当前用户可用的工具清单（只讲能用的，不暴露分级标准）
+            try:
+                from app import tool_permissions
+
+                permission_note = tool_permissions.describe_for_prompt(agent.user_id)
+                if permission_note:
+                    _add_segment(parts, permission_note, when)
+            except Exception as exc:  # noqa: BLE001
+                debug_log(f"[{agent.user_id}] 权限说明注入失败（已跳过）: {exc}")
+
         for filename in self._config.get("files", []):
             key = str(filename).strip().lower()
 
@@ -931,7 +969,16 @@ class ContextBuilder:
 
             if key in _TOOL_FILE_NAMES:
                 # TOOL：选项写在 TOOL.md，清单统一来自全局 TOOL.json
-                tool_content = build_tool_injection(prompt_dir, filename, agent_id=agent.id)
+                try:
+                    from app import tool_permissions
+
+                    _allowed = set(tool_permissions.available_levels(agent.user_id))
+                except Exception as exc:  # noqa: BLE001
+                    debug_log(f"[tool] 解析用户可用档位失败（按不过滤处理）: {exc}")
+                    _allowed = None
+                tool_content = build_tool_injection(
+                    prompt_dir, filename, agent_id=agent.id, allowed_levels=_allowed
+                )
                 if tool_content:
                     parts.tool_indexes.append(len(parts.messages))
                     parts.messages.append({"role": "system", "content": tool_content})

@@ -152,6 +152,11 @@ PROCESS_DIR = os.getenv("PROCESS_DIR", "/app/system_prompts/orchestrator/config/
 # 世界书（World Info）存储：与 PROCESS 同级（orchestrator 侧同目录为 /app/config/world_info）
 WORLD_INFO_DIR = os.getenv("WORLD_INFO_DIR", "/app/system_prompts/orchestrator/config/world_info")
 
+# dashboard「杂项」/「工具权限」写入的全局设置（与 orchestrator 共用同一文件）
+SYSTEM_SETTINGS_PATH = os.getenv(
+    "SYSTEM_SETTINGS_PATH", "/app/system_prompts/orchestrator/config/system_settings.json"
+)
+
 # 回复关键词 → 自动配图规则（与 orchestrator 共用同一份 NFS 文件）
 REPLY_IMAGES_DIR = os.getenv(
     "REPLY_IMAGES_DIR", "/app/system_prompts/orchestrator/config/.reply_images"

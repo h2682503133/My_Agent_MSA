@@ -6,6 +6,7 @@ from typing import Callable
 
 from app import config
 from app import reply_images
+from app import tool_permissions
 from app import world_info_manager
 from app import mode as mode_switch
 from app import user_commands
@@ -96,12 +97,6 @@ class AgentRuntime:
     """
 
     MAX_INSTANCES = 20
-    # tool-runtime 中执行 shell 的工具名（运行任意命令）
-    SHELL_TOOL_NAMES = {"run-shell", "shell", "command"}
-    # 写入 /mnt（Windows 宿主机目录）的工具：需过 dashboard「杂项」写白名单
-    MNT_WRITE_TOOLS = {"file-copy", "file-move", "windows-file-copy", "windows-file-move"}
-    # 浏览器操作：等价于"动宿主"，复用 shell 白名单（dashboard 杂项）
-    BROWSER_TOOL_NAMES = {"browser", "browser-open", "browser-click", "browser-type"}
     _agent_instances: OrderedDict[str, "AgentRuntime"] = OrderedDict()
     default_agent: dict[str, str] = {}
     # 模式开关（与 default_agent 并列）：session_id → 模式名，缺省 default。
@@ -689,16 +684,6 @@ class AgentRuntime:
 
         return cls._continue_task(task, emit)
 
-    @classmethod
-    def _shell_allowed(cls, user_id: str) -> bool:
-        """shell 白名单校验：未开启限制时所有用户可用。"""
-        data = load_system_settings()
-        if not bool(data.get("shell_restriction_enabled", False)):
-            return True
-        allowed = data.get("shell_allowed_users") or []
-        allowed_set = {str(u).strip() for u in allowed if str(u).strip()}
-        return str(user_id) in allowed_set
-
     @staticmethod
     def _is_windows_path(value) -> bool:
         """是否 Windows 盘路径或 /mnt 路径。"""
@@ -706,16 +691,6 @@ class AgentRuntime:
         if raw.startswith("/mnt/"):
             return True
         return bool(re.match(r"^[A-Za-z]:[\\/]", raw))
-
-    @classmethod
-    def _mnt_write_allowed(cls, user_id: str) -> bool:
-        """/mnt 写白名单校验：未开启限制时所有用户可用。"""
-        data = load_system_settings()
-        if not bool(data.get("mnt_write_restriction_enabled", False)):
-            return True
-        allowed = data.get("mnt_write_allowed_users") or []
-        allowed_set = {str(u).strip() for u in allowed if str(u).strip()}
-        return str(user_id) in allowed_set
 
     @classmethod
     def get_agent(cls, agent_id: str, session_id: str, user_id: str = "default") -> "AgentRuntime":
@@ -1631,51 +1606,21 @@ class AgentRuntime:
         args = tool_call["args"]
         debug_log(f"[{self.user_id}] [工具执行] {self.id} → {tool_name} {args}")
 
-        # shell 白名单拦截：dashboard「杂项」可配置哪些 user_id 能用 shell
-        if tool_name in self.SHELL_TOOL_NAMES and not self._shell_allowed(task.user.id):
-            block_msg = f"工具 {tool_name} 被拦截：当前用户没有使用 shell 工具的权限。"
-            debug_log(f"[{task.user.id}] [shell拦截] {tool_name} 被拦截，用户未在白名单内")
+        # 统一权限拦截（L0–L4）：dashboard 是密码级特权通道，不走这里
+        allowed, deny_reason = tool_permissions.check(
+            task.user.id, tool_name, list(args), dict(tool_call.get("kwargs") or {})
+        )
+        if not allowed:
+            debug_log(f"[{task.user.id}] [权限拦截] {tool_name}: {deny_reason}")
             emit(self.build_event(
                 task,
                 "assistant_intermediate",
-                text=block_msg,
+                text=deny_reason,
                 metadata={"visible_to_user": "false", "final": "false"},
             ))
-            task.tool_log.append("结果:" + block_msg)
-            task.set_temp_dialog_output(block_msg)
+            task.tool_log.append("结果:" + deny_reason)
+            task.set_temp_dialog_output(deny_reason)
             return
-
-        # 浏览器操作白名单拦截：与"允许访问 Windows 宿主机"复用同一份名单
-        if tool_name in self.BROWSER_TOOL_NAMES and not self._shell_allowed(task.user.id):
-            block_msg = (
-                f"工具 {tool_name} 被拦截：当前用户没有操作宿主浏览器的权限"
-                "（dashboard「杂项」→ 允许访问 Windows 宿主机的 user_id）。"
-            )
-            debug_log(f"[{task.user.id}] [browser拦截] {tool_name} 被拦截，用户未在白名单内")
-            emit(self.build_event(
-                task,
-                "assistant_intermediate",
-                text=block_msg,
-                metadata={"visible_to_user": "false", "final": "false"},
-            ))
-            task.tool_log.append("结果:" + block_msg)
-            task.set_temp_dialog_output(block_msg)
-            return
-
-        # /mnt 写白名单拦截：写类工具 + Windows 盘 / /mnt 路径
-        if tool_name in self.MNT_WRITE_TOOLS and not self._mnt_write_allowed(task.user.id):
-            if any(self._is_windows_path(a) for a in args):
-                block_msg = f"工具 {tool_name} 被拦截：当前用户没有 /mnt 写入权限。"
-                debug_log(f"[{task.user.id}] [/mnt拦截] {tool_name} 被拦截，用户未在白名单内")
-                emit(self.build_event(
-                    task,
-                    "assistant_intermediate",
-                    text=block_msg,
-                    metadata={"visible_to_user": "false", "final": "false"},
-                ))
-                task.tool_log.append("结果:" + block_msg)
-                task.set_temp_dialog_output(block_msg)
-                return
 
         emit(self.build_event(
             task,
