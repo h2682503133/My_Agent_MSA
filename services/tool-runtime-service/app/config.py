@@ -165,5 +165,9 @@ REPLY_IMAGE_BASE_URL = os.getenv(
 IMAGE_ASSET_DIR = os.getenv("IMAGE_ASSET_DIR", "/app/assets/images")
 # 图床对外 URL 前缀（image-url / send-image 用；必须是集群内可达地址）
 IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "http://image-assets-service/assets")
+
+# 浏览器：优先用 Playwright MCP（浏览器由 MCP 托管）；留空则退回 CDP 直连宿主 Edge。
+# MCP 端点要能从 pod 访问（通常经「发布端口 → 宿主中继 → MCP 的 9333」）。
+BROWSER_MCP_URL = os.getenv("BROWSER_MCP_URL", "")
 WORLD_INFO_PATH = os.getenv("WORLD_INFO_PATH", os.path.join(WORLD_INFO_DIR, "world_info.json"))
 WORLD_INFO_GROUPS_PATH = os.getenv("WORLD_INFO_GROUPS_PATH", os.path.join(WORLD_INFO_DIR, "groups.json"))

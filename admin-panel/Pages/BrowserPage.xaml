@@ -6,43 +6,54 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24">
 
-            <TextBlock Text="🌐 浏览器环境（Edge + CDP）"
+            <TextBlock Text="🌐 浏览器环境"
                        FontSize="22" FontWeight="Bold" Margin="0,0,0,6"/>
-            <TextBlock Text="让智能体操作宿主上的 Edge：起调试端口 → 本面板进程内中继 → 容器发布端口给集群。全部由本面板执行，不写注册表、不开机自启。"
+            <TextBlock Text="让智能体操作本机 Edge。推荐 Playwright MCP（浏览器由 MCP 托管，不碰你正在用的 Edge、不用调试端口）；CDP 兼容模式作为兜底保留。全部由本面板执行，不写注册表、不开机自启。"
                        Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,16"/>
 
+            <!-- MCP（推荐） -->
             <Border Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12">
                 <StackPanel>
-                    <TextBlock Text="状态" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock x:Name="TxtStatus" FontFamily="Consolas" FontSize="13"
+                    <TextBlock Text="Playwright MCP（推荐）" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock x:Name="TxtMcpStatus" FontFamily="Consolas" FontSize="13"
                                TextWrapping="Wrap" Foreground="#333"/>
-                    <Button x:Name="BtnRefresh" Content="刷新状态" Width="110"
-                            HorizontalAlignment="Left" Margin="0,10,0,0" Click="BtnRefresh_Click"/>
-                </StackPanel>
-            </Border>
-
-            <Border Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12">
-                <StackPanel>
-                    <TextBlock Text="操作" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <WrapPanel>
-                        <Button x:Name="BtnStartAll" Content="启动全部" Width="120" Height="34" Margin="0,0,10,10"
-                                Click="BtnStartAll_Click"/>
-                        <Button x:Name="BtnStartEdge" Content="只起 Edge" Width="110" Height="34" Margin="0,0,10,10"
-                                Click="BtnStartEdge_Click"/>
-                        <Button x:Name="BtnStopRelay" Content="停止转发" Width="110" Height="34" Margin="0,0,10,10"
-                                Click="BtnStopRelay_Click"/>
+                    <WrapPanel Margin="0,10,0,0">
+                        <Button x:Name="BtnMcpStartAll" Content="启动 MCP 环境" Width="140" Height="34" Margin="0,0,10,10"
+                                Click="BtnMcpStartAll_Click"/>
+                        <Button x:Name="BtnMcpStop" Content="停止 MCP" Width="110" Height="34" Margin="0,0,10,10"
+                                Click="BtnMcpStop_Click"/>
+                        <Button x:Name="BtnRefresh" Content="刷新状态" Width="110" Height="34" Margin="0,0,10,10"
+                                Click="BtnRefresh_Click"/>
                         <Button x:Name="BtnOpenDashboard" Content="打开面板" Width="110" Height="34" Margin="0,0,10,10"
                                 Click="BtnOpenDashboard_Click"/>
                     </WrapPanel>
                 </StackPanel>
             </Border>
 
+            <!-- CDP 兼容 -->
+            <Border Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="CDP 兼容模式（兜底）" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBlock Text="旧方案：以调试端口启动独立 profile 的 Edge。Chromium 136+ 不允许对默认 profile 开调试端口，所以用的是单独 profile。"
+                               Foreground="#888" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <TextBlock x:Name="TxtCdpStatus" FontFamily="Consolas" FontSize="13"
+                               TextWrapping="Wrap" Foreground="#333"/>
+                    <WrapPanel Margin="0,10,0,0">
+                        <Button x:Name="BtnCdpStartAll" Content="启动 CDP 环境" Width="140" Height="34" Margin="0,0,10,10"
+                                Click="BtnCdpStartAll_Click"/>
+                        <Button x:Name="BtnCdpStop" Content="停止转发" Width="110" Height="34" Margin="0,0,10,10"
+                                Click="BtnCdpStop_Click"/>
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- 设置 -->
             <Border Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12">
                 <StackPanel>
                     <TextBlock Text="设置" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="130"/>
+                            <ColumnDefinition Width="150"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="110"/>
                         </Grid.ColumnDefinitions>
@@ -50,32 +61,39 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Edge 路径" VerticalAlignment="Center" Margin="0,0,0,8"/>
-                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="TxtEdgePath" Height="30" Margin="0,0,8,8"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="npx 路径" VerticalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="TxtNpxPath" Height="30" Margin="0,0,8,8"/>
                         <Button Grid.Row="0" Grid.Column="2" Content="自动检测" Height="30" Margin="0,0,0,8"
+                                Click="BtnDetectNpx_Click"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Edge 路径（CDP）" VerticalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtEdgePath" Height="30" Margin="0,0,8,8"/>
+                        <Button Grid.Row="1" Grid.Column="2" Content="自动检测" Height="30" Margin="0,0,0,8"
                                 Click="BtnDetectEdge_Click"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Profile 目录" VerticalAlignment="Center" Margin="0,0,0,8"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtProfileDir" Height="30" Margin="0,0,8,8"/>
-                        <Button Grid.Row="1" Grid.Column="2" Content="选择…" Height="30" Margin="0,0,0,8"
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="MCP profile" VerticalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBox Grid.Row="2" Grid.Column="1" x:Name="TxtMcpProfile" Height="30" Margin="0,0,8,8"/>
+                        <Button Grid.Row="2" Grid.Column="2" Content="选择…" Height="30" Margin="0,0,0,8"
                                 Click="BtnPickProfile_Click"/>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="端口（调试/中继/发布）" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" x:Name="TxtPorts" Height="30" Margin="0,0,8,0"/>
-                        <Button Grid.Row="2" Grid.Column="2" Content="保存设置" Height="30"
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="端口 MCP/中继/发布" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="3" Grid.Column="1" x:Name="TxtPorts" Height="30" Margin="0,0,8,0"/>
+                        <Button Grid.Row="3" Grid.Column="2" Content="保存设置" Height="30"
                                 Click="BtnSave_Click"/>
                     </Grid>
-                    <TextBlock Text="端口格式：9222,9223,9224（调试端口 / 宿主中继 / 容器发布）。保存后需重新点「启动全部」。"
+                    <TextBlock Text="端口格式：9333,9334,9335（MCP 端口 / 宿主中继 / 发布容器）。CDP 模式的 9222/9223/9224 固定，不再单独配置。保存后重新点「启动」。"
                                Foreground="#888" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
             </Border>
 
+            <!-- 日志 -->
             <Border Background="White" CornerRadius="8" Padding="16">
                 <StackPanel>
                     <TextBlock Text="日志" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBox x:Name="TxtLog" Height="160" IsReadOnly="True" AcceptsReturn="True"
+                    <TextBox x:Name="TxtLog" Height="180" IsReadOnly="True" AcceptsReturn="True"
                              VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"
                              TextWrapping="Wrap"/>
                 </StackPanel>

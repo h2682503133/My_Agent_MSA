@@ -412,16 +412,24 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
                 asset_dir=Path(config.IMAGE_ASSET_DIR),
             )
 
-        # 浏览器操作（连宿主 Edge 的 CDP 端口）：页面级人机协作
+        # 浏览器操作：优先 Playwright MCP（浏览器由它托管，snapshot 定位更稳），
+        # 没配 MCP 就退回 CDP（连宿主已开调试端口的 Edge）。
         if name in {"browser", "browser-open", "browser-click", "browser-type"}:
-            from app.browser_tools import browser_tools
-
             action = str(args[0] if args else kwargs.get("action") or "").strip()
             arg1 = str(args[1] if len(args) > 1 else kwargs.get("arg1") or "").strip()
             arg2 = str(args[2] if len(args) > 2 else kwargs.get("arg2") or "")
             # 允许 `browser-click|#3` 这种把动作写在工具名里的简写
             if name != "browser" and not action:
                 action = name.split("-", 1)[1]
+
+            mcp_url = str(getattr(config, "BROWSER_MCP_URL", "") or "").strip()
+            if mcp_url:
+                from app.browser_mcp import run as mcp_run
+
+                return mcp_run(action, arg1, arg2, root, url=mcp_url)
+
+            from app.browser_tools import browser_tools
+
             return browser_tools.run(action, arg1, arg2, root)
 
         if name == "process-write":

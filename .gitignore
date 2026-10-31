@@ -20,3 +20,5 @@ Thumbs.db
 
 # Logs
 process.md
+# Playwright MCP 的输出目录（页面快照/截图）
+.playwright-mcp/
