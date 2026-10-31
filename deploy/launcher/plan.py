@@ -89,6 +89,35 @@ def _feature_service_list(feature: str, modes: dict[str, str]) -> list[str]:
     return list(FEATURE_SERVICES.get(feature, []))
 
 
+
+LAUNCHER_SETTINGS_PATH = Path("config") / "launcher.json"
+
+
+def load_settings(data_dir: Path) -> dict:
+    """读 <DATA_DIR>/config/launcher.json（面板/用户改这里，不用设环境变量）。
+
+    文件不存在或坏掉都返回空 dict，并由调用方给出显式告警 —— 不做静默猜测。
+    """
+    path = Path(data_dir) / LAUNCHER_SETTINGS_PATH
+    if not path.is_file():
+        return {}
+    try:
+        # Windows 记事本默认存带 BOM 的 UTF-8，用 utf-8-sig 兼容（否则用户手改完就报错）
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"配置文件写坏了：{path}（{exc}）") from exc
+
+
+def openviking_settings(data_dir: Path) -> dict:
+    """取 launcher.json 里的 openviking 段（带默认值）。"""
+    try:
+        data = load_settings(data_dir)
+    except ValueError as exc:
+        return {"_error": str(exc)}
+    section = data.get("openviking") or {}
+    return section if isinstance(section, dict) else {}
+
+
 def build(
     repo_root: Path,
     data_dir: Path,
@@ -161,6 +190,29 @@ def build(
         env["TIMER_TASK_TARGET"] = endpoint("timer-task-service") or ""
     if "openviking-context-service" in ids:
         env["OPENVIKING_CONTEXT_TARGET"] = endpoint("openviking-context-service") or ""
+
+        # openviking 服务器地址来自 <DATA_DIR>/config/launcher.json，命令行/环境变量可覆盖。
+        # 没配就一直用文件模式（不写库、不检索），并把原因写进告警与 capability.json，
+        # 而不是等用户在服务日志里翻"退化为 mock"。
+        ov = openviking_settings(data_dir)
+        if ov.get("_error"):
+            warnings.append(ov["_error"])
+        server_url = str(os.getenv("OPENVIKING_SERVER_URL") or ov.get("server_url") or "").strip()
+        if server_url:
+            env["OPENVIKING_SERVER_URL"] = server_url
+            env["OPENVIKING_ACCOUNT"] = str(ov.get("account") or "my-agent")
+            env["OPENVIKING_ACCOUNT_MODE"] = str(ov.get("account_mode") or "fixed")
+            if ov.get("file_fallback") is not None:
+                env["OPENVIKING_FILE_FALLBACK"] = "true" if ov.get("file_fallback") else "false"
+        else:
+            # 显式降级：记忆用本地文件，不假装连着库
+            env["OPENVIKING_BACKEND"] = "file"
+            env["OPENVIKING_FILE_FALLBACK"] = "true"
+            warnings.append(
+                "openviking 模式已启用但未配置服务器地址：记忆降级为文件模式"
+                "（不写库、不检索）。在 单体配置 → config/launcher.json 的 "
+                "openviking.server_url 填写，或在启动命令加 --openviking-url"
+            )
         # 默认值是 /app/viking_data，Windows 上会变成 C:\app\viking_data（跑到数据目录外）
         env["VIKING_DATA_DIR"] = str(Path(data_dir) / "viking_data")
         cfg_orch = Path(data_dir) / "config" / "orchestrator" / "config"
@@ -334,5 +386,9 @@ def write_capability(plan: Plan, path: Path) -> None:
             {"feature": "container", "reason": "单体模式（未使用 Docker/k8s）"},
         ],
     }
+    # 启动期的降级原因也写进去（面板/网页「杂项」顶部会显示）：
+    # 例：选了 openviking 记忆但没填服务器地址 → 记忆实际走文件模式。
+    for item in getattr(plan, "warnings", []) or []:
+        data["degraded"].append({"feature": "launcher", "reason": str(item)})
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

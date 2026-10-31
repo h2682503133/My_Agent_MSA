@@ -1,0 +1,10 @@
+{
+  "_说明": "单体模式（无 Docker）启动配置。改完重启单体服务即可生效；面板「单体模式」页也会读写这里。",
+  "openviking": {
+    "server_url": "",
+    "account": "my-agent",
+    "account_mode": "fixed",
+    "file_fallback": true,
+    "_说明": "server_url 留空 = 记忆用本地文件模式（不写库、不检索）。填写形如 http://10.0.0.5:1933 即启用 openviking 记忆；api_key 放 config/openviking/api_key。"
+  }
+}
