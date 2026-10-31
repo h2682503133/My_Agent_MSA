@@ -23,8 +23,6 @@ from pathlib import Path
 from typing import Any
 
 GLOBAL_SCOPE_DIR = "global"
-# 指定"哪个用户的规则对所有人生效"（.reply_images/_source.json）
-SOURCE_CONFIG_NAME = "_source.json"
 
 _KEYWORD_SPLIT_RE = re.compile(r"[,，、;；|]+")
 
@@ -48,27 +46,12 @@ def split_keywords(text: str) -> list[str]:
     return seen
 
 
-def get_source_user(rules_root: Path) -> str:
-    path = Path(rules_root) / SOURCE_CONFIG_NAME
-    if not path.exists():
-        return ""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    return str(data.get("source_user") or "").strip()
-
-
-def set_source_user(rules_root: Path, user_id: str) -> str:
-    path = Path(rules_root) / SOURCE_CONFIG_NAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    target = str(user_id or "").strip()
-    if not target:
-        if path.exists():
-            path.unlink()
-        return "已清除全局来源用户"
-    path.write_text(json.dumps({"source_user": target}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return f"已把用户 {target} 的规则设为全局（对其余所有用户生效）"
+def _keyword_set(rules: list[dict[str, Any]]) -> set[str]:
+    found: set[str] = set()
+    for rule in rules:
+        for keyword in rule.get("keywords") or []:
+            found.add(str(keyword).strip().casefold())
+    return found
 
 
 def load_rules(
@@ -84,21 +67,14 @@ def load_rules(
         return own
 
     merged = list(own)
-    seen = {rule["image"] for rule in own}
-
-    source = get_source_user(rules_root)
-    if source and source != (user_id or "default"):
-        for rule in _load_file(rules_root, agent_id, source):
-            if rule["image"] in seen:
-                continue
-            merged.append({**rule, "scope": "global", "owner": source})
-            seen.add(rule["image"])
-
+    taken = _keyword_set(own)
     for rule in _load_file(rules_root, agent_id, GLOBAL_SCOPE_DIR):
-        if rule["image"] in seen:
+        keywords = [str(k).strip() for k in rule.get("keywords") or [] if str(k).strip()]
+        fresh = [k for k in keywords if k.casefold() not in taken]
+        if not fresh:
             continue
-        merged.append({**rule, "scope": "global"})
-        seen.add(rule["image"])
+        merged.append({**rule, "keywords": fresh, "scope": "global"})
+        taken.update(k.casefold() for k in fresh)
     return merged
 
 
@@ -160,6 +136,14 @@ def set_rule(
 
     rules = _load_file(rules_root, agent_id, user_id)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if (user_id or "default") == GLOBAL_SCOPE_DIR:
+        # 全局规则按关键词去重：已存在的关键词不重复添加（用户自己的同名规则仍然优先）
+        taken = _keyword_set(rules)
+        fresh = [k for k in keywords if k.casefold() not in taken]
+        if not fresh:
+            return f"关键词已存在于全局规则（{'、'.join(keywords)}），未重复添加"
+        keywords = fresh
     for rule in rules:
         if rule["image"] == image:
             merged = list(rule["keywords"])
@@ -289,10 +273,6 @@ def handle(
 
     keywords_text = str(keywords_text or "").strip()
     image = str(image or "").strip()
-
-    # 特殊用法：关键词写 "@source" 时，图片参数即“全局来源用户”（空 = 清除）
-    if keywords_text.strip().lower() in {"@source", "source"}:
-        return set_source_user(rules_root, image)
 
     # 第 3 参可以是备注，也可以显式写 global / 全局（写全局规则，对所有人生效）
     scope_raw = str(note or "").strip().lower()

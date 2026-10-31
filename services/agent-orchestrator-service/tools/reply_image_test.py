@@ -6,6 +6,7 @@
   - ASCII 大小写不敏感；中文子串匹配；空正文不匹配
 """
 
+import json
 import shutil
 import sys
 import tempfile
@@ -115,30 +116,50 @@ def main():
                   str(reply_images.load_rules("main", "userA", include_global=False)))
 
 
-            print("指定用户的规则作为全局")
-            # 清掉上一段测试留下的旧 global 目录规则，保证计数确定
+            print("全局规则：按关键词去重 + 本人优先")
+            reply_images.save_rules("main", [], reply_images.GLOBAL_SCOPE_DIR)  # 清掉上一段
+            reply_images.upsert_rule("main", ["全局词"], "https://img/g.png", user_id=reply_images.GLOBAL_SCOPE_DIR)
+            reply_images.upsert_rule("main", ["私有词"], "https://img/mine.png", user_id="userA")
+
+            merged = reply_images.load_rules("main", "userA")
+            check("本人 + 全局拼接", len(merged) == 2, str(merged))
+            check("本人规则在前", merged[0]["image"] == "https://img/mine.png", str(merged[0]))
+            check("全局规则标记 scope", merged[1].get("scope") == "global", str(merged[1]))
+
+            # 本人写同名关键词 → 全局那条不再拼进来（关键词去重，本人优先）
+            reply_images.upsert_rule("main", ["全局词"], "https://img/mine2.png", user_id="userA")
+            dedup = reply_images.load_rules("main", "userA")
+            check("本人同名关键词挤掉全局", len(dedup) == 2 and all(m["image"] != "https://img/g.png" for m in dedup), str(dedup))
+
+            hit = reply_images.match_first("这里说全局词", agent_id="main", user_id="userC")
+            check("没设过的用户能用全局", hit and hit["image"] == "https://img/g.png", str(hit))
+
+            print("promote_to_global：把某用户规则并入全局（关键词去重）")
             reply_images.save_rules("main", [], reply_images.GLOBAL_SCOPE_DIR)
-            reply_images.set_source_user("owner")
-            reply_images.upsert_rule("main", ["主人词"], "https://img/owner.png", user_id="owner")
-            reply_images.upsert_rule("main", ["访客词"], "https://img/guest.png", user_id="guest")
+            reply_images.upsert_rule("main", ["甲", "乙"], "https://img/both.png", user_id="boss")
+            out = reply_images.promote_to_global("main", "boss", by="dashboard")
+            check("提升成功", "已加入全局" in out, out)
+            check("全局有 1 条", len(reply_images._load_file("main", reply_images.GLOBAL_SCOPE_DIR)) == 1)
+            out2 = reply_images.promote_to_global("main", "boss", by="dashboard")
+            check("重复提升被拦", "没有需要新增" in out2, out2)
 
-            owner_rules = reply_images.load_rules("main", "owner")
-            check("来源用户只看到自己的（不重复）", len(owner_rules) == 1, str(owner_rules))
+            reply_images.upsert_rule("main", ["丙"], "https://img/c.png", user_id="boss")
+            out3 = reply_images.promote_to_global("main", "boss", keyword="丙", by="dashboard")
+            check("按关键词单条提升", "已加入全局 1 条" in out3, out3)
+            globals_now = reply_images._load_file("main", reply_images.GLOBAL_SCOPE_DIR)
+            check("全局 2 条", len(globals_now) == 2, str(globals_now))
 
-            guest_rules = reply_images.load_rules("main", "guest")
-            check("访客拼接了主人规则", len(guest_rules) == 2, str(guest_rules))
-            check("自己的在前", guest_rules[0]["image"] == "https://img/guest.png", str(guest_rules[0]))
-            check("主人规则标记 global + owner", guest_rules[1].get("scope") == "global" and guest_rules[1].get("owner") == "owner", str(guest_rules[1]))
-
-            hit = reply_images.match_first("这里说主人词", agent_id="main", user_id="stranger")
-            check("陌生用户也能命中主人规则", hit and hit["image"] == "https://img/owner.png", str(hit))
-
-            listing = reply_images.list_rules("main", "guest")
-            check("列表标注来源用户", "来源用户 owner" in listing, listing[:120])
-
-            check("清除来源", "已清除" in reply_images.set_source_user(""), "x")
-            after_clear = reply_images.load_rules("main", "guest")
-            check("清除后只剩自己的", len(after_clear) == 1, str(after_clear))
+            print("旧 _source.json 迁移")
+            reply_images.save_rules("main", [], reply_images.GLOBAL_SCOPE_DIR)
+            reply_images.upsert_rule("main", ["旧词"], "https://img/old.png", user_id="legacy")
+            (reply_images.rules_dir() / "_source.json").write_text(
+                json.dumps({"source_user": "legacy"}), encoding="utf-8")
+            note = reply_images.migrate_legacy_source()
+            check("迁移有结果", "已迁移" in note, note)
+            check("_source.json 已删除", not (reply_images.rules_dir() / "_source.json").exists())
+            migrated = reply_images._load_file("main", reply_images.GLOBAL_SCOPE_DIR)
+            check("旧用户的规则进了全局",
+                  any(r["image"] == "https://img/old.png" for r in migrated), str(migrated))
 
             print("损坏文件不炸")
             (tmp / "broken.json").write_text("{not json", encoding="utf-8")

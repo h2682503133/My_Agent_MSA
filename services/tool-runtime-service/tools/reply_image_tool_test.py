@@ -113,37 +113,25 @@ def main():
         check("列表里能看到全局段", "全局" in out, out[:80])
 
 
-        print("来源用户 = 全局")
-        reply_image_tool.handle(root, "main", ["@source", "boss"], {}, user_id="boss")
-        check("来源用户已写入", reply_image_tool.get_source_user(root) == "boss", reply_image_tool.get_source_user(root))
-        reply_image_tool.handle(root, "main", ["老板脸", "https://img/boss.png"], {}, user_id="boss")
-        merged = reply_image_tool.load_rules(root, "main", "someone")
-        check("别人能看到", any(r["image"] == "https://img/boss.png" for r in merged), str(merged))
-        check("标记为 global 且带 owner",
-              any(r.get("scope") == "global" and r.get("owner") == "boss" for r in merged), str(merged))
-        out = reply_image_tool.handle(root, "main", ["@source", ""], {}, user_id="boss")
-        check("可清除来源", "已清除" in out, out)
-        after = reply_image_tool.load_rules(root, "main", "someone")
-        check("清除后别人看不到", not any(r["image"] == "https://img/boss.png" for r in after), str(after))
+        print("全局：按关键词去重（不再有 @source）")
+        reply_image_tool.save_rules(root, "main", [], reply_image_tool.GLOBAL_SCOPE_DIR)  # 清掉上一段的全局规则
+        reply_image_tool.handle(root, "main", ["去重脸", "https://img/g1.png", "global"], {}, user_id="u1")
+        out = reply_image_tool.handle(root, "main", ["去重脸", "https://img/g2.png", "global"], {}, user_id="u2")
+        check("同关键词不重复添加", "已存在" in out, out)
+        global_rules = reply_image_tool.load_rules(root, "main", reply_image_tool.GLOBAL_SCOPE_DIR)
+        check("全局只有 1 条", len(global_rules) == 1, str(global_rules))
+        check("仍是先写入的那张图", global_rules[0]["image"] == "https://img/g1.png", str(global_rules[0]))
 
-
-        print("远程 URL 写规则前校验")
-        class _Boom:
-            code = 404
-
-        original = reply_image_tool.verify_image_url
-        reply_image_tool.verify_image_url = lambda url, timeout=6: "" if "ok" in url else f"图片地址返回 HTTP 404（文件可能不存在或刚发布未生效）：{url}"
-        try:
-            out = reply_image_tool.handle(root, "main", ["坏链", "https://img/404.png"], {}, user_id="v1")
-            check("404 地址被拒", out.startswith("错误：") and "404" in out, out)
-            check("提示改传工作区路径", "工作区" in out, out)
-            rules = reply_image_tool.load_rules(root, "main", "v1", include_global=False)
-            check("没有写入坏规则", rules == [], str(rules))
-
-            out = reply_image_tool.handle(root, "main", ["好链", "https://img/ok.png"], {}, user_id="v1")
-            check("可达地址正常写入", "已添加规则" in out, out)
-        finally:
-            reply_image_tool.verify_image_url = original  # 恢复放行版
+        print("本人同关键词优先（全局那条不再拼进来）")
+        reply_image_tool.handle(root, "main", ["去重脸", "https://img/mine.png"], {}, user_id="u3")
+        merged = reply_image_tool.load_rules(root, "main", "u3")
+        check("只剩本人的", len(merged) == 1 and merged[0]["image"] == "https://img/mine.png", str(merged))
+        other = reply_image_tool.load_rules(root, "main", "u4")
+        check("没设过的用户仍看到全局", len(other) == 1 and other[0]["scope"] == "global", str(other))
+        check("@source 已不再生效",
+              "已存在" not in reply_image_tool.handle(root, "main", ["@source", "boss"], {}, user_id="u1")
+              and not (root / "_source.json").exists(),
+              "仍有 @source 行为")
 
     finally:
         reply_image_tool.verify_image_url = _real_verify

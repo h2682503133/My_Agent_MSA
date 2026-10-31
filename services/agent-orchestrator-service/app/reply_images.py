@@ -22,10 +22,10 @@ from app import config
 from app.logger import debug_log
 
 # 关键词分隔符：中英文逗号、顿号、分号、竖线（竖线其实已被上游切参用掉，兜底）
-# 全局规则目录名（作用于所有用户）；用下划线开头避免与真实 user_id 冲突
+# 全局规则目录名（作用于所有用户，命名上与真实 user_id 不会冲突）
 GLOBAL_SCOPE_DIR = "global"
-# 指定"哪个用户的规则对所有人生效"（存在 .reply_images/_source.json）
-SOURCE_CONFIG_NAME = "_source.json"
+# 旧机制遗留：把某个用户的规则当全局（迁移后删除）
+LEGACY_SOURCE_NAME = "_source.json"
 
 _KEYWORD_SPLIT_RE = re.compile(r"[,，、;；|]+")
 
@@ -54,36 +54,78 @@ def _path_for(agent_id: str, user_id: str = "") -> Path:
     )
 
 
-def _source_path() -> Path:
-    return rules_dir() / SOURCE_CONFIG_NAME
+def _keyword_set(rules: list[dict[str, Any]]) -> set[str]:
+    """一组规则里出现过的关键词（小写，用于去重）。"""
+    found: set[str] = set()
+    for rule in rules:
+        for keyword in rule.get("keywords") or []:
+            found.add(str(keyword).strip().casefold())
+    return found
 
 
-def get_source_user() -> str:
-    """读取"全局来源用户"；未设置返回空串。"""
-    path = _source_path()
+def promote_to_global(agent_id: str, user_id: str, keyword: str = "", by: str = "") -> str:
+    """把某用户的规则并入全局（可按关键词只提升一条）。
+
+    去重口径：**按关键词**——全局里已有关键词的跳过（本人的同名关键词在匹配时优先，
+    不需要复制一份到全局）；`keyword` 为空表示把该用户全部规则提升。
+    """
+    target = str(keyword or "").strip().casefold()
+    source_rules = _load_file(agent_id, user_id)
+    if not source_rules:
+        return f"用户 {user_id} 在智能体 {agent_id} 下没有规则可提升"
+
+    global_rules = _load_file(agent_id, GLOBAL_SCOPE_DIR)
+    taken = _keyword_set(global_rules)
+    added = 0
+    skipped = 0
+    for rule in source_rules:
+        keywords = [str(k).strip() for k in rule.get("keywords") or [] if str(k).strip()]
+        if target and target not in [k.casefold() for k in keywords]:
+            continue
+        fresh = [k for k in keywords if k.casefold() not in taken]
+        if not fresh:
+            skipped += 1
+            continue
+        global_rules.append({
+            "keywords": fresh,
+            "image": rule.get("image", ""),
+            "note": (rule.get("note") or "") or (f"from {user_id}" + (f" by {by}" if by else "")),
+            "updated_at": rule.get("updated_at", ""),
+        })
+        taken.update(k.casefold() for k in fresh)
+        added += 1
+
+    if not added:
+        return f"没有需要新增的全局规则（{skipped} 条关键词已存在于全局）"
+    save_rules(agent_id, global_rules, GLOBAL_SCOPE_DIR)
+    return (
+        f"已加入全局 {added} 条（来源用户 {user_id}"
+        f"{'，按关键词 ' + keyword if keyword else ''}）；跳过 {skipped} 条重复关键词"
+    )
+
+
+def migrate_legacy_source() -> str:
+    """把旧的 `_source.json`（指定某用户为全局来源）迁移成显式全局规则后删除该文件。"""
+    path = rules_dir() / LEGACY_SOURCE_NAME
     if not path.exists():
         return ""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        user = str(data.get("source_user") or "").strip()
     except Exception:
-        return ""
-    return str(data.get("source_user") or "").strip()
-
-
-def set_source_user(user_id: str) -> str:
-    """设置/清除全局来源用户（空串 = 清除）。"""
-    target = str(user_id or "").strip()
-    path = _source_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not target:
-        if path.exists():
-            path.unlink()
-        return "已清除全局来源用户（规则不再对所有人生效）"
-    path.write_text(
-        json.dumps({"source_user": target}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return f"已把用户 {target} 的规则设为全局（对其余所有用户生效）"
+        path.unlink(missing_ok=True)
+        return "旧 _source.json 损坏，已删除"
+    notes: list[str] = []
+    if user:
+        # 该用户在哪些智能体下有规则：扫 <rules>/<user>/*.json
+        root = rules_dir()
+        user_dir = root / _safe_segment(user, default="default")
+        if user_dir.is_dir():
+            for rule_file in user_dir.glob("*.json"):
+                notes.append(promote_to_global(rule_file.stem, user, by="migrate"))
+    path.unlink(missing_ok=True)
+    summary = "；".join(note for note in notes if note) or "没有可迁移的规则"
+    return f"已迁移旧 _source.json：{summary}"
 
 
 def load_rules(
@@ -101,23 +143,15 @@ def load_rules(
         return own
 
     merged = list(own)
-    seen_images = {rule["image"] for rule in own}
-
-    # 1) 指定的"全局来源用户"：他设的规则对其余人就是全局
-    source = get_source_user()
-    if source and source != (user_id or "default"):
-        for rule in _load_file(agent_id, source):
-            if rule["image"] in seen_images:
-                continue
-            merged.append({**rule, "scope": "global", "owner": source})
-            seen_images.add(rule["image"])
-
-    # 2) 兼容旧的 global 目录（显式写 global 的规则）
+    # 去重口径：按关键词（本人已有关键词的，全局那条不再拼进来 —— 本人优先）
+    taken = _keyword_set(own)
     for rule in _load_file(agent_id, GLOBAL_SCOPE_DIR):
-        if rule["image"] in seen_images:
+        keywords = [str(k).strip() for k in rule.get("keywords") or [] if str(k).strip()]
+        fresh = [k for k in keywords if k.casefold() not in taken]
+        if not fresh:
             continue
-        merged.append({**rule, "scope": "global"})
-        seen_images.add(rule["image"])
+        merged.append({**rule, "keywords": fresh, "scope": "global"})
+        taken.update(k.casefold() for k in fresh)
     return merged
 
 
@@ -219,11 +253,7 @@ def remove_rule(agent_id: str, keyword: str, user_id: str = "") -> str:
 
 def list_rules(agent_id: str, user_id: str = "") -> str:
     own = _load_file(agent_id, user_id)
-    source = get_source_user()
-    global_rules = _load_file(agent_id, source) if source and source != (user_id or "default") else []
-    legacy_global = _load_file(agent_id, GLOBAL_SCOPE_DIR)
-    if legacy_global:
-        global_rules = list(global_rules) + list(legacy_global)
+    global_rules = _load_file(agent_id, GLOBAL_SCOPE_DIR)
     if not own and not global_rules:
         return (
             f"当前智能体 {agent_id} 还没有回复配图规则。"
@@ -236,7 +266,7 @@ def list_rules(agent_id: str, user_id: str = "") -> str:
             note = f"（{rule['note']}）" if rule.get("note") else ""
             lines.append(f"  {index}. {('、'.join(rule['keywords']))} → {rule['image']}{note}")
     if global_rules:
-        label = f"全局（来源用户 {source}，{len(global_rules)} 条）" if source else f"全局（{len(global_rules)} 条）"
+        label = f"全局（{len(global_rules)} 条，所有用户生效）"
         lines.append(f"{label}：")
         for index, rule in enumerate(global_rules, 1):
             note = f"（{rule['note']}）" if rule.get("note") else ""

@@ -1,13 +1,14 @@
-// 表情绑定管理：列表 + 图片预览 + 删除（数据源 /api/reply_images）
+// 表情绑定管理：列表 + 图片预览 + 删除 + 把某个用户的规则「加入全局」
+// 数据源：
+//   GET    /api/reply_images            列出全局 + 各用户规则
+//   DELETE /api/reply_images            按关键词删除一条
+//   POST   /api/reply_images/promote    把某用户的规则并入全局（按关键词去重）
 let riRules = [];
-let riSourceUser = '';
 
 async function riRefresh() {
   try {
     const data = await fetch('/api/reply_images').then(r => r.json());
     riRules = data.rules || [];
-    riSourceUser = data.source_user || '';
-    await riLoadSourceCandidates();
     riRender();
   } catch (err) {
     const list = document.getElementById('ri-list');
@@ -20,62 +21,24 @@ function riScopeLabel(rule) {
     const owner = rule.owner ? `（来自用户 ${rule.owner}）` : '';
     return `<span style="color:#e8b04b;">全局</span>${owner}`;
   }
-  const isSource = riSourceUser && rule.owner === riSourceUser;
-  const suffix = isSource ? ' <span style="color:#e8b04b;">· 全局来源</span>' : '';
-  return `用户 ${rule.owner}${suffix}`;
+  return `用户 ${rule.owner}`;
 }
 
-async function riLoadSourceCandidates() {
-  try {
-    const data = await fetch('/api/reply_images/source').then(r => r.json());
-    const select = document.getElementById('ri-source');
-    const now = document.getElementById('ri-source-now');
-    if (now) now.textContent = data.source_user ? `当前来源：${data.source_user}` : '当前未设置（只有各自规则生效）';
-    if (!select) return;
-    const current = data.source_user || '';
-    const options = [`<option value="">（不设置）</option>`].concat(
-      (data.candidates || []).map(user =>
-        `<option value="${user}" ${user === current ? 'selected' : ''}>${user}</option>`)
-    );
-    select.innerHTML = options.join('');
-  } catch (err) { /* 忽略：来源接口不存在时页面仍可用 */ }
-}
-
-async function riSetSource() {
-  const select = document.getElementById('ri-source');
-  const user = select ? select.value : '';
-  if (!user) { toast('请选择一个用户', false); return; }
-  const resp = await fetch('/api/reply_images/source', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user }),
-  });
-  const data = await resp.json();
-  if (data.ok) { toast(`已把 ${user} 的规则设为全局`); riRefresh(); }
-  else toast(data.detail || '设置失败', false);
-}
-
-async function riClearSource() {
-  const resp = await fetch('/api/reply_images/source', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user: '' }),
-  });
-  const data = await resp.json();
-  if (data.ok) { toast('已清除全局来源'); riRefresh(); }
-  else toast(data.detail || '清除失败', false);
-}
-
-function riRender() {
-  const list = document.getElementById('ri-list');
-  if (!list) return;
+function riVisibleRules() {
   const filter = (document.getElementById('ri-filter') || {}).value || '';
   const search = ((document.getElementById('ri-search') || {}).value || '').trim().toLowerCase();
-
-  const rows = riRules.filter(rule => {
+  return riRules.filter(rule => {
     if (filter && rule.scope !== filter) return false;
     if (!search) return true;
     const hay = `${(rule.keywords || []).join(' ')} ${rule.owner || ''} ${rule.agent || ''}`.toLowerCase();
     return hay.includes(search);
   });
+}
+
+function riRender() {
+  const list = document.getElementById('ri-list');
+  if (!list) return;
+  const rows = riVisibleRules();
 
   const countEl = document.getElementById('ri-count');
   if (countEl) countEl.textContent = `${rows.length} / ${riRules.length} 条`;
@@ -91,6 +54,9 @@ function riRender() {
       : `<span style="color:var(--dim);font-size:0.75rem;">（非图床地址，无法预览）</span>`;
     const keywords = (rule.keywords || []).map(k => `<code>${k}</code>`).join(' ');
     const note = rule.note ? `<div style="color:var(--dim);font-size:0.75rem;">备注：${rule.note}</div>` : '';
+    const promoteBtn = rule.scope === 'user'
+      ? `<button onclick="riPromote(${index})">加入全局</button>`
+      : '';
     return `
       <div style="display:flex;gap:12px;padding:10px;border-bottom:1px solid var(--border);align-items:flex-start;">
         <div style="flex:0 0 120px;">${preview}</div>
@@ -102,23 +68,38 @@ function riRender() {
           </div>
           ${note}
         </div>
-        <div style="flex:0 0 auto;">
+        <div style="flex:0 0 auto;display:flex;flex-direction:column;gap:6px;">
+          ${promoteBtn}
           <button onclick="riDelete(${index})">删除</button>
         </div>
       </div>`;
   }).join('');
 }
 
+async function riPromote(rowIndex) {
+  const rule = riVisibleRules()[rowIndex];
+  if (!rule || rule.scope !== 'user') return;
+  const keyword = (rule.keywords || [])[0] || '';
+  try {
+    const resp = await fetch('/api/reply_images/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: rule.owner, agent: rule.agent, keyword }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      toast(data.message || '已加入全局');
+      riRefresh();
+    } else {
+      toast(data.detail || '加入全局失败', false);
+    }
+  } catch (err) {
+    toast('加入全局失败：' + err, false);
+  }
+}
+
 async function riDelete(rowIndex) {
-  const filter = (document.getElementById('ri-filter') || {}).value || '';
-  const search = ((document.getElementById('ri-search') || {}).value || '').trim().toLowerCase();
-  const rows = riRules.filter(rule => {
-    if (filter && rule.scope !== filter) return false;
-    if (!search) return true;
-    const hay = `${(rule.keywords || []).join(' ')} ${rule.owner || ''} ${rule.agent || ''}`.toLowerCase();
-    return hay.includes(search);
-  });
-  const rule = rows[rowIndex];
+  const rule = riVisibleRules()[rowIndex];
   if (!rule) return;
   const keyword = (rule.keywords || [])[0] || '';
   if (!keyword) return;

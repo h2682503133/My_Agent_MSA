@@ -1,20 +1,6 @@
 <!-- 表情绑定管理：全局 + 各用户的 reply-image 规则，带图片预览 -->
 <div id="tab-replyimg" class="tab">
-  <h2>表情绑定 <span style="font-size:0.8rem;color:var(--dim);">（回复里出现关键词就自动带图；全局规则对所有人生效，用户规则优先）</span></h2>
-
-  <div class="card" style="margin-bottom:12px;">
-    <h3>全局来源用户</h3>
-    <div style="color:var(--dim);font-size:0.85rem;margin-bottom:8px;">
-      选一个用户：他设的规则会对<strong>其余所有用户</strong>生效（拼接在各自规则之后；同位置时用户自己的优先）。
-      来源用户本人只用自己的规则，不会重复。
-    </div>
-    <div class="session-toolbar" style="gap:8px;align-items:center;">
-      <select id="ri-source" style="min-width:220px;"></select>
-      <button onclick="riSetSource()">设为全局来源</button>
-      <button onclick="riClearSource()">清除</button>
-      <span id="ri-source-now" style="color:var(--dim);font-size:0.8rem;"></span>
-    </div>
-  </div>
+  <h2>表情绑定 <span style="font-size:0.8rem;color:var(--dim);">（回复里出现关键词就自动带图；用户规则优先，其次全局规则）</span></h2>
 
   <div class="card" style="margin-bottom:12px;">
     <div class="session-toolbar" style="margin-bottom:8px;flex-wrap:wrap;gap:8px;">
@@ -34,7 +20,7 @@
   <div class="card">
     <h3>说明</h3>
     <div style="color:var(--dim);font-size:0.85rem;line-height:1.7;">
-      规则由智能体用 <code>工具调用:reply-image|关键词|图片</code> 维护；第 3 参写 <code>global</code> 则对所有用户生效。<br>
+      规则由智能体用 <code>工具调用:reply-image|关键词|图片</code> 维护；第 3 参写 <code>global</code> 则对所有用户生效。<br>本页面可以把某个用户的规则<b>加入全局</b>（按关键词去重，用户自己的同名关键词始终优先）。<br>
       命中判定：回复正文里<strong>最先出现</strong>的关键词生效，一次回复只补一张图。<br>
       存储：<code>config/.reply_images/{global|用户ID}/智能体.json</code>（隐藏目录，不在配置管理里显示）。
     </div>

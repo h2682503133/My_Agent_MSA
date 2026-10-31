@@ -1291,10 +1291,7 @@ async def list_reply_images():
                 "updated_at": str(rule.get("updated_at") or ""),
                 "preview": f"/api/reply_images/preview?name={asset}" if asset else "",
             })
-    source = _get_source_user()
-    for rule in rules:
-        rule["from_source_user"] = bool(source) and rule.get("owner") == source
-    return {"rules": rules, "count": len(rules), "source_user": source}
+    return {"rules": rules, "count": len(rules)}
 
 
 @app.get("/api/reply_images/preview")
@@ -1351,47 +1348,88 @@ async def delete_reply_image(body: ReplyImageDelete):
 
 
 
-def _source_user_path() -> Path:
-    return reply_images_root() / "_source.json"
+def _reply_rules_path(scope: str, owner: str, agent: str) -> Path:
+    """定位规则文件：scope=global 用 global 目录，否则用 <owner> 目录。"""
+    if scope == "global":
+        folder = "global"
+    else:
+        folder = "".join(
+            ch if ch.isalnum() or ch in "_.@-" else "_" for ch in (owner or "default")
+        ).strip("._") or "default"
+    return reply_images_root() / folder / f"{agent}.json"
 
 
-def _get_source_user() -> str:
-    path = _source_user_path()
-    if not path.exists():
-        return ""
+def _load_reply_rules(path: Path) -> list[dict]:
     try:
-        return str(json.loads(path.read_text(encoding="utf-8")).get("source_user") or "")
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return ""
+        return []
+    rules = data.get("rules") if isinstance(data, dict) else None
+    return rules if isinstance(rules, list) else []
 
 
-class ReplyImageSource(BaseModel):
-    user: str = ""
+def _keywords_of(rule: dict) -> list[str]:
+    return [str(k).strip() for k in (rule.get("keywords") or []) if str(k).strip()]
 
 
-@app.get("/api/reply_images/source")
-async def get_reply_image_source():
-    """当前「全局来源用户」+ 备选用户列表。"""
-    owners = sorted({owner for scope, owner, _path in _reply_rule_files() if scope == "user"})
-    return {"source_user": _get_source_user(), "candidates": owners}
+class ReplyImagePromote(BaseModel):
+    owner: str
+    agent: str = "main"
+    keyword: str = ""
 
 
-@app.put("/api/reply_images/source")
-async def set_reply_image_source(body: ReplyImageSource):
-    """把某个用户的规则设为全局（空串 = 清除）。"""
-    target = str(body.user or "").strip()
-    path = _source_user_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not target:
-        if path.exists():
-            path.unlink()
-        return {"ok": True, "source_user": ""}
-    path.write_text(
-        json.dumps({"source_user": target}, ensure_ascii=False, indent=2) + "\n",
+@app.post("/api/reply_images/promote")
+async def promote_reply_image(body: ReplyImagePromote):
+    """把某个用户的规则加入全局（可按关键词只提升一条）。
+
+    去重：按**关键词**，全局已有的跳过；用户自己的同名关键词在匹配时优先，无需复制。
+    权限：dashboard 是单密码（=管理员），这里的写入即管理员操作，note 里记录来源便于审计。
+    """
+    owner = str(body.owner or "").strip()
+    agent = str(body.agent or "main").strip() or "main"
+    if not owner:
+        raise HTTPException(400, "缺少 owner（要提升哪个用户的规则）")
+
+    source_path = _reply_rules_path("user", owner, agent)
+    if not source_path.is_file():
+        raise HTTPException(404, f"用户 {owner} 在该智能体下没有规则")
+    source_rules = _load_reply_rules(source_path)
+
+    global_path = _reply_rules_path("global", "", agent)
+    global_rules = _load_reply_rules(global_path)
+    taken = {k.casefold() for rule in global_rules for k in _keywords_of(rule)}
+
+    target = str(body.keyword or "").strip().casefold()
+    added = 0
+    skipped = 0
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    for rule in source_rules:
+        keywords = _keywords_of(rule)
+        if target and target not in [k.casefold() for k in keywords]:
+            continue
+        fresh = [k for k in keywords if k.casefold() not in taken]
+        if not fresh:
+            skipped += 1
+            continue
+        global_rules.append({
+            "keywords": fresh,
+            "image": str(rule.get("image") or ""),
+            "note": f"from {owner} by dashboard",
+            "updated_at": stamp,
+        })
+        taken.update(k.casefold() for k in fresh)
+        added += 1
+
+    if not added:
+        return {"ok": True, "added": 0, "skipped": skipped, "message": "关键词都已在全局，未新增"}
+
+    global_path.parent.mkdir(parents=True, exist_ok=True)
+    global_path.write_text(
+        json.dumps({"agent_id": agent, "rules": global_rules}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    return {"ok": True, "source_user": target}
-
+    return {"ok": True, "added": added, "skipped": skipped,
+            "message": f"已加入全局 {added} 条（跳过 {skipped} 条重复关键词）"}
 
 
 # ─── 浏览器环境（Edge CDP）启动/状态 ──────────────────────────
