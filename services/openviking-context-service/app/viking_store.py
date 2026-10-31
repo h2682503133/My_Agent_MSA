@@ -347,6 +347,14 @@ class OpenVikingServerBackend:
                 return
 
     async def ping(self, user_id: str = "system", agent_id: str = "system") -> bool:
+        """探活：必须真的发出一次请求。
+
+        早先这里在 SDK 没有 health/list_sessions 时直接 `return True`，
+        等于没连也报"连上了"——服务日志出现过
+        `OpenViking server backend connected: http://…svc.cluster.local:1933`，
+        而那台机器根本解析不了集群内 DNS。现改为退回原始 HTTP /health，
+        连不上就抛异常，由 __init__ 走显式降级日志。
+        """
         client = await self._new_client(user_id=user_id, agent_id=agent_id)
         try:
             if hasattr(client, "health"):
@@ -355,9 +363,16 @@ class OpenVikingServerBackend:
             if hasattr(client, "list_sessions"):
                 await self._maybe_await(client.list_sessions())
                 return True
-            return True
         finally:
             await self._close_client(client)
+
+        key = self.api_key or self.root_api_key
+
+        def _probe() -> bool:
+            self._http_request("GET", "/health", key)
+            return True
+
+        return await asyncio.to_thread(_probe)
 
     async def ensure_session(self, client, full_session_id: str) -> dict[str, Any]:
         get_session = getattr(client, "get_session", None)
@@ -1051,7 +1066,9 @@ class VikingStore:
                     log(f"fallback to file context mode: {self.file_context_path}")
                 else:
                     self.mode = "mock"
-                    log("fallback to mock mode")
+                    log(
+                    "!!! 退化为 mock 模式：记忆不会写入、也不会检索 !!! "
+                    "（检查 OPENVIKING_SERVER_URL / api_key，或设置 OPENVIKING_FILE_FALLBACK=true 走文件")
             return
 
         log(f"Unknown OPENVIKING_BACKEND={self.mode}, fallback to file context")
