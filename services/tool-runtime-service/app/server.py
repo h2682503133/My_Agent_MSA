@@ -726,7 +726,7 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         prompt = (prompt or "").strip()
         if not prompt:
             return "错误：image-gen 需要提示词，用法 工具调用:image-gen|提示词|尺寸(可选)"
-        from app.image_tools import save_generated_image
+        from app.image_tools import promote_to_assets, save_generated_image
         from app.model_proxy_client import model_proxy_client
 
         try:
@@ -742,20 +742,28 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         failed_saves: list[str] = []  # 落盘失败的原因（不影响发图）
         events: list[dict] = []
 
-        # 无论落盘成功与否，**统一按远程 URL 给用户发一份**：
-        # 渠道能直接按 URL 发图，省得把已经生成好的图卡在"下载失败"这一步。
+        # 发图优先用**集群内图床地址**：远程签名 URL（火山 TOS）需要渠道自己出网下载，
+        # 容器 DNS 抖一下就会"推送失败"，还会被调度器转投到官方渠道（那边更发不出去）。
+        # 所以先把图复制进共享图床，再发 /assets/... 的内部地址。
         for index, url in enumerate(result.get("urls") or []):
             saved, _data_url, error = save_generated_image(root, url, index)
             if error:
                 failed_saves.append(error.split("\n")[0])
             else:
                 refs.append(saved)
+            asset_url = ""
+            if saved:
+                asset_url = promote_to_assets(root, saved)
             # 走「发图」这条通道（与 工具调用:send-image 同一套事件），
             # 不把 URL 当文字发出去：text 只做说明，URL 放在 artifact 里由渠道取图。
             events.append({
                 "type": "image",
                 "text": "生成的图片",
-                "artifact": {"type": "image", "local_path": saved, "asset_url": url},
+                "artifact": {
+                    "type": "image",
+                    "local_path": saved,
+                    "asset_url": asset_url or url,   # 图床复制失败才回退远程地址
+                },
             })
 
         if not events:

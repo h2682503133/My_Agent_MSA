@@ -345,3 +345,34 @@ def save_generated_image(root: Path, value: str, index: int = 0) -> tuple[str, s
 
 def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
+
+def promote_to_assets(root: Path, rel_path: str) -> str:
+    """把工作区里的图片复制进共享图床目录，返回**集群内**可访问的 URL。
+
+    为什么需要：工具把生图结果直接以远程 URL（如火山 TOS 的签名地址）交给渠道，
+    QQ 适配器要自己下载；只要容器出网/DNS 抖一下，整条消息就投递失败，
+    还会触发"转投到官方渠道"这类更糟的路径。
+    复制到共享图床后，渠道取的是集群内地址，网页端由 gateway 改写成 /api/assets/。
+    """
+    import hashlib
+    import shutil
+
+    source = Path(root) / rel_path
+    if not source.is_file():
+        return ""
+    asset_dir = Path(getattr(config, "IMAGE_ASSET_DIR", "") or "")
+    if not str(asset_dir):
+        return ""
+    try:
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+        name = f"gen-{digest}{source.suffix or '.png'}"
+        target = asset_dir / name
+        if not target.exists():
+            shutil.copy2(source, target)
+    except Exception:  # noqa: BLE001
+        return ""
+    base = str(getattr(config, "IMAGE_BASE_URL", "") or "").rstrip("/")
+    return f"{base}/{name}" if base else ""
+
+
