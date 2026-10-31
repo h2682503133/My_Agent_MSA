@@ -34,8 +34,17 @@ def main():
         out = reply_image_tool.handle(root, "main", [], {})
         check("空参数 = 列出", "还没有回复配图规则" in out, out)
 
-        out = reply_image_tool.handle(root, "main", ["跳起来,蹦", "https://img/a.png"], {})
+        out = reply_image_tool.handle(root, "main", ["跳起来", "https://img/a.png"], {})
         check("新增规则", "已添加规则" in out, out)
+
+        # 关键词整体匹配：带分隔符的输入也当成**一个**关键词
+        check("逗号不拆关键词", reply_image_tool.split_keywords("跳起来,蹦") == ["跳起来,蹦"],
+              str(reply_image_tool.split_keywords("跳起来,蹦")))
+        check("颜文字不拆", reply_image_tool.split_keywords("(・_・;)") == ["(・_・;)"],
+              str(reply_image_tool.split_keywords("(・_・;)")))
+        check("顿号不拆", reply_image_tool.split_keywords("嗯嗯、好呀") == ["嗯嗯、好呀"],
+              str(reply_image_tool.split_keywords("嗯嗯、好呀")))
+        check("空串返回空列表", reply_image_tool.split_keywords("   ") == [])
 
         out = reply_image_tool.handle(root, "main", [], {})
         check("列出包含关键词", "跳起来" in out and "https://img/a.png" in out, out)

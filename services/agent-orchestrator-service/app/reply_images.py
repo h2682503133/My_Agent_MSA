@@ -21,13 +21,14 @@ from typing import Any
 from app import config
 from app.logger import debug_log
 
-# 关键词分隔符：中英文逗号、顿号、分号、竖线（竖线其实已被上游切参用掉，兜底）
+# 注意不能放分号：颜文字里的 `(・_・;)` 会被切坏成 `(・_・、)`
 # 全局规则目录名（作用于所有用户，命名上与真实 user_id 不会冲突）
 GLOBAL_SCOPE_DIR = "global"
 # 旧机制遗留：把某个用户的规则当全局（迁移后删除）
 LEGACY_SOURCE_NAME = "_source.json"
 
-_KEYWORD_SPLIT_RE = re.compile(r"[,，、;；|]+")
+# 关键词整体匹配：不再按分隔符拆分（颜文字里的标点要保留原样）
+_KEYWORD_STRIP_RE = re.compile(r"^\s+|\s+$")
 
 
 def rules_dir() -> Path:
@@ -196,12 +197,9 @@ def save_rules(agent_id: str, rules: list[dict[str, Any]], user_id: str = "") ->
 
 
 def split_keywords(text: str) -> list[str]:
-    seen: list[str] = []
-    for part in _KEYWORD_SPLIT_RE.split(str(text or "")):
-        keyword = part.strip()
-        if keyword and keyword not in seen:
-            seen.append(keyword)
-    return seen
+    """保留旧名字给调用方用，但**不再分割**：整串就是一个关键词。"""
+    keyword = _KEYWORD_STRIP_RE.sub("", str(text or ""))
+    return [keyword] if keyword else []
 
 
 def upsert_rule(agent_id: str, keywords: list[str], image: str, note: str = "", user_id: str = "") -> str:

@@ -6,7 +6,7 @@
 所以这里默认由 SYSTEM_PROMPTS_DIR 推出路径，也可用 REPLY_IMAGES_DIR 覆盖。
 
 用法（工具参数）：
-  reply-image|关键词1,关键词2|图片    新增/更新一组关键词（图片可为 URL 或工作区路径）
+  reply-image|关键词|图片          新增/更新一条规则（关键词是整串，不做分割；图片可为 URL 或工作区路径）
   reply-image|关键词|                删除包含该关键词的规则
   reply-image||                      列出当前所有规则
 
@@ -24,7 +24,8 @@ from typing import Any
 
 GLOBAL_SCOPE_DIR = "global"
 
-_KEYWORD_SPLIT_RE = re.compile(r"[,，、;；|]+")
+# 关键词不再按分隔符拆分：一个关键词就是用户给的**整串**（颜文字里的 ; , 、 都可能有意义）
+_KEYWORD_STRIP_RE = re.compile(r"^\s+|\s+$")
 
 
 def _safe_segment(value: str, default: str) -> str:
@@ -38,12 +39,9 @@ def _path_for(rules_root: Path, agent_id: str, user_id: str = "") -> Path:
 
 
 def split_keywords(text: str) -> list[str]:
-    seen: list[str] = []
-    for part in _KEYWORD_SPLIT_RE.split(str(text or "")):
-        keyword = part.strip()
-        if keyword and keyword not in seen:
-            seen.append(keyword)
-    return seen
+    """保留旧名字给调用方用，但**不再分割**：整串就是一个关键词。"""
+    keyword = _KEYWORD_STRIP_RE.sub("", str(text or ""))
+    return [keyword] if keyword else []
 
 
 def _keyword_set(rules: list[dict[str, Any]]) -> set[str]:
