@@ -15,6 +15,7 @@ from app.logger import timer_log
 from app.scheduler_client import SchedulerClient
 from app.time_parser import (
     catch_up_in_window,
+    next_window_start,
     in_task_window,
     in_window,
     next_trigger,
@@ -298,14 +299,40 @@ def timer_scan_loop():
 
                     trigger_time = task.get("trigger_time", 0)
                     if now >= trigger_time:
-                        if not in_task_window(task, now):
-                            # 窗口外：不执行（不补发、不报错），只等下一次触发
+                        in_window_now = in_task_window(task, now)
+                        if not in_window_now:
                             timer_log(
                                 f"定时任务[{task.get('task_id')}]触发时刻 "
                                 f"{time.strftime('%H:%M:%S', time.localtime(now))} "
-                                f"不在执行时段 {task.get('window_str') or ''} 内，跳过不执行"
+                                f"不在执行时段 {task.get('window_str') or ''} 内"
                             )
-                        else:
+
+                        schedule = task.get("schedule")
+                        # 一次性任务 + 时段：到点落在时段外时，默认不是"悄悄丢掉"，
+                        # 而是顺延到下一个时段起点（realign）；skip 策略保持丢弃。
+                        if (
+                            not in_window_now
+                            and not schedule
+                            and task.get("window")
+                            and getattr(config, "TIMER_MISSED_WINDOW_POLICY", "realign") == "realign"
+                        ):
+                            nxt = next_window_start(now, task.get("window"))
+                            if nxt and nxt > now:
+                                task["trigger_time"] = nxt
+                                with open(path, "w", encoding="utf-8") as f:
+                                    json.dump(task, f, ensure_ascii=False, indent=2)
+                                timer_log(
+                                    f"定时任务[{task.get('task_id')}]（一次性）顺延到时段起点 "
+                                    f"{time.strftime('%m-%d %H:%M', time.localtime(nxt))}"
+                                )
+                                continue
+                            timer_log(
+                                f"定时任务[{task.get('task_id')}]时段外且算不出下次时段起点，丢弃"
+                            )
+                            os.remove(path)
+                            continue
+
+                        if in_window_now:
                             execute_timer_task(task)
                         schedule = task.get("schedule")
                         if schedule:

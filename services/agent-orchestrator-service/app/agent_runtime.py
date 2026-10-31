@@ -1459,6 +1459,10 @@ class AgentRuntime:
                         content=timer.get("content", ""),
                         task_type=task_type,
                         agent_id=timer_agent_id,
+                        # 第 6 参「执行时段」（如 08:00-02:00）：解析层早就拿到了，
+                        # 但之前没往定时服务传 → 任务文件里 window 永远是 null，
+                        # 表现就是"执行区间不生效"。
+                        window_str=timer.get("window_str", ""),
                     )
                     if resp["ok"]:
                         reply = f"定时任务已创建：{resp['message']}"
