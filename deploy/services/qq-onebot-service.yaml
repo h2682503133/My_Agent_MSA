@@ -1,0 +1,70 @@
+# qq-onebot-service：OneBot 11 适配器（NapCat / LLOneBot / go-cqhttp）
+# 与 qq-llbot-service（Satori）平级；同一时间只应启用一个 QQ 后端，避免重复回复。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qq-onebot-service
+  namespace: agent
+  labels:
+    app: qq-onebot-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qq-onebot-service
+  template:
+    metadata:
+      labels:
+        app: qq-onebot-service
+    spec:
+      containers:
+        - name: qq-onebot-service
+          image: agent/qq-onebot-service:v1
+          imagePullPolicy: Always
+          env:
+            - name: ONEBOT_MODE
+              value: "forward"
+            - name: ONEBOT_WS_URL
+              value: "ws://host.docker.internal:3001/"
+            - name: ONEBOT_WS_LISTEN
+              value: "0.0.0.0:6700"
+            - name: ONEBOT_TOKEN
+              value: ""
+            - name: ONEBOT_SELF_ID
+              value: ""
+            - name: ONEBOT_GROUP_REQUIRE_AT
+              value: "true"
+            - name: SCHEDULER_TARGET
+              value: "task-scheduler-service.agent.svc.cluster.local:5100"
+            - name: SUBSCRIBER_ID
+              value: "qq-onebot-1"
+            - name: SUBSCRIBER_PRIORITY
+              value: "90"
+            - name: OFFLINE_SEND_FAILURES
+              value: "3"
+            - name: WORKSPACE_DIR
+              value: "/app/workspace"
+          ports:
+            - name: onebot-ws
+              containerPort: 6700
+          volumeMounts:
+            - name: my-agent-workspace
+              mountPath: /app/workspace
+      volumes:
+        - name: my-agent-workspace
+          persistentVolumeClaim:
+            claimName: my-agent-workspace-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qq-onebot-service
+  namespace: agent
+spec:
+  selector:
+    app: qq-onebot-service
+  ports:
+    - name: onebot-ws
+      port: 6700
+      targetPort: 6700
+  type: ClusterIP
