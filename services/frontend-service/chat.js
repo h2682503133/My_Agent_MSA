@@ -357,7 +357,8 @@
       if (!messageCache[currentAgentId]) {
         messageCache[currentAgentId] = [];
       }
-      messageCache[currentAgentId].push({ role, text, images: images || [] });
+      const safeImages = (images || []).map(localizeAssetUrl);
+      messageCache[currentAgentId].push({ role, text, images: safeImages });
       saveCacheToStorage(currentAgentId);
     }
 
@@ -523,6 +524,25 @@
       }
     }
 
+
+    // 图床地址归一化：历史里可能是集群内绝对地址
+    // （http://image-assets-service/assets/x.png），浏览器解析不了 → 碎图。
+    // 统一改成同源 /api/assets/x.png（gateway 会转发到图床）。
+    function localizeAssetUrl(url) {
+      const raw = String(url || "");
+      if (!raw || !raw.includes("/assets/")) return raw;
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        if (parsed.pathname.startsWith("/api/assets/")) {
+          return parsed.pathname + parsed.search;
+        }
+        const name = parsed.pathname.split("/assets/").pop();
+        return name ? `/api/assets/${name}` : raw;
+      } catch (err) {
+        return raw;
+      }
+    }
+
     function addMsg(role, text, images) {
       syncMessageToCache(role, text, images);
       const row = document.createElement("div");
@@ -534,7 +554,7 @@
         for (const imgUrl of images) {
           const img = document.createElement("img");
           img.className = "msg-img";
-          img.src = imgUrl;
+          img.src = localizeAssetUrl(imgUrl);
           img.loading = "lazy";
           bubble.appendChild(img);
         }
