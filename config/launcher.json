@@ -6,5 +6,12 @@
     "account_mode": "fixed",
     "file_fallback": true,
     "_说明": "server_url 留空 = 记忆用本地文件模式（不写库、不检索）。填写形如 http://10.0.0.5:1933 即启用 openviking 记忆；api_key 放 config/openviking/api_key。"
+  },
+  "clawhub": {
+    "mode": "local",
+    "bin": "",
+    "node_dir": "",
+    "skill_root": "",
+    "_说明": "skills 功能用。bin/node_dir 留空=启动器自动找（PATH、常见安装目录）；找不到时技能只能读，启动日志会告警。装法：winget install OpenJS.NodeJS.LTS，然后 npm i -g clawhub。"
   }
 }

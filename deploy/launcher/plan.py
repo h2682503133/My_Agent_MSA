@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -118,6 +119,54 @@ def openviking_settings(data_dir: Path) -> dict:
     return section if isinstance(section, dict) else {}
 
 
+
+def clawhub_settings(data_dir: Path) -> dict:
+    """launcher.json 的 clawhub 段：bin / node_dir / skill_root / enabled。"""
+    try:
+        data = load_settings(data_dir)
+    except ValueError as exc:
+        return {"_error": str(exc)}
+    section = data.get("clawhub") or {}
+    return section if isinstance(section, dict) else {}
+
+
+def find_node_dir() -> str:
+    """找 Node 安装目录（clawhub.cmd 内部要调 node，PATH 里必须有它）。
+
+    顺序：当前 PATH → 常见安装位置。返回空串表示没装。
+    """
+    exe = shutil.which("node")
+    if exe:
+        return str(Path(exe).parent)
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "nodejs",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "nodejs",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "nodejs",
+        Path(os.environ.get("APPDATA", "")) / "npm",
+    ]
+    for item in candidates:
+        if item and (item / "node.exe").is_file():
+            return str(item)
+    return ""
+
+
+def find_clawhub_bin(node_dir: str = "") -> str:
+    """找 clawhub 可执行文件（npm 全局安装，常在 %APPDATA%\\npm）。"""
+    for name in ("clawhub.cmd", "clawhub.exe", "clawhub.ps1"):
+        found = shutil.which(name)
+        if found:
+            return found
+    candidates = [
+        Path(os.environ.get("APPDATA", "")) / "npm" / "clawhub.cmd",
+        Path(os.environ.get("APPDATA", "")) / "npm" / "clawhub.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "nodejs" / "clawhub.cmd",
+    ]
+    for item in candidates:
+        if item.is_file():
+            return str(item)
+    return ""
+
+
 def build(
     repo_root: Path,
     data_dir: Path,
@@ -218,6 +267,37 @@ def build(
         cfg_orch = Path(data_dir) / "config" / "orchestrator" / "config"
         env["WORLD_INFO_PATH"] = str(cfg_orch / "world_info" / "world_info.json")
         env["WORLD_INFO_GROUPS_PATH"] = str(cfg_orch / "world_info" / "groups.json")
+    if "tool-runtime-service" in ids and "skills" in features:
+        # 技能（ClawHub）：单体默认走本机 CLI。clawhub.cmd 内部调 node，
+        # 所以把 node 目录拼进 PATH —— 面板/命令行启动时 PATH 可能还是装 Node 之前的老值。
+        claw = clawhub_settings(data_dir)
+        if claw.get("_error"):
+            warnings.append(claw["_error"])
+        node_dir = str(os.getenv("MYAGENT_NODE_DIR") or claw.get("node_dir") or find_node_dir()).strip()
+        claw_bin = str(os.getenv("MYAGENT_CLAWHUB_BIN") or claw.get("bin") or find_clawhub_bin(node_dir)).strip()
+        mode = str(claw.get("mode") or "local").strip().lower()
+        skill_root = str(Path(data_dir) / "workspace" / "skills")
+
+        env["CLAW_DOWNLOAD_MODE"] = "local" if mode in ("local", "clawhub") else mode
+        env["CLAW_EXTERNAL_VM_SKILL_ROOT_DIR"] = skill_root
+        if claw_bin:
+            env["CLAW_EXTERNAL_VM_CLAWHUB_BIN"] = claw_bin
+        if node_dir:
+            env["PATH"] = node_dir + os.pathsep + env.get("PATH", os.environ.get("PATH", ""))
+        # 缺东西不静默：明确告诉用户技能只能读
+        if not node_dir:
+            env["ENABLE_CLAWHUB"] = "false"
+            warnings.append(
+                "未找到 Node.js：ClawHub 搜索/安装不可用（技能只能读）。"
+                "装 Node LTS 后 npm i -g clawhub，或在 launcher.json 的 clawhub.node_dir 指明路径"
+            )
+        elif not claw_bin:
+            env["ENABLE_CLAWHUB"] = "false"
+            warnings.append(
+                "未找到 clawhub 命令：ClawHub 搜索/安装不可用（技能只能读）。"
+                "执行 npm i -g clawhub，或在 launcher.json 的 clawhub.bin 指明 clawhub.cmd 路径"
+            )
+
     if "embedding-service" in ids:
         env["EMBEDDING_SERVICE_TARGET"] = endpoint("embedding-service") or ""
 
@@ -332,7 +412,6 @@ def init_config(repo_root: Path, data_dir: Path) -> tuple[int, list[str]]:
 
     返回 (新增文件数, 已有文件数)。模板只复制，从不回写仓库。
     """
-    import shutil
 
     src = Path(repo_root) / CONFIG_SOURCE
     dst = Path(data_dir) / "config"

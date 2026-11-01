@@ -118,6 +118,17 @@ def main() -> int:
     no_cfg = _plan.openviking_settings(_Path(_tempfile.mkdtemp()))
     check("缺配置时返回空（由 build 给出显式告警）", no_cfg == {}, str(no_cfg))
 
+
+    print("skills 功能：clawhub 注入")
+    skills_plan = build(ROOT, _Path(_tempfile.mkdtemp()), ["core", "memory", "tools.basic", "skills"], {"memory": "local"})
+    check("CLAW_DOWNLOAD_MODE=local", skills_plan.env.get("CLAW_DOWNLOAD_MODE") == "local", str(skills_plan.env.get("CLAW_DOWNLOAD_MODE")))
+    check("技能目录指向数据目录",
+          str(skills_plan.env.get("CLAW_EXTERNAL_VM_SKILL_ROOT_DIR", "")).endswith("workspace\\skills"),
+          str(skills_plan.env.get("CLAW_EXTERNAL_VM_SKILL_ROOT_DIR")))
+    check("clawhub 相关问题都有显式告警",
+          all(("Node" in w or "clawhub" in w) for w in skills_plan.warnings if "ClawHub" in w or "Node" in w or "clawhub" in w),
+          str(skills_plan.warnings))
+
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {FAILS}")

@@ -182,6 +182,37 @@ def _spawn_assets(plan: Plan) -> subprocess.Popen | None:
         creationflags=creation,
     )
 
+
+
+def _load_known_pids(data_dir: Path) -> dict[str, int]:
+    """读上次 pids.json 里的服务 → pid（用于"沿用已在运行的服务"）。"""
+    path = Path(data_dir) / "pids.json"
+    if not path.is_file():
+        return {}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:  # noqa: BLE001
+        return {}
+    result: dict[str, int] = {}
+    for item in state.get("processes") or []:
+        svc_id = str(item.get("id") or "")
+        pid = item.get("pid")
+        if svc_id and isinstance(pid, int):
+            result[svc_id] = pid
+    return result
+
+
+def _pid_alive(pid: int) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
 def start(plan: Plan) -> int:
     prepare(plan)
     if venv_python(plan.data_dir).exists():
@@ -207,9 +238,22 @@ def start(plan: Plan) -> int:
         started.append(("web-frontend", web_proc, {"http": plan.web_port}))
         _log(f"启动 web-frontend（pid {web_proc.pid}）→ http://127.0.0.1:{plan.web_port}/login.html")
 
+    # 上次运行记录：被跳过的服务如果本来就是自己起的，要把 pid 继承下来，
+    # 否则 pids.json 会丢掉它们 → 之后 --stop 管不住，变成孤儿进程。
+    known = _load_known_pids(plan.data_dir)
+    inherited: dict[str, int] = {}
+
     for svc in plan.services:
         if any(_port_open(port) for port in svc.ports.values()):
-            _log(f"跳过 {svc.id}：端口已被占用 {svc.ports}")
+            pid = known.get(svc.id, 0)
+            if pid and _pid_alive(pid):
+                inherited[svc.id] = pid
+                _log(f"沿用已在运行的 {svc.id}（pid {pid}，端口 {svc.ports}）")
+            else:
+                _log(
+                    f"⚠ 跳过 {svc.id}：端口已被占用 {svc.ports}，但不是本启动器启动的进程。"
+                    "该服务可能跑的是旧代码/旧配置；确认后请先释放端口再启动"
+                )
             continue
         proc = _spawn(plan, svc)
         started.append((svc.id, proc, svc.ports))
@@ -236,13 +280,21 @@ def start(plan: Plan) -> int:
         "processes": [
             {"id": svc_id, "pid": proc.pid, "ports": ports}
             for svc_id, proc, ports in started
+        ] + [
+            # 沿用（端口占用但确是自己上次起的）：也写进来，--stop 才停得掉
+            {"id": svc_id, "pid": pid, "ports": {}, "inherited": True}
+            for svc_id, pid in inherited.items()
         ],
         "not_ready": list(pending),
     }
     (plan.data_dir / "pids.json").write_text(
         json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    _log(f"已启动 {len(started)} 个服务；状态写入 {plan.data_dir / 'pids.json'}")
+    _log(
+        f"已启动 {len(started)} 个服务"
+        + (f"，沿用 {len(inherited)} 个已在运行的" if inherited else "")
+        + f"；状态写入 {plan.data_dir / 'pids.json'}"
+    )
 
     if not started:
         return 1

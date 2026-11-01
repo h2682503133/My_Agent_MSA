@@ -159,7 +159,15 @@ class SkillRuntime:
         if not config.OPENVIKING_SERVER_URL:
             raise RuntimeError("OPENVIKING_SERVER_URL is empty")
 
-        import openviking as ov
+        try:
+            import openviking as ov
+        except ImportError as exc:
+            # 单机（共享 venv）默认不装 openviking：它要求 fastapi>=0.128，
+            # 与 gateway/dashboard 钉的 0.115.6 冲突。容器镜像里仍会装。
+            raise RuntimeError(
+                "openviking 包未安装：当前环境的共享 venv 排除了它（与 fastapi 版本冲突）。"
+                "要本地长期记忆请改用 openviking-context-service，或用 --allow-excluded 重装依赖"
+            ) from exc
 
         client_cls = getattr(ov, "AsyncHTTPClient", None)
         if client_cls is None:
@@ -266,6 +274,14 @@ class SkillRuntime:
 
     def _run_local_command(self, command: list[str], cwd: Path | None = None, timeout: int | None = None) -> str:
         self._ensure_dirs()
+        # Windows 上 .cmd/.bat 不能直接 CreateProcess（npm 全局装出来的 clawhub.cmd 就是这种），
+        # 必须经由 cmd /c 启动，否则报 FileNotFoundError: [WinError 2]。
+        if os.name == "nt" and command:
+            first = str(command[0]).lower()
+            if first.endswith((".cmd", ".bat")):
+                command = ["cmd", "/c", *command]
+            elif first in {"clawhub", "npm", "npx", "node"}:
+                command = ["cmd", "/c", *command]
         proc = subprocess.run(
             command,
             cwd=str(cwd or self.skill_root),
@@ -486,6 +502,7 @@ class SkillRuntime:
             lines.append(f"{index}. [{hit.score:.2f}] {content}")
         return "\n".join(lines)
 
+    @staticmethod
     def _first_arg(args: list[str], kwargs: dict[str, str], *names: str) -> str:
         for name in names:
             value = kwargs.get(name)
