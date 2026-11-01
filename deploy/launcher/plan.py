@@ -22,7 +22,7 @@ MODE_SERVICES = {
     },
     "qq": {
         "satori": ["qq-llbot-service"],
-        "onebot": [],   # S5：OneBot 适配器
+        "onebot": ["qq-onebot-service"],
     },
 }
 
@@ -167,6 +167,17 @@ def find_clawhub_bin(node_dir: str = "") -> str:
     return ""
 
 
+
+def qq_settings(data_dir: Path) -> dict:
+    """launcher.json 的 qq 段：mode / ws_url / token / self_id / group_require_at。"""
+    try:
+        data = load_settings(data_dir)
+    except ValueError as exc:
+        return {"_error": str(exc)}
+    section = data.get("qq") or {}
+    return section if isinstance(section, dict) else {}
+
+
 def build(
     repo_root: Path,
     data_dir: Path,
@@ -297,6 +308,37 @@ def build(
                 "未找到 clawhub 命令：ClawHub 搜索/安装不可用（技能只能读）。"
                 "执行 npm i -g clawhub，或在 launcher.json 的 clawhub.bin 指明 clawhub.cmd 路径"
             )
+
+    qq_ids = {"qq-llbot-service", "qq-onebot-service", "qq-official-service"} & ids
+    if qq_ids:
+        qq = qq_settings(data_dir)
+        if qq.get("_error"):
+            warnings.append(qq["_error"])
+        mode = str(qq.get("mode") or modes.get("qq") or ("onebot" if "qq-onebot-service" in ids else "satori")).strip()
+        if "qq-onebot-service" in ids:
+            # NapCat / LLOneBot / go-cqhttp 都兼容 OneBot 11
+            env["ONEBOT_MODE"] = str(qq.get("onebot_mode") or "forward").strip().lower()
+            ws_url = str(os.getenv("ONEBOT_WS_URL") or qq.get("ws_url") or "").strip()
+            if ws_url:
+                env["ONEBOT_WS_URL"] = ws_url
+            else:
+                warnings.append(
+                    "未配置 qq.ws_url：OneBot 适配器将尝试连 ws://127.0.0.1:3001/（NapCat 默认 WS 端口）。"
+                    "在 launcher.json 的 qq.ws_url 填写 NapCat 的正向 WS 地址"
+                )
+            listen = str(qq.get("ws_listen") or "").strip()
+            if listen:
+                env["ONEBOT_WS_LISTEN"] = listen
+            token = str(qq.get("token") or "").strip()
+            if token:
+                env["ONEBOT_TOKEN"] = token
+            self_id = str(qq.get("self_id") or "").strip()
+            if self_id:
+                env["ONEBOT_SELF_ID"] = self_id
+            if qq.get("group_require_at") is not None:
+                env["ONEBOT_GROUP_REQUIRE_AT"] = "true" if qq.get("group_require_at") else "false"
+        if mode:
+            warnings.append(f"QQ 适配器：{mode}（多适配器同时在线时按优先级 satori=100 > onebot=90 > official=50 投递）")
 
     if "embedding-service" in ids:
         env["EMBEDDING_SERVICE_TARGET"] = endpoint("embedding-service") or ""

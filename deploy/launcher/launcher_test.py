@@ -129,6 +129,20 @@ def main() -> int:
           all(("Node" in w or "clawhub" in w) for w in skills_plan.warnings if "ClawHub" in w or "Node" in w or "clawhub" in w),
           str(skills_plan.warnings))
 
+
+    print("qq.onebot 模式")
+    qq_plan = build(ROOT, _Path(_tempfile.mkdtemp()), ["core", "qq"], {"qq": "onebot"})
+    qq_ids = [svc.id for svc in qq_plan.services]
+    check("onebot 模式会起 qq-onebot-service", "qq-onebot-service" in qq_ids, str(qq_ids))
+    check("ONEBOT_MODE 有默认值（forward）", qq_plan.env.get("ONEBOT_MODE") in ("forward", None), str(qq_plan.env.get("ONEBOT_MODE")))
+    check("缺 ws_url 时有显式告警",
+          any("ws_url" in w for w in qq_plan.warnings), str(qq_plan.warnings))
+
+    satori_plan = build(ROOT, _Path(_tempfile.mkdtemp()), ["core", "qq"], {"qq": "satori"})
+    satori_ids = [svc.id for svc in satori_plan.services]
+    check("satori 模式起 llbot 而不是 onebot",
+          "qq-llbot-service" in satori_ids and "qq-onebot-service" not in satori_ids, str(satori_ids))
+
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {FAILS}")

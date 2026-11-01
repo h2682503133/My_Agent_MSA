@@ -13,5 +13,15 @@
     "node_dir": "",
     "skill_root": "",
     "_说明": "skills 功能用。bin/node_dir 留空=启动器自动找（PATH、常见安装目录）；找不到时技能只能读，启动日志会告警。装法：winget install OpenJS.NodeJS.LTS，然后 npm i -g clawhub。"
+  },
+  "qq": {
+    "mode": "onebot",
+    "onebot_mode": "forward",
+    "ws_url": "ws://127.0.0.1:3001/",
+    "ws_listen": "0.0.0.0:6700",
+    "token": "",
+    "self_id": "",
+    "group_require_at": true,
+    "_说明": "NapCat/LLOneBot/go-cqhttp 的 OneBot 11 接口。forward=适配器连 NapCat 的 WS；reverse=NapCat 里填 ws 反向地址到 ws_listen。token 与 NapCat 配置保持一致；self_id 填机器人 QQ 号（群聊里判断是否被 @）。"
   }
 }
