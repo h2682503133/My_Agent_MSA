@@ -363,6 +363,15 @@
           ]
         },
         {
+          "name": "clawhub-list",
+          "args": "",
+          "desc": "列出本机已安装的 ClawHub 技能（读 lockfile）",
+          "groups": [
+            "技能",
+            "L0"
+          ]
+        },
+        {
           "name": "add-skill-to-viking",
           "args": "技能名",
           "desc": "将本地技能加入知识库（ClawHub 下载的技能会自动添加）",

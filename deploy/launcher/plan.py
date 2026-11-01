@@ -368,6 +368,10 @@ def build(
         "OPENVIKING_API_KEY": str(cfg / "openviking" / "api_key"),
         "OPENVIKING_ROOT_API_KEY": str(cfg / "openviking" / "root_api_key"),
         "CONFIG_ROOT": str(cfg),
+        # 工具目录（TOOL.json 管"给不给用"）：单体里就是数据目录下的那份
+        "TOOL_CATALOG_PATH": str(cfg / "orchestrator" / "system_prompt" / "TOOL.json"),
+        # 环境差异化由部署端注入：单体 = 本机（盘符即本地、clawhub 本机 CLI）
+        "TOOL_PROVIDERS": "file-copy=local,file-move=local,clawhub=local",
     })
 
     # 本地模型（model.local / Ollama）：单体里它是宿主进程，不由 launcher 启动，

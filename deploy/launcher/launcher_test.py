@@ -143,6 +143,16 @@ def main() -> int:
     check("satori 模式起 llbot 而不是 onebot",
           "qq-llbot-service" in satori_ids and "qq-onebot-service" not in satori_ids, str(satori_ids))
 
+
+    print("工具目录与 provider")
+    tplan = build(ROOT, _Path(_tempfile.mkdtemp()), ["core", "memory", "tools.basic"], {"memory": "local"})
+    check("TOOL_CATALOG_PATH 指向数据目录的 TOOL.json",
+          str(tplan.env.get("TOOL_CATALOG_PATH", "")).endswith("system_prompt\\TOOL.json"),
+          str(tplan.env.get("TOOL_CATALOG_PATH")))
+    check("TOOL_PROVIDERS 单体为本机实现",
+          tplan.env.get("TOOL_PROVIDERS") == "file-copy=local,file-move=local,clawhub=local",
+          str(tplan.env.get("TOOL_PROVIDERS")))
+
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {FAILS}")

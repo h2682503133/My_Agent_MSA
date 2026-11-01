@@ -30,6 +30,8 @@ from app.process_runtime import var_remove as process_var_remove
 from app.process_runtime import write as process_write
 from app.worldinfo_runtime import write as worldinfo_write
 from app.skill_runtime import skill_runtime
+from app import tool_registry
+from app import skill_handlers, tool_handlers  # noqa: F401  （import 即注册，顺序必须在 tool_registry 之后）
 from app.image_tools import load_image
 from app.web_search import web_search
 from app.workspace import (
@@ -213,339 +215,16 @@ class ToolRuntimeService(tool_runtime_pb2_grpc.ToolRuntimeServicer):
         )
 
     def _dispatch(self, tool_name: str, args: list[str], kwargs: dict[str, str], root: Path, timeout: int):
-        # 与原项目 core/Agent/Tool_manager.py 保持一致：
-        # 工具名使用 OpenClaw/ClawHub 风格的短横线命名，并按原名精确分发。
-        name = (tool_name or "").strip()
-
-        if name in {"", "help"}:
-            return self._help()
-
-        # windows-* 新工具：当前仅 windows-file-copy / windows-file-move
-        if name in {"windows-file-copy", "windows-file-move"}:
-            try:
-                mnt_access.ensure_enabled()
-                return mnt_access.copy_or_move(name[len("windows-"):], args, kwargs, timeout)
-            except Exception as exc:
-                return f"错误：{exc}"
-
-        # 旧 file-copy / file-move 防呆：源或目标为 Windows 目录时转调 windows-* 逻辑
-        if name in {"file-copy", "file-move"}:
-            source = kwargs.get("source") or kwargs.get("src") or (args[0] if args else "")
-            target = kwargs.get("target") or kwargs.get("dest") or (args[1] if len(args) > 1 else "")
-            if mnt_access.is_windows_path(source) or mnt_access.is_windows_path(target):
-                try:
-                    mnt_access.ensure_enabled()
-                    return mnt_access.copy_or_move(name, args, kwargs, timeout)
-                except Exception as exc:
-                    return f"错误：{exc}"
-
-        if name == "echo":
-            return kwargs.get("text") or " ".join(args)
-
-        if name == "list-workspace":
-            return list_workspace(root, config.MAX_LIST_FILES)
-
-        if name == "dir-list":
-            rel = kwargs.get("path") or (args[0] if args else "")
-            pattern = kwargs.get("pattern") or kwargs.get("glob") or (args[1] if len(args) > 1 else "")
-            # 默认递归列出；传 recursive=false 可只看当前目录
-            recursive = str(kwargs.get("recursive", "true")).lower() not in {"0", "false", "no"}
-            return list_dir(root, rel, pattern, recursive)
-
-        if name == "file-read":
-            rel = kwargs.get("path") or (args[0] if args else "")
-            return read_text(root, rel, config.MAX_READ_BYTES)
-
-        if name == "file-write":
-            rel = kwargs.get("path") or (args[0] if args else "")
-            text = kwargs.get("text") or (args[1] if len(args) > 1 else "")
-            return write_text(root, rel, text)
-
-        if name == "port-expose":
-            port = kwargs.get("port") or (args[0] if args else "")
-            return self._port_expose(port)
-
-        if name == "file-upload":
-            rel = kwargs.get("path") or (args[0] if args else "")
-            data_b64 = kwargs.get("data") or (args[1] if len(args) > 1 else "")
-            if not data_b64:
-                raise ValueError("missing data (base64)")
-            data = base64.b64decode(data_b64)
-            if len(data) > config.MAX_UPLOAD_BYTES:
-                raise ValueError(f"file too large: {len(data)} bytes > max {config.MAX_UPLOAD_BYTES} bytes")
-            return write_bytes(root, rel, data)
-
-        if name == "file-append":
-            rel = kwargs.get("path") or (args[0] if args else "")
-            text = kwargs.get("text") or (args[1] if len(args) > 1 else "")
-            return append_text(root, rel, text)
-
-        if name == "file-copy":
-            source = kwargs.get("source") or kwargs.get("src") or (args[0] if args else "")
-            target = kwargs.get("target") or kwargs.get("dest") or (args[1] if len(args) > 1 else "")
-            return copy_path(root, source, target)
-
-        if name == "file-move":
-            source = kwargs.get("source") or kwargs.get("src") or (args[0] if args else "")
-            target = kwargs.get("target") or kwargs.get("dest") or (args[1] if len(args) > 1 else "")
-            return move_path(root, source, target)
-
-        if name == "file-tail":
-            rel = kwargs.get("path") or (args[0] if args else "")
-            raw_lines = kwargs.get("lines") or kwargs.get("num_lines") or (args[1] if len(args) > 1 else "50")
-            try:
-                num_lines = int(raw_lines)
-            except (TypeError, ValueError):
-                num_lines = 50
-            return tail_text(root, rel, num_lines)
-
-        if name == "file-search":
-            pattern = kwargs.get("pattern") or kwargs.get("keyword") or kwargs.get("query") or (args[0] if args else "")
-            rel = kwargs.get("path") or (args[1] if len(args) > 1 else "")
-            raw_limit = kwargs.get("limit") or kwargs.get("max_results") or (args[2] if len(args) > 2 else "30")
-            try:
-                limit = int(raw_limit)
-            except (TypeError, ValueError):
-                limit = 30
-            case_sensitive = str(kwargs.get("case_sensitive", "")).lower() in {"1", "true", "yes"}
-            return search_text(root, pattern, rel, limit, case_sensitive)
-
-        # MSA 额外保留的文件删除工具，命名仍使用短横线风格。
-        if name == "delete-file":
-            rel = kwargs.get("path") or (args[0] if args else "")
-            return delete_path(root, rel)
-
-        if name == "unzip":
-            zip_rel = kwargs.get("path") or kwargs.get("zip") or (args[0] if args else "")
-            target_rel = kwargs.get("target") or kwargs.get("dest") or (args[1] if len(args) > 1 else "")
-            return extract_zip(root, zip_rel, target_rel)
-
-        # HTTP 请求工具，对齐提示词：fetch|url|method|data
-        #   GET:  data=搜索词（空格分隔）或章节序号/章节名；空 → 大纲/全文
-        #   POST: data=请求体，返回即结果
-        if name == "fetch":
-            url = kwargs.get("url") or (args[0] if args else "")
-            method = (kwargs.get("method") or (args[1] if len(args) > 1 else "") or "GET").upper()
-            data = kwargs.get("data") or (args[2] if len(args) > 2 else "")
-
-            # 兼容「fetch|url|搜索词」：漏写 method 时把第 2 参当 data
-            if (
-                method not in fetch_tools.VALID_HTTP_METHODS
-                and not data
-                and len(args) > 1
-                and not kwargs.get("method")
-            ):
-                data = args[1]
-                method = "GET"
-
-            return fetch_tools.fetch(
-                url=url,
-                method=method,
-                data=data,
-                timeout=timeout,
-            )
-
-        if name == "download":
-            return self._download(args=args, kwargs=kwargs, root=root, timeout=timeout)
-
-        # 网页搜索工具，对齐提示词：web-search|关键词
-        # 实现整体在 app/web_search.py（SearXNG 主通道 + 国内引擎回落）
-        if name == "web-search":
-            query = kwargs.get("query") or kwargs.get("keyword") or (args[0] if args else "")
-            limit = (
-                kwargs.get("limit")
-                or kwargs.get("count")
-                or kwargs.get("max_results")
-                or (args[1] if len(args) > 1 else "")
-            )
-            return web_search(query=query, limit=limit, timeout=timeout)
-
-        if name == "codex":
-            return self._codex(args=args, kwargs=kwargs, root=root, timeout=timeout)
-
-        # 图片 URL 工具
-        if name == "get-image-url-from-local":
-            local_path = self._first_arg(args, kwargs, "path", "local_path", default="")
-            return self._get_image_url_from_local(local_path=local_path, root=root)
-
-        if name == "send-image-by-url":
-            image_url = self._first_arg(args, kwargs, "url", "image_url", default="")
-            return self._send_image_by_url(image_url=image_url)
-
-        # 把工作区（或远程 URL）里的图片读出来**给模型看**（多模态回填）。
-        # 图片本身由 orchestrator 收到消息时自动落盘，不需要模型先"保存"。
-        if name in {"image-view", "view-image"}:
-            target = self._first_arg(args, kwargs, "path", "url", "image", default="")
-            # 第 2 参：本次看图的关注方向（_first_arg 只取位置参数 0，这里按位置取）
-            hint = str(kwargs.get("hint") or kwargs.get("focus") or kwargs.get("需求方向") or "").strip()
-            if not hint and len(args) > 1:
-                hint = str(args[1]).strip()
-            return self._image_view(target=target, root=root, hint=hint)
-
-        # 生图：调 model-proxy 的 ImageGeneration，落盘后把图推给用户。
-        if name in {"image-gen", "text-to-image", "draw"}:
-            prompt = self._first_arg(args, kwargs, "prompt", "text", "提示词", default="")
-            size = str(kwargs.get("size") or (args[1] if len(args) > 1 else "")).strip()
-            profile = str(
-                kwargs.get("model") or kwargs.get("profile") or (args[2] if len(args) > 2 else "")
-            ).strip() or "image-gen"
-            return self._image_gen(
-                prompt=prompt, size=size, model_profile=profile, root=root
-            )
-
-        if name in {"send-message", "notify"}:
-            text = self._first_arg(args, kwargs, "text", "message", default="")
-            return self._send_message(text)
-
-        # PROCESS 长期事件记录（按 user_id + agent_id 定位存储文件）
-        if name in {"reply-image", "reply_image"}:
-            from app.reply_image_tool import handle as reply_image_handle
-
-            return reply_image_handle(
-                Path(config.REPLY_IMAGES_DIR),
-                str(kwargs.get("agent_id") or "main"),
-                list(args),
-                dict(kwargs),
-                user_id=str(kwargs.get("user_id") or "default"),
-                workspace_root=root,
-                base_url=config.REPLY_IMAGE_BASE_URL,
-                asset_dir=Path(config.IMAGE_ASSET_DIR),
-            )
-
-        # 浏览器操作：优先 Playwright MCP（浏览器由它托管，snapshot 定位更稳），
-        # 没配 MCP 就退回 CDP（连宿主已开调试端口的 Edge）。
-        if name in {"browser", "browser-open", "browser-click", "browser-type"}:
-            action = str(args[0] if args else kwargs.get("action") or "").strip()
-            arg1 = str(args[1] if len(args) > 1 else kwargs.get("arg1") or "").strip()
-            arg2 = str(args[2] if len(args) > 2 else kwargs.get("arg2") or "")
-            # 允许 `browser-click|#3` 这种把动作写在工具名里的简写
-            if name != "browser" and not action:
-                action = name.split("-", 1)[1]
-
-            mcp_url = str(getattr(config, "BROWSER_MCP_URL", "") or "").strip()
-            if mcp_url:
-                from app.browser_mcp import run as mcp_run
-
-                return mcp_run(action, arg1, arg2, root, url=mcp_url)
-
-            from app.browser_tools import browser_tools
-
-            return browser_tools.run(action, arg1, arg2, root)
-
-        # 黑名单自助工具（L0）：只能改自己
-        if name in {"tool-blacklist", "blacklist"}:
-            from app.tool_blacklist import handle as blacklist_handle
-
-            return blacklist_handle(
-                list(args),
-                dict(kwargs),
-                str(kwargs.get("user_id") or "default"),
-            )
-
-        if name == "process-write":
-            index = kwargs.get("index") or (args[0] if args else "")
-            title = kwargs.get("title") or (args[1] if len(args) > 1 else "")
-            content = (
-                kwargs.get("content")
-                or kwargs.get("text")
-                or (args[2] if len(args) > 2 else "")
-            )
-            return process_write(
-                config.PROCESS_DIR,
-                kwargs.get("user_id") or "default",
-                kwargs.get("agent_id") or "main",
-                index,
-                title,
-                content,
-                max_items=int(kwargs.get("process_max_items") or 0),
-                max_chars=int(kwargs.get("process_max_chars") or 0),
-            )
-
-        if name == "process-remove":
-            index = kwargs.get("index") or (args[0] if args else "")
-            return process_remove(
-                config.PROCESS_DIR,
-                kwargs.get("user_id") or "default",
-                kwargs.get("agent_id") or "main",
-                index,
-            )
-
-        if name == "process-init":
-            return process_init(
-                config.PROCESS_DIR,
-                kwargs.get("user_id") or "default",
-                kwargs.get("agent_id") or "main",
-            )
-
-        # vars 变量（按 key 修改：严格匹配 → 别名匹配 → 脱靶新建）
-        if name == "process-modify":
-            key = kwargs.get("key") or (args[0] if args else "")
-            op = kwargs.get("op") or kwargs.get("value") or (args[1] if len(args) > 1 else "")
-            return process_modify(
-                config.PROCESS_DIR,
-                kwargs.get("user_id") or "default",
-                kwargs.get("agent_id") or "main",
-                key,
-                op,
-            )
-
-        if name == "process-var-remove":
-            key = kwargs.get("key") or (args[0] if args else "")
-            return process_var_remove(
-                config.PROCESS_DIR,
-                kwargs.get("user_id") or "default",
-                kwargs.get("agent_id") or "main",
-                key,
-            )
-
-        if name == "process-var-list":
-            return process_var_list(
-                config.PROCESS_DIR,
-                kwargs.get("user_id") or "default",
-                kwargs.get("agent_id") or "main",
-            )
-
-        # 世界书（World Info）：智能体自动更新长期设定（scope 默认当前 agent，无全局）
-        # 仅保留 write：系统自动查重（同 scope 关键词已存在 → 返回"该词条已经存在"），
-        # 删除/修改由用户在 dashboard 手动管理（worldinfo-remove/list 已移除）
-        if name == "worldinfo-write":
-            keys_str = kwargs.get("keys") or (args[0] if args else "")
-            content = (
-                kwargs.get("content")
-                or kwargs.get("text")
-                or (args[1] if len(args) > 1 else "")
-            )
-            priority = kwargs.get("priority") or (args[2] if len(args) > 2 else "0")
-            scope = kwargs.get("scope") or (args[3] if len(args) > 3 else "")
-            constant = kwargs.get("constant") or (args[4] if len(args) > 4 else "false")
-            regex = kwargs.get("regex") or (args[5] if len(args) > 5 else "false")
-            match_mode = kwargs.get("match_mode") or (args[6] if len(args) > 6 else "or")
-            exclude = kwargs.get("exclude") or (args[7] if len(args) > 7 else "")
-            return worldinfo_write(
-                config.WORLD_INFO_PATH,
-                kwargs.get("agent_id") or "main",
-                keys_str,
-                content,
-                priority,
-                scope,
-                constant,
-                regex,
-                match_mode,
-                exclude,
-            )
-
-        # Shell 执行
-        if name in {"run-shell", "shell", "command"}:
-            return self._run_shell(args=args, kwargs=kwargs, root=root, timeout=timeout)
-
-        # Skill 相关管理工具和未知工具名都交给独立 skill_runtime。
-        # 这对应原项目 ToolManager 的行为：原生工具未命中时，自动尝试按 skill 名执行。
-        return skill_runtime.dispatch(
-            tool_name=name,
-            args=args,
-            kwargs=kwargs,
-            user_workspace=root,
-            timeout=timeout,
+        """统一分发：TOOL.json 管暴露、工具自声明能力、上层注入环境实现（见 tool_registry）。"""
+        # 延迟导入：注册发生在模块 import 时，放这里可避免启动顺序问题
+        return tool_registry.dispatch(
+            tool_name,
+            args,
+            kwargs,
+            root,
+            timeout,
+            service=self,
+            skill=skill_runtime,
         )
 
     def _codex(self, args: list[str], kwargs: dict[str, str], root: Path, timeout: int) -> str:
@@ -917,6 +596,16 @@ def serve():
     log(f"skill root dir: {config.SKILL_ROOT_DIR}")
     log(f"openviking server url: {config.OPENVIKING_SERVER_URL}")
     log(f"shell tools enabled: {config.ENABLE_SHELL_TOOLS}")
+
+    # 工具目录与实现校验（TOOL.json 管暴露、工具自声明能力、上层注入 provider）
+    from app import skill_handlers, tool_handlers  # noqa: F401  （import 即注册）
+    from app import tool_registry, tool_provider
+
+    log(f"tool catalog: {config.TOOL_CATALOG_PATH or '(自动探测)'}")
+    log(f"tool providers: {tool_provider.parse() or '(按平台默认)'}")
+    problems = tool_registry.validate_startup()
+    log(f"tool registry: {len(tool_registry.registered())} 个实现，"
+        f"{len(tool_registry.alias_map())} 个别名，{len(problems)} 条提示/问题")
 
     server.wait_for_termination()
 

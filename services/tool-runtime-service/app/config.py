@@ -40,7 +40,13 @@ TOOL_RUNTIME_PORT = env_int("TOOL_RUNTIME_PORT", 5303)
 MODEL_PROXY_TARGET = os.getenv("MODEL_PROXY_TARGET", "model-proxy-service:5302")
 MODEL_TIMEOUT_SECONDS = env_int("MODEL_TIMEOUT_SECONDS", 120)
 
-WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/app/workspace")
+# 统一存储前缀（见 app/storage_paths.py）：MYAGENT_STORAGE_ROOT 存在时按它推导
+try:
+    from app import storage_paths as _storage
+except ImportError:  # pragma: no cover
+    import storage_paths as _storage  # type: ignore[no-redef]
+
+WORKSPACE_DIR = _storage.resolve_str("WORKSPACE_DIR", "workspace", default="/app/workspace")
 MAX_LIST_FILES = env_int("MAX_LIST_FILES", 500)
 MAX_READ_BYTES = env_int("MAX_READ_BYTES", 1024 * 1024)
 MAX_UPLOAD_BYTES = env_int("MAX_UPLOAD_BYTES", 48 * 1024 * 1024)
@@ -167,7 +173,7 @@ REPLY_IMAGE_BASE_URL = os.getenv(
 )
 
 # 图床 PVC 在容器里的挂载点（回复配图、本地图转 URL 都往这里写）
-IMAGE_ASSET_DIR = os.getenv("IMAGE_ASSET_DIR", "/app/assets/images")
+IMAGE_ASSET_DIR = _storage.resolve_str("IMAGE_ASSET_DIR", "assets", "images", default="/app/assets/images")
 # 图床对外 URL 前缀（image-url / send-image 用；必须是集群内可达地址）
 IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "http://image-assets-service/assets")
 
@@ -176,3 +182,11 @@ IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "http://image-assets-service/assets
 BROWSER_MCP_URL = os.getenv("BROWSER_MCP_URL", "")
 WORLD_INFO_PATH = os.getenv("WORLD_INFO_PATH", os.path.join(WORLD_INFO_DIR, "world_info.json"))
 WORLD_INFO_GROUPS_PATH = os.getenv("WORLD_INFO_GROUPS_PATH", os.path.join(WORLD_INFO_DIR, "groups.json"))
+
+# ─── 工具目录与实现（TOOL.json 管暴露 / 工具自声明能力 / 上层注入 provider）──
+# 目录文件：容器里挂载 orchestrator 的 system_prompt；单体由 launcher 注入数据目录路径
+TOOL_CATALOG_PATH = os.getenv("TOOL_CATALOG_PATH", "")
+# 环境差异化：如 "file-copy=host-ssh,clawhub=external-vm"（空 = 按平台默认）
+TOOL_PROVIDERS = os.getenv("TOOL_PROVIDERS", "")
+# 目录/实现不一致时是否启动失败（迁移期默认宽松，挂载与注入就位后改 true）
+TOOL_CATALOG_STRICT = env_bool("TOOL_CATALOG_STRICT", False)

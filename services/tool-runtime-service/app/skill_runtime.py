@@ -322,16 +322,19 @@ class SkillRuntime:
         return self._format_completed_process(proc)
 
     def _run_clawhub(self, args: list[str], timeout: int | None = None) -> str:
+        """执行 clawhub 命令：本机 CLI 还是外部 VM，由上层 `TOOL_PROVIDERS` 决定。"""
+        from app import tool_provider
+
         clawhub_bin = config.CLAW_EXTERNAL_VM_CLAWHUB_BIN or "clawhub"
-
-        if config.CLAW_DOWNLOAD_MODE in {"local", "container"}:
-            return self._run_local_command([clawhub_bin, *args], timeout=timeout)
-
-        if config.CLAW_DOWNLOAD_MODE not in {"external-vm", "external_vm", "ssh"}:
-            raise RuntimeError(f"unsupported CLAW_DOWNLOAD_MODE={config.CLAW_DOWNLOAD_MODE!r}")
-
         command = " ".join(shlex.quote(str(part)) for part in [clawhub_bin, *args])
-        return self._run_external_vm_shell(command, timeout=timeout)
+
+        providers = {
+            "local": lambda: self._run_local_command([clawhub_bin, *args], timeout=timeout),
+            "external-vm": lambda: self._run_external_vm_shell(command, timeout=timeout),
+        }
+        prefix, runner = tool_provider.select("clawhub", providers)
+        del prefix
+        return runner()
 
     @staticmethod
     @staticmethod
@@ -567,127 +570,63 @@ class SkillRuntime:
         user_workspace: Path,
         timeout: int,
     ) -> str:
-        name = (tool_name or "").strip()
+        """向后兼容入口：统一交给 tool_registry 分发（名字/别名注册在那）。"""
+        from app import tool_registry
 
-        # ClawHub 相关工具：部署时未勾选 clawhub 功能则给出明确提示
-        clawhub_tools = {
-            "clawhub-search", "search_skill", "skill-search", "search-skill",
-            "clawhub-install", "download_skill", "install_skill", "skill-install", "install-skill",
-            "clawhub-list",
-            "skill-delete",
-        }
-        if name in clawhub_tools and not config.ENABLE_CLAWHUB:
+        return tool_registry.dispatch(
+            tool_name, args, kwargs, user_workspace, timeout, skill=self
+        )
+
+    def dispatch_unknown(
+        self,
+        tool_name: str,
+        args: list[str],
+        kwargs: dict[str, str],
+        user_workspace: Path,
+        timeout: int,
+    ) -> str:
+        """未登记的名字：沿用旧行为，当作已安装技能名执行。"""
+        return self.run_skill(tool_name, args=args, user_workspace=user_workspace, timeout=timeout)
+
+    def dsh_tool(self, args, kwargs, user_workspace: Path, timeout: int) -> str:
+        """dsh（DeepSeek Harness）外部大脑：`工具调用:dsh|工作区|要求`。
+
+        工作区可留空（用调用者的工作区，服务端按 DSH_PATH_MAP 翻译）；
+        只给一个参数且不像路径时，当作"要求"。会话由工作区决定（同一工作区=同一 dsh 会话）。
+        """
+        parts = [str(a).strip() for a in args]
+        if self._dsh_args_are_dirty(parts):
             return (
-                "错误：ClawHub 未启用。部署 tool-runtime 时未勾选「clawhub 技能执行」功能，"
-                "无法搜索/安装/卸载技能。如需启用，请重新运行 deploy-all.ps1 并勾选 clawhub，"
-                "或设置环境变量 ENABLE_CLAWHUB=true 后重启 tool-runtime。"
+                "错误：dsh 的参数里混进了上次的报错/用法文本，已拒绝发送。\n"
+                "请重新组织成两段：工具调用:dsh|工作区|任务，例如 "
+                "工具调用:dsh|.|用 pwsh 打印当前目录"
             )
-
-        # OpenViking（技能知识库）相关工具：部署时未勾选 openviking-server 则提示未启用
-        openviking_tools = {
-            "skill-list", "skill-list-simple",
-            "skill-abstract", "skill-overview", "skill-manual",
-            "add-skill-to-viking",
-        }
-        if name in openviking_tools and not config.ENABLE_OPENVIKING:
+        if self._dsh_args_are_placeholders(parts):
             return (
-                "错误：OpenViking 未启用。部署时未勾选 openviking-server（技能知识库），"
-                "无法查询或导入技能。如需启用，请重新运行 deploy-all.ps1 并勾选 openviking-server，"
-                "或设置环境变量 ENABLE_OPENVIKING=true 后重启 tool-runtime。"
+                "错误：dsh 的参数是占位符，没有替换成真实值。\n"
+                "用法 工具调用:dsh|工作区路径|任务，例如："
+                "工具调用:dsh|.|用 pwsh 打印当前目录"
             )
-
-        if name in {"clawhub-search", "search_skill", "skill-search", "search-skill"}:
-            keyword = self._first_arg(args, kwargs, "keyword", "query", "name")
-            return self.clawhub_search(keyword, timeout=timeout)
-
-        if name in {"clawhub-install", "download_skill", "install_skill", "skill-install", "install-skill"}:
-            skill_slug = self._first_arg(args, kwargs, "skill_slug", "skill", "name")
-            return self.clawhub_install(skill_slug, timeout=timeout)
-
-        if name == "clawhub-list":
-            return self.clawhub_list(timeout=timeout)
-
-        if name == "skill-list":
-            return self.skill_list()
-
-        if name == "skill-list-simple":
-            return self.skill_list_simple()
-
-        if name == "skill-delete":
-            skill_slug = self._first_arg(args, kwargs, "skill_slug", "skill", "name")
-            return self.skill_delete(skill_slug, timeout=timeout)
-
-        if name == "skill-abstract":
-            skill_name = self._first_arg(args, kwargs, "skill_name", "skill", "name")
-            return self.skill_abstract(skill_name)
-
-        if name == "skill-overview":
-            skill_name = self._first_arg(args, kwargs, "skill_name", "skill", "name")
-            return self.skill_overview(skill_name)
-
-        if name == "skill-manual":
-            skill_name = self._first_arg(args, kwargs, "skill_name", "skill", "name")
-            return self.skill_manual(skill_name)
-
-        if name == "add-skill-to-viking":
-            skill_slug = self._first_arg(args, kwargs, "skill_slug", "skill", "name")
-            return self.add_skill_to_viking(skill_slug)
-
-        if name in {"viking-search", "viking-search-memory"}:
-            def _positional(index: int) -> str:
-                return str(args[index]).strip() if len(args) > index and str(args[index]).strip() else ""
-
-            query = str(kwargs.get("query") or kwargs.get("text") or kwargs.get("关键词") or "").strip() or _positional(0)
-            scope = str(kwargs.get("scope") or kwargs.get("范围") or "").strip() or _positional(1) or "session"
-            top_k = str(kwargs.get("top_k") or kwargs.get("limit") or kwargs.get("条数") or "").strip() or _positional(2) or "8"
-            return self.viking_search(
-                query,
-                scope=scope,
-                top_k=top_k,
-                user_id=str(kwargs.get("user_id") or ""),
-                session_id=str(kwargs.get("session_id") or ""),
-                agent_id=str(kwargs.get("agent_id") or ""),
+        if self._dsh_args_misordered(parts):
+            return (
+                "错误：工作区要写在**最前面**。用法 工具调用:dsh|工作区路径|任务\n"
+                "默认工作区写 `.`，例如：工具调用:dsh|.|打印当前目录"
             )
-
-        # dsh（DeepSeek Harness）外部大脑：`工具调用:dsh|工作区|要求`
-        # 工作区可留空（用调用者的工作区，服务端按 DSH_PATH_MAP 翻译）；
-        # 只给一个参数且不像路径时，当作“要求”。会话由工作区决定（同一工作区=同一 dsh 会话）。
-        if name in {"dsh", "dsh-chat"}:
-            parts = [str(a).strip() for a in args]
-            if self._dsh_args_are_dirty(parts):
-                return (
-                    "错误：dsh 的参数里混进了上次的报错/用法文本，已拒绝发送。\n"
-                    "请重新组织成两段：工具调用:dsh|工作区|任务，例如 "
-                    "工具调用:dsh|.|用 pwsh 打印当前目录"
-                )
-            if self._dsh_args_are_placeholders(parts):
-                return (
-                    "错误：dsh 的参数是占位符，没有替换成真实值。\n"
-                    "用法 工具调用:dsh|工作区路径|任务，例如："
-                    "工具调用:dsh|.|用 pwsh 打印当前目录"
-                )
-            if self._dsh_args_misordered(parts):
-                return (
-                    "错误：工作区要写在**最前面**。用法 工具调用:dsh|工作区路径|任务\n"
-                    "默认工作区写 `.`，例如：工具调用:dsh|.|打印当前目录"
-                )
-            workspace, preset, prompt = self._split_dsh_args(parts)
-            if not prompt:
-                return (
-                    "错误：dsh 需要任务内容。用法 工具调用:dsh|工作区路径|任务"
-                    "（默认工作区写 `.`）"
-                )
-            return dsh_client.ask(
-                prompt,
-                workspace=workspace,
-                preset=preset,
-                session_id=str(kwargs.get("session_id") or ""),
-                user_id=str(kwargs.get("user_id") or ""),
-                user_workspace=user_workspace,
-                timeout=timeout,
+        workspace, preset, prompt = self._split_dsh_args(parts)
+        if not prompt:
+            return (
+                "错误：dsh 需要任务内容。用法 工具调用:dsh|工作区路径|任务"
+                "（默认工作区写 `.`）"
             )
-
-        return self.run_skill(name, args=args, user_workspace=user_workspace, timeout=timeout)
+        return dsh_client.ask(
+            prompt,
+            workspace=workspace,
+            preset=preset,
+            session_id=str(kwargs.get("session_id") or ""),
+            user_id=str(kwargs.get("user_id") or ""),
+            user_workspace=user_workspace,
+            timeout=timeout,
+        )
 
     def clawhub_search(self, keyword: str, timeout: int) -> str:
         if not keyword:

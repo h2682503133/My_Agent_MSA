@@ -1,0 +1,375 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "tool-runtime-service",
+    "namespace": "agent",
+    "labels": {
+      "app": "tool-runtime-service"
+    }
+  },
+  "spec": {
+    "replicas": 1,
+    "selector": {
+      "matchLabels": {
+        "app": "tool-runtime-service"
+      }
+    },
+    "strategy": {
+      "rollingUpdate": {
+        "maxSurge": "25%",
+        "maxUnavailable": "25%"
+      },
+      "type": "RollingUpdate"
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app": "tool-runtime-service"
+        }
+      },
+      "spec": {
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "NODE_IP",
+                "valueFrom": {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "status.hostIP"
+                  }
+                }
+              },
+              {
+                "name": "TOOL_RUNTIME_HOST",
+                "value": "0.0.0.0"
+              },
+              {
+                "name": "TOOL_RUNTIME_PORT",
+                "value": "5303"
+              },
+              {
+                "name": "WORKSPACE_DIR",
+                "value": "/app/workspace"
+              },
+              {
+                "name": "ENABLE_SHELL_TOOLS",
+                "value": "true"
+              },
+              {
+                "name": "PROCESS_DIR",
+                "value": "/app/system_prompts/orchestrator/config/process"
+              },
+              {
+                "name": "OPENVIKING_SERVER_URL",
+                "value": "http://openviking.agent.svc.cluster.local:1933"
+              },
+              {
+                "name": "OPENVIKING_API_KEY",
+                "value": "/app/system_prompts/openviking/api_key"
+              },
+              {
+                "name": "OPENVIKING_ACCOUNT",
+                "value": "my-agent"
+              },
+              {
+                "name": "OPENVIKING_USER",
+                "value": "system"
+              },
+              {
+                "name": "OPENVIKING_AGENT",
+                "value": "skills"
+              },
+              {
+                "name": "CLAW_DOWNLOAD_MODE",
+                "value": "external-vm"
+              },
+              {
+                "name": "CLAW_EXTERNAL_VM_HOST",
+                "value": "172.27.146.29"
+              },
+              {
+                "name": "CLAW_EXTERNAL_VM_USER",
+                "value": "asus"
+              },
+              {
+                "name": "CLAW_EXTERNAL_VM_PORT",
+                "value": "22"
+              },
+              {
+                "name": "CLAW_EXTERNAL_VM_SSH_KEY",
+                "value": "/app/secrets/claw-external-vm/id_rsa"
+              },
+              {
+                "name": "CLAW_EXTERNAL_VM_SKILL_ROOT_DIR",
+                "value": "/srv/nfs/my-agent/workspace/skill"
+              },
+              {
+                "name": "CLAW_EXTERNAL_VM_CLAWHUB_BIN",
+                "value": "/home/asus/.local/bin/my-agent-clawhub"
+              },
+              {
+                "name": "CODEX_BIN_PATH",
+                "value": "/home/asus/.local/bin/my-agent-codex"
+              },
+              {
+                "name": "SEARXNG_URL",
+                "value": "http://localhost:8080"
+              },
+              {
+                "name": "CLAW_EXTERNAL_VM_STRICT_HOST_KEY_CHECKING",
+                "value": "false"
+              },
+              {
+                "name": "IMAGE_ASSET_DIR",
+                "value": "/app/assets/images"
+              },
+              {
+                "name": "IMAGE_BASE_URL",
+                "value": "http://image-assets-service/assets"
+              },
+              {
+                "name": "DEFAULT_TIMEOUT_SECONDS",
+                "value": "600"
+              },
+              {
+                "name": "DSH_ONEBOT_TOKEN",
+                "value": "dshlink-4ef3ef4c7979f46eae4e120920ea8b39"
+              },
+              {
+                "name": "DSH_WORKSPACE_ROOT",
+                "value": "\\\\wsl.localhost\\Ubuntu-24.04\\srv\\nfs\\my-agent\\workspace"
+              },
+              {
+                "name": "DSH_SELF_ID",
+                "value": "10001"
+              },
+              {
+                "name": "DSH_SENDER_ID",
+                "value": "10086"
+              },
+              {
+                "name": "DSH_PERMISSION_PRESET"
+              },
+              {
+                "name": "DSH_TARGET_SESSION"
+              },
+              {
+                "name": "DSH_DEFAULT_CHAT",
+                "value": "group:548018"
+              },
+              {
+                "name": "DSH_SHARED_CHAT_TIMEOUT_SECONDS",
+                "value": "300"
+              },
+              {
+                "name": "DSH_REPLY_TIMEOUT_SECONDS",
+                "value": "300"
+              },
+              {
+                "name": "DSH_DEFAULT_CHAT_WORKSPACE"
+              },
+              {
+                "name": "BROWSER_CDP_URL",
+                "value": "http://172.18.0.1:9224"
+              },
+              {
+                "name": "BROWSER_MCP_URL",
+                "value": "http://172.18.0.1:9335/mcp"
+              },
+              {
+                "name": "TOOL_CATALOG_PATH",
+                "value": "/app/system_prompts/orchestrator/system_prompt/TOOL.json"
+              },
+              {
+                "name": "TOOL_PROVIDERS",
+                "value": "file-copy=host-ssh,file-move=host-ssh,clawhub=external-vm"
+              }
+            ],
+            "image": "agent/tool-runtime-service:v135",
+            "imagePullPolicy": "Always",
+            "name": "tool-runtime-service",
+            "ports": [
+              {
+                "containerPort": 5303,
+                "name": "grpc",
+                "protocol": "TCP"
+              }
+            ],
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [
+              {
+                "mountPath": "/app/workspace",
+                "name": "workspace"
+              },
+              {
+                "mountPath": "/app/system_prompts",
+                "name": "system-prompts"
+              },
+              {
+                "mountPath": "/app/secrets/claw-external-vm",
+                "name": "claw-external-vm-ssh",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/app/assets",
+                "name": "assets"
+              }
+            ]
+          },
+          {
+            "env": [
+              {
+                "name": "DSH_ONEBOT_TOKEN",
+                "value": "dshlink-4ef3ef4c7979f46eae4e120920ea8b39"
+              },
+              {
+                "name": "DSH_WORKSPACE_ROOT",
+                "value": "\\\\wsl.localhost\\Ubuntu-24.04\\srv\\nfs\\my-agent\\workspace"
+              },
+              {
+                "name": "DSH_SELF_ID",
+                "value": "10001"
+              },
+              {
+                "name": "DSH_SENDER_ID",
+                "value": "10086"
+              },
+              {
+                "name": "DSH_PERMISSION_PRESET"
+              },
+              {
+                "name": "DSH_TARGET_SESSION"
+              },
+              {
+                "name": "DSH_DEFAULT_CHAT",
+                "value": "group:548018"
+              },
+              {
+                "name": "DSH_SHARED_CHAT_TIMEOUT_SECONDS",
+                "value": "300"
+              },
+              {
+                "name": "DSH_REPLY_TIMEOUT_SECONDS",
+                "value": "300"
+              },
+              {
+                "name": "DSH_DEFAULT_CHAT_WORKSPACE"
+              },
+              {
+                "name": "IMAGE_BASE_URL",
+                "value": "http://image-assets-service/assets"
+              },
+              {
+                "name": "BROWSER_CDP_URL",
+                "value": "http://172.18.0.1:9224"
+              },
+              {
+                "name": "BROWSER_MCP_URL",
+                "value": "http://172.18.0.1:9335/mcp"
+              },
+              {
+                "name": "TOOL_CATALOG_PATH",
+                "value": "/app/system_prompts/orchestrator/system_prompt/TOOL.json"
+              },
+              {
+                "name": "TOOL_PROVIDERS",
+                "value": "file-copy=host-ssh,file-move=host-ssh,clawhub=external-vm"
+              }
+            ],
+            "image": "searxng/searxng:latest",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "searxng",
+            "ports": [
+              {
+                "containerPort": 8080,
+                "name": "http",
+                "protocol": "TCP"
+              }
+            ],
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/searxng/settings.yml",
+                "name": "searxng-config",
+                "subPath": "settings.yml"
+              },
+              {
+                "mountPath": "/etc/searxng/limiter.yml",
+                "name": "searxng-config",
+                "subPath": "limiter.yml"
+              }
+            ]
+          }
+        ],
+        "dnsConfig": {
+          "nameservers": [
+            "223.5.5.5",
+            "119.29.29.29"
+          ],
+          "options": [
+            {
+              "name": "ndots",
+              "value": "2"
+            },
+            {
+              "name": "timeout",
+              "value": "2"
+            },
+            {
+              "name": "attempts",
+              "value": "3"
+            }
+          ],
+          "searches": [
+            "agent.svc.cluster.local",
+            "svc.cluster.local",
+            "cluster.local"
+          ]
+        },
+        "dnsPolicy": "ClusterFirst",
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {},
+        "terminationGracePeriodSeconds": 30,
+        "volumes": [
+          {
+            "name": "workspace",
+            "persistentVolumeClaim": {
+              "claimName": "my-agent-workspace-pvc"
+            }
+          },
+          {
+            "name": "system-prompts",
+            "persistentVolumeClaim": {
+              "claimName": "my-agent-config-pvc"
+            }
+          },
+          {
+            "name": "assets",
+            "persistentVolumeClaim": {
+              "claimName": "my-agent-assets-pvc"
+            }
+          },
+          {
+            "name": "claw-external-vm-ssh",
+            "secret": {
+              "defaultMode": 256,
+              "secretName": "claw-external-vm-ssh"
+            }
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "searxng-config"
+            },
+            "name": "searxng-config"
+          }
+        ]
+      }
+    }
+  }
+}
