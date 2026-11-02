@@ -20,6 +20,13 @@ message ChatCompletionRequest {
 message Usage {
   int32 prompt_tokens = 1;
   int32 completion_tokens = 2;
+  // 命中前缀缓存的 prompt token
+  //   DeepSeek: usage.prompt_cache_hit_tokens
+  //   OpenAI:   usage.prompt_tokens_details.cached_tokens
+  //   Anthropic: usage.cache_read_input_tokens
+  int32 cached_tokens = 3;
+  // 未命中的 prompt token（DeepSeek 直接给 prompt_cache_miss_tokens；其他实现由 prompt - cached 推）
+  int32 cache_miss_tokens = 4;
 }
 
 message ChatCompletionResponse {

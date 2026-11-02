@@ -69,6 +69,8 @@ class ModelProxyClient:
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
+                    "cached_tokens": getattr(response.usage, "cached_tokens", 0),
+                    "cache_miss_tokens": getattr(response.usage, "cache_miss_tokens", 0),
                 },
                 "provider": response.provider,
                 "model": response.model,

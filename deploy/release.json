@@ -1,12 +1,12 @@
 {
   "_comment": "镜像版本的唯一事实源。改版本请用 `python -X utf8 deploy/release.py bump <svc>`，它会把 tag 写回 deploy/services/*.yaml、compose、tool-runtime-apply.sh、gen_protos.py、services/*/README.md；`check` 会在部署前校验漂移。pip 依赖的唯一事实源是 services/<svc>/requirements.txt。",
   "services": {
-    "agent-orchestrator-service": "v1.2",
+    "agent-orchestrator-service": "v1.3",
     "dashboard-service": "v1.1",
     "embedding-service": "v1.1",
     "frontend-service": "v1.1",
     "gateway-backend-service": "v1.1",
-    "model-proxy-service": "v1.1",
+    "model-proxy-service": "v1.3",
     "openviking-context-service": "v1.4",
     "qq-llbot-service": "v1.1",
     "qq-official-service": "v1.1",
@@ -23,5 +23,5 @@
       "container": "openviking"
     }
   },
-  "deployed_commit": "31f07390b54892ed6873f82689c973dcd44b054c"
+  "deployed_commit": "6986acda96cb0c8125cd99dcf7fbc56e42b70fb2"
 }

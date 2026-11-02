@@ -108,7 +108,7 @@ no-mock build：本版本 `MOCK_MODEL` 已硬编码为 `False`，不再提供 mo
 ## Docker
 
 ```bash
-docker build -t agent/model-proxy-service:v1.1 .
+docker build -t agent/model-proxy-service:v1.3 .
 ```
 
 ## K8s

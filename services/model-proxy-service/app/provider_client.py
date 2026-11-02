@@ -22,6 +22,66 @@ def _parse_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def parse_usage(
+    usage: dict[str, Any] | None,
+    *,
+    prompt_fallback: int = 0,
+    completion_fallback: int = 0,
+) -> dict[str, Any]:
+    """把各家 usage 归一成 {prompt_tokens, completion_tokens, cached_tokens, cache_miss_tokens}。
+
+    各家字段名不一样，别各自猜：
+      - DeepSeek：`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`（都直接给）
+      - OpenAI/兼容：`prompt_tokens_details.cached_tokens`（只给命中数）
+      - Anthropic：`cache_read_input_tokens`（命中）/ `cache_creation_input_tokens`（写入，不算命中）
+      - 其它（Ollama 等）：没有缓存概念 → cached=0、miss=prompt
+    缓存命中是**计费口径**（DeepSeek 命中价低一个量级），所以日志和统计都要带上。
+    """
+    data = usage if isinstance(usage, dict) else {}
+    prompt = _parse_int(data.get("prompt_tokens", 0)) or int(prompt_fallback or 0)
+    completion = _parse_int(data.get("completion_tokens", 0)) or int(completion_fallback or 0)
+
+    cached: int | None = None
+    for key in ("prompt_cache_hit_tokens", "cache_read_input_tokens"):
+        if data.get(key) is not None:
+            cached = _parse_int(data.get(key))
+            break
+    if cached is None:
+        details = data.get("prompt_tokens_details")
+        if isinstance(details, dict) and details.get("cached_tokens") is not None:
+            cached = _parse_int(details.get("cached_tokens"))
+    cached = max(0, min(cached or 0, prompt or 0))
+
+    miss_raw = data.get("prompt_cache_miss_tokens")
+    miss = _parse_int(miss_raw) if miss_raw is not None else max(prompt - cached, 0)
+
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "cached_tokens": cached,
+        "cache_miss_tokens": max(miss, 0),
+    }
+
+
+def usage_log_fields(usage: dict[str, Any]) -> str:
+    """日志摘要（**没有缓存命中就退回改造前的格式，不报错也不变形**）。
+
+    - 有命中：`prompt=12000(cached=10000 miss=2000 hit=83.3%) completion=340`
+    - 无命中/无缓存字段：`prompt=12000 completion=340`（与改造前完全一致）
+    """
+    prompt = int(usage.get("prompt_tokens", 0) or 0)
+    cached = int(usage.get("cached_tokens", 0) or 0)
+    miss = int(usage.get("cache_miss_tokens", 0) or 0)
+    completion = int(usage.get("completion_tokens", 0) or 0)
+    if cached <= 0:
+        return f"prompt={prompt} completion={completion}"
+    rate = (cached / prompt * 100) if prompt else 0.0
+    return (
+        f"prompt={prompt}(cached={cached} miss={miss} hit={rate:.1f}%) "
+        f"completion={completion}"
+    )
+
+
 class ProviderClient:
     def chat_completion(
         self,
@@ -454,8 +514,8 @@ class ProviderClient:
             "ok": True,
             "text": text,
             "reasoning": reasoning,
-            "prompt_tokens": _parse_int(usage.get("prompt_tokens", 0)),
-            "completion_tokens": _parse_int(usage.get("completion_tokens", 0)),
+            **parse_usage(usage),
+
             "provider": profile.get("provider", "openai_compatible"),
             "model": model,
             "error": "",
@@ -589,8 +649,12 @@ class ProviderClient:
             "ok": True,
             "text": text,
             "reasoning": reasoning,
-            "prompt_tokens": _parse_int(data.get("prompt_eval_count", 0)),
-            "completion_tokens": _parse_int(data.get("eval_count", 0)),
+            # Ollama 没有前缀缓存概念 → cached=0、miss=prompt
+            **parse_usage(
+                {},
+                prompt_fallback=_parse_int(data.get("prompt_eval_count", 0)),
+                completion_fallback=_parse_int(data.get("eval_count", 0)),
+            ),
             "provider": profile.get("provider", "ollama"),
             "model": model,
             "error": "",

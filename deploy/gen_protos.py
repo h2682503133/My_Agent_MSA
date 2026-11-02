@@ -121,6 +121,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--image", default="agent/tool-runtime-service:v1.2")
     parser.add_argument("--only", default="", help="逗号分隔的服务名")
     parser.add_argument("--check", action="store_true", help="只检查缺失，不生成")
+    parser.add_argument("--force", action="store_true", help="proto 改过时强制重生成（默认只补缺失）")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv[1:])
 
@@ -138,7 +139,7 @@ def main(argv: list[str]) -> int:
         missing_total += len(missing)
         item = {"service": row["service"], "protos": row["protos"], "out": str(row["out_dir"].relative_to(REPO)),
                 "missing": missing}
-        if missing and not args.check:
+        if (missing or args.force) and not args.check:
             ok, err = generate(row, args.image)
             item["generated"] = ok
             item["error"] = err

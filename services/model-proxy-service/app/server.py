@@ -7,7 +7,7 @@ import grpc
 from app import config
 from app.logger import log
 from app.model_profiles import profile_store
-from app.provider_client import provider_client
+from app.provider_client import provider_client, usage_log_fields
 
 GENERATED_DIR = Path(__file__).parent / "generated"
 if str(GENERATED_DIR) not in sys.path:
@@ -37,7 +37,7 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
             # 成功日志：完整原始结构体（无截断、无重排）
             log_msg = (
                 f"ChatCompletion model={result.get('model', 'unknown')} "
-                f"prompt={result.get('prompt_tokens', 0)} completion={result.get('completion_tokens', 0)}\n"
+                f"{usage_log_fields(result)}\n"
                 f"  INPUT (raw):\n{json.dumps(messages, indent=2, ensure_ascii=False)}\n"
                 f"  OUTPUT (raw):\n{json.dumps(result, indent=2, ensure_ascii=False)}"
             )
@@ -52,6 +52,8 @@ class ModelProxyService(model_proxy_pb2_grpc.ModelProxyServicer):
                 usage=model_proxy_pb2.Usage(
                     prompt_tokens=result.get("prompt_tokens", 0),
                     completion_tokens=result.get("completion_tokens", 0),
+                    cached_tokens=result.get("cached_tokens", 0),
+                    cache_miss_tokens=result.get("cache_miss_tokens", 0),
                 ),
                 provider=result.get("provider", ""),
                 model=result.get("model", ""),
