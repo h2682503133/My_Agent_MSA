@@ -34,7 +34,7 @@ spec:
             value: "3"
       containers:
         - name: model-proxy-service
-          image: agent/model-proxy-service:v17
+          image: agent/model-proxy-service:v1.0
           imagePullPolicy: Always
           ports:
             - containerPort: 5302

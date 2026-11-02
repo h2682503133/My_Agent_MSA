@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: qq-onebot-service
-          image: agent/qq-onebot-service:v1
+          image: agent/qq-onebot-service:v1.0
           imagePullPolicy: Always
           env:
             - name: ONEBOT_MODE

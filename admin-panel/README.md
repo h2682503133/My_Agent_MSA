@@ -39,7 +39,7 @@ build.bat
 
 1. **端口转发**：先启动需要的端口转发，Dashboard 页面依赖此功能
 2. **LLBot**：点「浏览…」**直接选中 LLBot 启动器 exe**（不是文件夹），再点启动；二维码出现后可点"推送到 Dashboard"
-3. **部署**：服务列表自动从项目根 `deploy-all.ps1` 读取，修改版本号只需改那一个文件
+3. **部署**：服务列表自动从项目根 `deploy-all.ps1` 读取，镜像版本号在 `deploy/services/*.yaml` 的 `image` 字段
 4. **Dashboard**：WebView2 内嵌，右上角可刷新或用外部浏览器打开
 
 ## LLBot 版本兼容（新旧版都支持）
@@ -131,7 +131,9 @@ admin-panel/
 
 ## 版本管理
 
-服务版本号集中在项目根 `deploy-all.ps1` 的 `$IMAGES` 中维护。admin-panel 启动时自动解析，无需重新编译。
+服务镜像版本号**只维护在 `deploy/services/*.yaml` 的 `image` 字段**（`tool-runtime` 没有 YAML，看
+`deploy/tool-runtime-apply.sh` 的 `TOOL_RUNTIME_IMAGE`）。`deploy-all.ps1` 构建时从那里解析 tag，
+admin-panel 启动时也自动解析，**改版本号不用重新编译面板**。当前统一为 `v1.0`。
 
 ## 设置持久化
 

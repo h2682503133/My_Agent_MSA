@@ -92,7 +92,7 @@ python -m app.main
 ## Docker
 
 ```bash
-docker build -t agent/openviking-context-service:v34 .
+docker build -t agent/openviking-context-service:v1.0 .
 ```
 
 ## K8s

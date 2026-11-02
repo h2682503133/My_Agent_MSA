@@ -6,7 +6,7 @@ My_Agent MSA 的 Web 前端：Nginx 静态页面（登录 + 桌面/移动聊天�
 
 ```text
 namespace: agent
-image: agent/frontend-service:v15
+image: agent/frontend-service:v1.0
 service: frontend-service
 port: 80 (HTTP)
 入口: /login.html（根路径 302 跳转）
@@ -39,7 +39,7 @@ port: 80 (HTTP)
 
 ```bash
 cd frontend-service
-docker build -t agent/frontend-service:v15 .
+docker build -t agent/frontend-service:v1.0 .
 ```
 
 ## 部署

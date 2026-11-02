@@ -6,7 +6,7 @@ My_Agent MSA 的独立定时任务服务：接收定时任务创建请求，任�
 
 ```text
 namespace: agent
-image: agent/timer-task-service:v2
+image: agent/timer-task-service:v1.0
 service: timer-task-service
 port: 5103 (gRPC)
 ```
@@ -79,7 +79,7 @@ python -m app.main
 
 ```bash
 cd timer-task-service
-docker build -t agent/timer-task-service:v2 .
+docker build -t agent/timer-task-service:v1.0 .
 ```
 
 ## 部署

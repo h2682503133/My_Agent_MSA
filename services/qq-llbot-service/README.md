@@ -46,7 +46,7 @@ python -m app.main
 
 ```bash
 cd qq-llbot-service
-docker build -t agent/qq-llbot-service:v5 .
+docker build -t agent/qq-llbot-service:v1.0 .
 ```
 
 ## 部署
