@@ -95,17 +95,30 @@ STAMP_NAME = ".deps-stamp.json"
 
 # ── 本机自建 openviking-server（独立 venv，可选）───────────────
 # 为什么单独一个 venv：它依赖 fastapi>=0.128 / protobuf>=6，与共享 venv 的 pin 冲突。
-# 为什么锁这两个版本：
-#   - openviking 0.4.10 = 与集群镜像同版本（ov.conf 结构一致）
+# 版本**不在这里写死**：openviking 的版本唯一来源是
+#   services/openviking-context-service/requirements.txt
+# 也就是集群镜像构建时用的那一份 —— 单体与集群因此不可能漂移。
+# 其余依赖（mcp / volcengine / volcengine-python-sdk）由 openviking 自己的
+# Requires-Dist 决定：先 --no-deps 装本体，再读元数据逐条装。
 #   - volcengine-python-sdk 5.0.14 = 29MB 单轮子（含 volcenginesdkarkruntime 等模块）；
-#     5.0.56 是 0 字节元包，会拖几百个 volcenginesdk-* 子包，装到天荒地老
+#     5.0.56 是 0 字节元包，会拖几百个 volcenginesdk-* 子包，装到天荒地老 → 单独固定
 OPENVIKING_VENV_NAME = "openviking"
-OPENVIKING_PIN = "openviking==0.4.10"
-OPENVIKING_SDK_PIN = "openviking-sdk"
 OPENVIKING_UMBRELLA = "volcengine-python-sdk==5.0.14"
 OPENVIKING_BASE_SDK = "volcengine"
-# 上游 0.4.10 是旧代码：mcp 2.x 把 FastMCP 改名/删掉了，会直接 import 失败
+# 兜底：mcp 2.x 删了 FastMCP，旧代码 import 会挂（上游自己也要求 mcp<2）
 OPENVIKING_EXTRA_PINS = ["mcp<2"]
+
+
+def openviking_pin() -> str:
+    """openviking 版本唯一来源：service 的 requirements.txt（与集群镜像同一个文件）。"""
+    req = Path(__file__).resolve().parents[2] / "services" / "openviking-context-service" / "requirements.txt"
+    if req.is_file():
+        for raw in req.read_text(encoding="utf-8").splitlines():
+            line = raw.split("#")[0].strip()
+            if line.startswith("openviking=="):
+                return line
+    raise SystemExit(f"没在 {req} 里找到 openviking== 版本行（它是版本唯一来源）")
+
 
 
 def venv_dir(data_dir: Path) -> Path:
@@ -553,7 +566,10 @@ def install_openviking_server(args, data_dir: Path) -> int:
         index_args += ["--no-index", "--find-links", args.wheels]
 
     # 1) 本体（--no-deps：它的 Requires-Dist 里挂着 volcengine-python-sdk[ark] 巨型伞包）
-    if _pip(python, ["--no-deps", OPENVIKING_PIN, OPENVIKING_SDK_PIN, *index_args],
+    #    版本来自 services/openviking-context-service/requirements.txt（与集群镜像同源）
+    pin = openviking_pin()
+    print(f"  openviking 版本取自 requirements.txt：{pin}")
+    if _pip(python, ["--no-deps", pin, *index_args],
             getattr(args, "timeout", 120)) != 0:
         print("openviking 本体安装失败")
         return 1
@@ -579,7 +595,7 @@ def install_openviking_server(args, data_dir: Path) -> int:
         print("openviking 依赖安装失败")
         return 1
 
-    # 3) 旧代码需要的版本修正（新版 mcp 删了 FastMCP，openviking 0.4.10 直接 import 失败）
+    # 3) 版本修正兜底（mcp 2.x 删了 FastMCP；0.5.3 自己已要求 mcp<2,>=1.27，这里只是保险）
     if _pip(python, [*OPENVIKING_EXTRA_PINS, *index_args], getattr(args, "timeout", 120)) != 0:
         print("openviking 版本修正包安装失败")
         return 1

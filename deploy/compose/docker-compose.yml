@@ -196,9 +196,11 @@ services:
   openviking:
     <<: *common
     profiles: ["memory"]
-    image: ghcr.io/volcengine/openviking:v0.4.10
+    image: ghcr.io/volcengine/openviking:v0.5.3
     environment:
       OPENVIKING_CONFIG_FILE: /etc/openviking/ov.conf
+      # 0.5.x 镜像默认拉起 vikingbot（失败即容器退出），compose 走 entrypoint 必须关掉
+      OPENVIKING_WITH_BOT: "0"
     volumes:
       - ./data/config/openviking/ov.conf:/etc/openviking/ov.conf:ro
       - ./data/openviking:/data/openviking

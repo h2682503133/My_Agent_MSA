@@ -14,6 +14,10 @@ from app.local_context import append as local_append
 from app.local_context import search as local_search
 from app.logger import debug_log
 
+# profile 单条由 context-service 打这个前缀（见 openviking-context-service/app/memory_assembly.PROFILE_MARKER）。
+# 两边必须一致：编排层据此把它从【长期记忆】里拆出来，放到历史免责框之上。
+PROFILE_MARKER = "【用户画像】"
+
 GENERATED_DIR = Path(__file__).parent / "generated"
 if str(GENERATED_DIR) not in sys.path:
     sys.path.insert(0, str(GENERATED_DIR))
@@ -88,10 +92,16 @@ class ContextClient:
                     "content": f"【会话摘要】\n{response.session_summary}",
                 })
             for memory in response.memories:
-                messages.append({
-                    "role": "system",
-                    "content": f"【长期记忆】{memory.content}",
-                })
+                content = memory.content or ""
+                # profile 已由 context-service 打上【用户画像】标记：
+                # 它会被放到历史免责框**之上**（当系统设定），所以这里不再套【长期记忆】前缀。
+                if content.startswith(PROFILE_MARKER):
+                    messages.append({"role": "system", "content": content})
+                else:
+                    messages.append({
+                        "role": "system",
+                        "content": f"【长期记忆】{content}",
+                    })
             for msg in response.recent_messages:
                 messages.append({
                     "role": msg.role,

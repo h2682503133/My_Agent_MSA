@@ -187,7 +187,7 @@
                 "value": "file-copy=host-ssh,file-move=host-ssh,clawhub=external-vm"
               }
             ],
-            "image": "agent/tool-runtime-service:v1.1",
+            "image": "agent/tool-runtime-service:v1.2",
             "imagePullPolicy": "IfNotPresent",
             "name": "tool-runtime-service",
             "ports": [
