@@ -156,18 +156,18 @@
 
 ```bash
 cd tool-runtime-service
-docker build --no-cache --progress=plain -t agent/tool-runtime-service:v1.1 .
+docker build --no-cache --progress=plain -t agent/tool-runtime-service:v1.2 .
 ```
 
-版本号需与 `deploy/tool-runtime-apply.sh` 中的 `TOOL_RUNTIME_IMAGE`（默认 `agent/tool-runtime-service:v1.1`）保持一致。
+版本号由 `deploy/release.json` 统一管理：改版本用 `python -X utf8 deploy/release.py bump tool-runtime-service`，它会同时同步 yaml / apply 脚本 / gen_protos 默认值 / README；`deploy/release.py check` 会在部署前拦住漂移。
 
 ## 导入 kind 节点
 
 如果是本地 kind / Docker Desktop，并且 YAML 使用 `imagePullPolicy: Never`：
 
 ```bash
-docker save agent/tool-runtime-service:v1.1 | docker exec -i desktop-control-plane ctr -n k8s.io images import -
-docker save agent/tool-runtime-service:v1.1 | docker exec -i desktop-worker ctr -n k8s.io images import -
+docker save agent/tool-runtime-service:v1.2 | docker exec -i desktop-control-plane ctr -n k8s.io images import -
+docker save agent/tool-runtime-service:v1.2 | docker exec -i desktop-worker ctr -n k8s.io images import -
 ```
 
 ## 部署

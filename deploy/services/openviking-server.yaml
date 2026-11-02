@@ -25,13 +25,16 @@ spec:
                 values: ["desktop-worker"]
       containers:
       - name: openviking
-        image: ghcr.io/volcengine/openviking:v0.4.10
-        imagePullPolicy: Always
+        image: ghcr.io/volcengine/openviking:v0.5.3
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 1933
         env:
         - name: OPENVIKING_CONFIG_FILE
           value: /etc/openviking/ov.conf
+        # 0.5.x 镜像默认会拉起 vikingbot 网关（--with-bot），我们不跑 bot，直接起 server
+        - name: OPENVIKING_WITH_BOT
+          value: "0"
         volumeMounts:
         - name: config
           mountPath: /etc/openviking/ov.conf
@@ -51,22 +54,9 @@ spec:
         - /bin/sh
         - -c
         args:
-        - 'python3 -c "
-
-          import re
-
-          path = ''/app/.venv/lib/python3.13/site-packages/openviking/storage/vectordb/collection/local_collection.py''
-
-          with open(path) as f: c = f.read()
-
-          c = c.replace(''id=self.index_manage_job_id,'', ''id=self.index_manage_job_id,
-          misfire_grace_time=300,'')
-
-          with open(path, ''w'') as f: f.write(c)
-
-          print(''misfire_grace_time patched'')
-
-          " && exec openviking-server'
+        # 0.5.3 起 index_manage 的 add_job 已包在 try/except 里（不再因 misfire_grace_time 崩启动），
+        # 所以 0.4.10 时代给 local_collection.py 打的那个补丁不再需要。
+        - 'exec openviking-server'
       volumes:
       - name: config
         persistentVolumeClaim:

@@ -98,7 +98,7 @@ TOOL_RUNTIME_TARGET=tool-runtime-service:5303
 版本号只维护在 `deploy/services/agent-orchestrator-service.yaml` 的 `image` 字段（`deploy-all.ps1` 会从那里解析 tag 并据此构建）：
 
 ```bash
-docker build -t agent/agent-orchestrator-service:v1.1 services/agent-orchestrator-service
+docker build -t agent/agent-orchestrator-service:v1.2 services/agent-orchestrator-service
 kubectl apply -f deploy/services/agent-orchestrator-service.yaml     # 或 kubectl -n agent rollout restart deployment/agent-orchestrator-service
 ```
 

@@ -4,7 +4,7 @@
 且版本与线上一致（tool-runtime 镜像：protobuf 6.33.5）。
 
 用法：
-  python -X utf8 deploy/gen_protos.py --image agent/tool-runtime-service:v129
+  python -X utf8 deploy/gen_protos.py --image agent/tool-runtime-service:v1.2
   python -X utf8 deploy/gen_protos.py --image ... --only user-service,gateway-backend-service
   python -X utf8 deploy/gen_protos.py --image ... --check     # 只检查缺哪些
 
@@ -118,7 +118,7 @@ def generate(row: dict, image: str) -> tuple[bool, str]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="用容器里的 grpcio-tools 生成 gRPC stubs")
-    parser.add_argument("--image", default="agent/tool-runtime-service:v129")
+    parser.add_argument("--image", default="agent/tool-runtime-service:v1.2")
     parser.add_argument("--only", default="", help="逗号分隔的服务名")
     parser.add_argument("--check", action="store_true", help="只检查缺失，不生成")
     parser.add_argument("--json", action="store_true")

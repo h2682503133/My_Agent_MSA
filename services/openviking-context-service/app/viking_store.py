@@ -22,6 +22,7 @@ from typing import Any
 
 from app import config
 from app.logger import debug_log, log
+from app import memory_assembly as assembly
 from app import session_recall
 from app.text_utils import clean_text, format_assistant_content
 from app.world_info import search_world_info as _world_info_search
@@ -31,6 +32,63 @@ from app.world_info import search_world_info as _world_info_search
 # 写在正文首部；此时不能再无条件补前缀，否则正文会变成 `<收件人>: <发言者>: …`，
 # 而读取侧（history_speaker）只取最外层前缀 → 每个收件人都把别人的话当成自己说的。
 AUTHOR_IN_CONTENT_KEY = "author_in_content"
+
+# ── SDK 版本兼容（0.4.x 用关键字参数，0.5.x 挪进了 Options 对象）──────────
+def _sdk_options(name: str, **kwargs):
+    """构造 0.5.x 的 Options 对象；SDK 里没有这个类就返回 None（退回旧的关键字参数写法）。"""
+    for module in ("openviking_sdk.options", "openviking.options"):
+        try:
+            import importlib
+
+            cls = getattr(importlib.import_module(module), name, None)
+        except Exception:  # noqa: BLE001
+            cls = None
+        if cls is None:
+            continue
+        try:
+            return cls(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"[sdk] 构造 {name} 失败（退回旧写法）: {exc}")
+            return None
+    return None
+
+
+def _create_session_options(policy: dict):
+    return _sdk_options("CreateSessionOptions", memory_policy=policy)
+
+
+def _find_options(threshold: float):
+    if threshold and threshold > 0:
+        return _sdk_options("FindOptions", score_threshold=float(threshold))
+    return None
+
+
+def _search_options(threshold: float):
+    if threshold and threshold > 0:
+        return _sdk_options("SearchOptions", score_threshold=float(threshold))
+    return None
+
+
+# peer_id 只允许这些字符（OpenViking 的 identifier 规则：单段、不能带 /）
+_PEER_ID_RE = re.compile(r"^[a-zA-Z0-9_.@-]+$")
+
+
+def peer_id_for_agent(agent_id: str, mode: str = "") -> str:
+    """本轮消息的 peer_id。
+
+    - 记忆空间是用户级，所以"对端"就是当时交互的 agent/角色 → 取 agent_id；
+    - `OPENVIKING_PEER_ID_MODE=off` 可整体关掉（不传，回到改造前行为）；
+    - agent_id 为空或含非法字符（OpenViking 只接受 [A-Za-z0-9_.@-]）→ 返回 ""，宁可不传也不让写入失败。
+    """
+    resolved_mode = str(mode or config.OPENVIKING_PEER_ID_MODE or "").strip().lower()
+    if resolved_mode in {"off", "none", "false", "0"}:
+        return ""
+    value = str(agent_id or "").strip()
+    if not value or value in {".", ".."} or value.count("@") > 1 or not _PEER_ID_RE.match(value):
+        debug_log(f"[peer_id] agent_id={agent_id!r} 不能作为 peer_id，跳过")
+        return ""
+    return value
+
 
 # 超时后被放弃但仍在后台跑的召回任务（要留引用，否则可能被回收）
 _BACKGROUND_TASKS: set = set()
@@ -375,9 +433,23 @@ class OpenVikingServerBackend:
         return await asyncio.to_thread(_probe)
 
     async def ensure_session(self, client, full_session_id: str) -> dict[str, Any]:
+        """确保会话存在。
+
+        新会话按 `config.memory_policy()` 建（默认：不生成 Working Memory、抽取类型收窄）；
+        **存量会话不动**（OpenViking 的 policy 只在建会话时绑定，没有改接口）。
+        """
         get_session = getattr(client, "get_session", None)
         if get_session is None:
             raise RuntimeError("OpenViking HTTP client has no get_session API")
+
+        policy = config.memory_policy()
+        if policy:
+            existing = await self._get_session_quiet(client, full_session_id)
+            if existing:
+                return existing
+            created = await self._create_session_with_policy(client, full_session_id, policy)
+            if created is not None:
+                return created
 
         try:
             result = await self._maybe_await(get_session(session_id=full_session_id, auto_create=True))
@@ -386,6 +458,159 @@ class OpenVikingServerBackend:
 
         debug_log(f"OpenViking get_session auto_create ok: {full_session_id}")
         return result or {}
+
+    async def _get_session_quiet(self, client, full_session_id: str) -> dict[str, Any] | None:
+        """查会话；不存在（404/异常）返回 None，不当成错误。"""
+        get_session = getattr(client, "get_session", None)
+        if get_session is None:
+            return None
+        try:
+            result = await self._maybe_await(get_session(session_id=full_session_id))
+        except TypeError:
+            try:
+                result = await self._maybe_await(get_session(full_session_id))
+            except Exception as exc:  # noqa: BLE001
+                debug_log(f"get_session 失败（按不存在处理）: {exc}")
+                return None
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"get_session 失败（按不存在处理）: {exc}")
+            return None
+        return result if isinstance(result, dict) and result else None
+
+    async def _create_session_with_policy(
+        self, client, full_session_id: str, policy: dict
+    ) -> dict[str, Any] | None:
+        """按 memory_policy 建会话；SDK 不支持时返回 None，由调用方退回 auto_create。
+
+        0.5.x 把 memory_policy 挪进了 CreateSessionOptions，0.4.x 是关键字参数 —— 两种都试。
+        """
+        create = getattr(client, "create_session", None)
+        if create is None:
+            debug_log("OpenViking client 没有 create_session，退回 auto_create（不带策略）")
+            return None
+        options = _create_session_options(policy)
+        attempts = []
+        if options is not None:
+            attempts.append(("options", lambda: create(session_id=full_session_id, options=options)))
+        attempts.append(("kwargs", lambda: create(session_id=full_session_id, memory_policy=policy)))
+        attempts.append(("positional", lambda: create(full_session_id, memory_policy=policy)))
+        created = None
+        for style, call in attempts:
+            try:
+                created = await self._maybe_await(call())
+                break
+            except TypeError as exc:
+                debug_log(f"create_session({style}) 不可用，换下一种: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                debug_log(f"create_session({style}) 失败: {exc}")
+                return None
+        if created is None:
+            return None
+        debug_log(
+            f"新建 OpenViking 会话 {full_session_id}，memory_policy="
+            f"wm={policy.get('working_memory')} types={policy.get('memory_types')}"
+        )
+        return created if isinstance(created, dict) else {}
+
+    async def _fetch_resident_memories(self, client, user_id: str) -> list:
+        """按 URI 直接读常驻记忆（profile / identity / soul）。
+
+        为什么要绕开检索：`find` 限定在本会话目录，而 `memories/profile.md` 在 user 根目录 →
+        永远命中不到；全库 `search` 只在会话无命中时才跑，且排序由相似度决定，画像这种
+        "和本轮 query 不一定相似"的内容必然随机出现。所以常驻项直接读文件内容。
+        """
+        read = getattr(client, "read", None) or getattr(client, "read_raw", None)
+        if read is None:
+            debug_log("client 没有 read API，跳过常驻记忆")
+            return []
+
+        items: list = []
+        for name, memory_type in config.RESIDENT_MEMORY_FILES:
+            uri = f"viking://user/{user_id}/memories/{name}"
+            try:
+                content = await self._maybe_await(read(uri))
+            except Exception as exc:  # noqa: BLE001
+                debug_log(f"[resident] 读 {name} 失败（可能还没生成）: {exc}")
+                continue
+            text = str(content or "").strip()
+            if not text:
+                continue
+            items.append(assembly.MemoryItem(
+                content=text,
+                score=0.0,
+                memory_type=memory_type,
+                source="resident",
+                uri=uri,
+                level="content",
+            ))
+            debug_log(f"[resident] {name} 命中 {len(text)} 字")
+        return items
+
+    async def _call_find(self, find_method, *, query: str, target_uri: str, limit: int, threshold: float):
+        """find 调用：0.5.x 用 FindOptions，0.4.x 用 score_threshold 关键字，最后退回无阈值。"""
+        options = _find_options(threshold)
+        if options is not None:
+            try:
+                return await self._maybe_await(
+                    find_method(query=query, target_uri=target_uri, limit=limit, options=options)
+                )
+            except TypeError as exc:
+                debug_log(f"find(options) 不可用: {exc}")
+        if threshold and threshold > 0:
+            try:
+                return await self._maybe_await(
+                    find_method(query=query, target_uri=target_uri, limit=limit, score_threshold=threshold)
+                )
+            except TypeError as exc:
+                debug_log(f"find(score_threshold) 不可用: {exc}")
+        return await self._maybe_await(find_method(query=query, target_uri=target_uri, limit=limit))
+
+    async def _call_search(self, search_method, *, query: str, session_id: str, limit: int, threshold: float):
+        """search 调用：与 _call_find 同样的三级降级。"""
+        options = _search_options(threshold)
+        if options is not None:
+            try:
+                return await self._maybe_await(
+                    search_method(query=query, session_id=session_id, limit=limit, options=options)
+                )
+            except TypeError as exc:
+                debug_log(f"search(options) 不可用: {exc}")
+        if threshold and threshold > 0:
+            try:
+                return await self._maybe_await(
+                    search_method(query=query, session_id=session_id, limit=limit, score_threshold=threshold)
+                )
+            except TypeError as exc:
+                debug_log(f"search(score_threshold) 不可用: {exc}")
+        return await self._maybe_await(search_method(query=query, session_id=session_id, limit=limit))
+
+    async def _commit_with_options(self, commit_session, *, session_id: str, keep_recent_count: int) -> None:
+        """commit 调用，逐级降级（各版本签名不同）：
+
+        - 0.5.x（pip 客户端）：`keep_recent_count` 是 keyword-only，WM 开关是直接 kwarg
+          `enable_working_memory` —— 顺手关掉 WM，**老会话也能止血**；
+        - 0.4.x：只有 `keep_recent_count`；
+        - 更老：只有 `session_id`。
+        """
+        attempts = (
+            lambda: commit_session(
+                session_id=session_id,
+                keep_recent_count=keep_recent_count,
+                enable_working_memory=config.OPENVIKING_WM_ENABLED,
+            ),
+            lambda: commit_session(session_id=session_id, keep_recent_count=keep_recent_count),
+            lambda: commit_session(session_id=session_id),
+        )
+        for index, call in enumerate(attempts):
+            try:
+                await self._maybe_await(call())
+                return
+            except TypeError as exc:
+                debug_log(f"commit_session 第 {index + 1} 种写法不可用: {exc}")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                debug_log(f"commit_session 第 {index + 1} 种写法失败: {exc}")
+                raise
 
     def _clean_content(self, content: str) -> str:
         return clean_text(re.sub(r"</?think>", "", str(content or "")).strip())
@@ -525,7 +750,7 @@ class OpenVikingServerBackend:
                     token_budget=max_tokens or config.DEFAULT_TOKEN_BUDGET,
                 ))
 
-            session_summary, memories, messages = self._messages_from_context(
+            session_summary, archive_memories, messages = self._messages_from_context(
                 ctx or {},
                 max_messages or config.DEFAULT_MAX_MESSAGES,
             )
@@ -552,6 +777,8 @@ class OpenVikingServerBackend:
             # Semantic search for query-relevant memories：
             # 主路径 find（纯向量，无 LLM，target_uri 限定本会话）；session 内无结果时
             # 才用 search 做全库兜底（内部 IntentAnalyzer 会调一次大模型做意图分析，低频）
+            # 命中只收集成 MemoryItem，挑选/排序/裁剪统一交给 memory_assembly。
+            hit_items: list[assembly.MemoryItem] = []
             if query and top_k > 0:
                 try:
                     session_threshold = config.CONTEXT_SIMILARITY_THRESHOLD
@@ -561,19 +788,13 @@ class OpenVikingServerBackend:
                     find_method = getattr(client, "find", None)
                     if find_method is not None:
                         session_uri = f"viking://user/{user_id}/sessions/{full_session_id}"
-                        try:
-                            find_result = await self._maybe_await(find_method(
-                                query=query,
-                                target_uri=session_uri,
-                                limit=top_k,
-                                score_threshold=session_threshold,
-                            ))
-                        except TypeError:
-                            find_result = await self._maybe_await(find_method(
-                                query=query,
-                                target_uri=session_uri,
-                                limit=top_k,
-                            ))
+                        find_result = await self._call_find(
+                            find_method,
+                            query=query,
+                            target_uri=session_uri,
+                            limit=top_k,
+                            threshold=session_threshold,
+                        )
                         if isinstance(find_result, dict):
                             hits = list(find_result.get("memories", []) or [])
 
@@ -582,39 +803,26 @@ class OpenVikingServerBackend:
                     if not hits:
                         search_method = getattr(client, "search", None)
                         if search_method is not None:
-                            try:
-                                search_result = await self._maybe_await(search_method(
-                                    query=query,
-                                    session_id=full_session_id,
-                                    limit=top_k,
-                                    score_threshold=global_threshold,
-                                ))
-                            except TypeError:
-                                search_result = await self._maybe_await(search_method(
-                                    query=query,
-                                    session_id=full_session_id,
-                                    limit=top_k,
-                                ))
+                            search_result = await self._call_search(
+                                search_method,
+                                query=query,
+                                session_id=full_session_id,
+                                limit=top_k,
+                                threshold=global_threshold,
+                            )
                             if isinstance(search_result, dict):
                                 hits = list(search_result.get("memories", []) or [])
 
                     # 3) 本地防御性再过滤（覆盖未传阈值成功的降级路径）
-                    seen_contents = {m.get("content", "") for m in memories}
                     for hit in hits:
                         if not isinstance(hit, dict):
                             continue
                         score = float(hit.get("score", 0.0) or 0.0)
                         if session_threshold > 0 and score < session_threshold:
                             continue
-                        content = self._hit_to_content(hit)
-                        if content and content not in seen_contents:
-                            seen_contents.add(content)
-                            memories.append({
-                                "memory_id": hit.get("id", "") or hit.get("memory_id", "") or hit.get("uri", ""),
-                                "content": content,
-                                "score": score,
-                                "token_count": int(hit.get("token_count", 0) or 0),
-                            })
+                        item = assembly.from_hit(hit, source="session")
+                        if item is not None:
+                            hit_items.append(item)
                 except Exception as exc:
                     debug_log(f"semantic search failed (non-fatal): {exc}")
 
@@ -622,32 +830,51 @@ class OpenVikingServerBackend:
             #    （messages.jsonl 不被 OpenViking 建索引，所以在本地用 embedding 算余弦）
             if recall_task is not None:
                 try:
-                    extra_hits = await _await_session_recall(recall_task)
-                    seen_session = {m.get("content", "") for m in memories}
-                    for hit in extra_hits:
-                        if hit.get("content", "") in seen_session:
-                            continue
-                        seen_session.add(hit.get("content", ""))
-                        memories.append(hit)
+                    for hit in await _await_session_recall(recall_task):
+                        item = assembly.from_hit(hit, source="recall") if isinstance(hit, dict) else None
+                        if item is not None:
+                            hit_items.append(item)
                 except Exception as exc:
                     debug_log(f"session recall failed (non-fatal): {exc}")
 
-            # 达到阈值的相关记忆最多 MAX_MEMORY_HITS 条
-            memories = memories[: config.MAX_MEMORY_HITS]
-            # 兜底：全部未达阈值（或无可检索记忆）时，保底输出最近一条消息，
-            # 保证模型至少有最近对话上下文（score=-1 标记，不参与排序）
-            if not memories and messages:
-                _last = messages[-1]
-                memories.append({
-                    "memory_id": "",
-                    "content": _last.get("content", ""),
-                    "score": -1.0,
-                    "token_count": 0,
-                })
+            # 归档摘要也算候选（来源 archive，优先级最高）
+            # 常驻记忆（profile/identity/soul）**直接按 URI 读**：
+            # 它们是"设定级"信息，不能靠向量排序碰运气——session 作用域的 find 根本扫不到
+            # （profile.md 在 user 根目录），全库 search 又只在 session 无命中时才跑。
+            resident_items = await self._fetch_resident_memories(client, user_id)
+            candidates = (
+                assembly.from_hits(archive_memories, source="archive")
+                + resident_items
+                + hit_items
+            )
+
+            # 兜底：全部被裁掉时保底输出最近一条消息（score=-1 标记，不参与排序）
+            fallback = None
+            if messages:
+                fallback = assembly.MemoryItem(
+                    content=str(messages[-1].get("content", "") or ""),
+                    score=-1.0,
+                    source="window",
+                )
+
+            assembled = assembly.assemble(
+                candidates,
+                max_items=config.MAX_MEMORY_HITS,
+                max_chars=config.MEMORY_ASSEMBLY_MAX_CHARS,
+                max_item_chars=config.MEMORY_ITEM_MAX_CHARS,
+                drop_dead_statuses=config.MEMORY_DROP_DEAD_STATUSES,
+                per_type_limit=config.memory_per_type_limits(),
+                fallback=fallback,
+            )
+            if assembled.dropped:
+                debug_log(
+                    f"[assembly] selected={len(assembled.selected)} by_type={assembled.by_type} "
+                    f"dropped={assembled.drop_reasons}"
+                )
 
             return {
                 "session_summary": session_summary,
-                "memories": memories,
+                "memories": assembled.payloads(),
                 "recent_messages": messages,
                 "error": "",
             }
@@ -685,10 +912,14 @@ class OpenVikingServerBackend:
         role: str,
         content: str,
         role_id: str = "",
+        peer_id: str = "",
     ) -> None:
         """
         Compatibility wrapper for OpenViking HTTP client versions where
-        add_message() may not accept role_id.
+        add_message() may not accept role_id / peer_id.
+
+        peer_id：对话对端。记忆空间是用户级时，对端就是"当时在跟哪个 agent/角色说话"，
+        所以这里取 agent_id（比不传更准：不传的消息不参与 peers/* 抽取）。
         """
         try:
             params = inspect.signature(add_message).parameters
@@ -700,12 +931,15 @@ class OpenVikingServerBackend:
             "role": role,
             "content": content,
         }
-
+        optional: dict[str, str] = {}
         if role_id and (not params or "role_id" in params):
-            kwargs_with_role = dict(kwargs)
-            kwargs_with_role["role_id"] = role_id
+            optional["role_id"] = role_id
+        if peer_id and (not params or "peer_id" in params):
+            optional["peer_id"] = peer_id
+
+        if optional:
             try:
-                await self._maybe_await(add_message(**kwargs_with_role))
+                await self._maybe_await(add_message(**{**kwargs, **optional}))
                 return
             except TypeError:
                 pass
@@ -732,6 +966,11 @@ class OpenVikingServerBackend:
             add_message = getattr(client, "add_message", None)
             if add_message is None:
                 raise RuntimeError("OpenViking HTTP client has no add_message API")
+
+            # 对话对端：用户级记忆空间下就是"当时在跟哪个 agent/角色说话"。
+            # 不传 peer_id 的消息不参与 peers/* 抽取（OpenViking 只从带 peer_id 的消息取），
+            # 所以这里显式带上 agent_id，提高 peers 记忆的覆盖率与相关性。
+            peer_id = peer_id_for_agent(agent_id)
 
             # ── 群聊转场去重 + 说话人前缀（存储层新逻辑）──
             # 1) 读本 session 最后一条 assistant：本轮 user 若包含其内容（子串），
@@ -782,6 +1021,7 @@ class OpenVikingServerBackend:
                     role="user",
                     content=user_message,
                     role_id=user_id,
+                    peer_id=peer_id,
                 )
 
             # assistant 段归属：**以文本内容为准**（见 text_utils.format_assistant_content）
@@ -801,6 +1041,7 @@ class OpenVikingServerBackend:
                     ),
                 ),
                 role_id=agent_id or "main",
+                peer_id=peer_id,
             )
 
             for summary in tool_summaries or []:
@@ -811,6 +1052,7 @@ class OpenVikingServerBackend:
                         role="assistant",
                         content=f"工具摘要：{summary}",
                         role_id=agent_id or "main",
+                        peer_id=peer_id,
                     )
 
             if commit_limit:
@@ -829,14 +1071,11 @@ class OpenVikingServerBackend:
                                 f"[session-commit] {full_session_id} 提交 {message_count - keep} 条记录"
                                 f"（保留最近 {keep} 条）"
                             )
-                            try:
-                                await self._maybe_await(commit_session(
-                                    session_id=full_session_id,
-                                    keep_recent_count=keep,
-                                ))
-                            except TypeError:
-                                # 服务端/SDK 不支持保留参数时退化为全量归档（旧行为）
-                                await self._maybe_await(commit_session(session_id=full_session_id))
+                            await self._commit_with_options(
+                                commit_session,
+                                session_id=full_session_id,
+                                keep_recent_count=keep,
+                            )
                 except Exception as exc:
                     debug_log(f"commit check failed: {exc}")
 
@@ -953,19 +1192,13 @@ class OpenVikingServerBackend:
                 if scope != "session"
                 else config.CONTEXT_SIMILARITY_THRESHOLD
             )
-            try:
-                result = await self._maybe_await(find_method(
-                    query=query,
-                    target_uri=target_uri,
-                    limit=max(int(top_k or 8), 1),
-                    score_threshold=threshold,
-                ))
-            except TypeError:
-                result = await self._maybe_await(find_method(
-                    query=query,
-                    target_uri=target_uri,
-                    limit=max(int(top_k or 8), 1),
-                ))
+            result = await self._call_find(
+                find_method,
+                query=query,
+                target_uri=target_uri,
+                limit=max(int(top_k or 8), 1),
+                threshold=threshold,
+            )
 
             raw_hits = list((result or {}).get("memories", []) or []) if isinstance(result, dict) else []
             hits: list[dict[str, Any]] = []

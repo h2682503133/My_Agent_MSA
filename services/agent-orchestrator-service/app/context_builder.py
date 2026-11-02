@@ -170,6 +170,10 @@ _HISTORY_SPEAKER_RE = re.compile(r"^[ \t]*<([^>\n]{1,64})>[ \t]*[:：][ \t]*")
 # 非对话历史的注入片段（【会话摘要】/【相关记忆】）：不参与 role 重分配
 _NON_DIALOGUE_PREFIX = "【"
 
+# 用户画像标记（由 context-service 打；见 openviking-context-service/app/memory_assembly.PROFILE_MARKER）
+# 带这个前缀的注入段被放到历史免责框**之上**：画像是设定级信息，不是"历史聊天记录"。
+PROFILE_MARKER = "【用户画像】"
+
 
 # ─── 通用小工具 ──────────────────────────────────────────────
 
@@ -1440,6 +1444,7 @@ class ContextBuilder:
         # 屏蔽只作用于**注入**：本轮事件仍照常写入（见 agent_runtime 的扇出写入）。
         if openviking_excluded:
             long_context_message: list[dict] = []
+            profile_messages: list[dict] = []
         else:
             history_messages = agent.context_client.search_context(
                 user_id=task.user.id,
@@ -1450,9 +1455,19 @@ class ContextBuilder:
                 max_tokens=int(self._config.get("context_max_tokens", 3000) or 3000),
                 commit_limit=int(self._config.get("commit_limit", 0) or 0),
             )
+            # profile（用户画像）单独成段：它是"设定级"信息，不该被历史免责框压住，
+            # 所以从历史块里拆出来，放到免责框**之上**、`before_history` 插入段之后。
+            profile_messages = [
+                message for message in history_messages
+                if str(message.get("content", "")).startswith(PROFILE_MARKER)
+            ]
+            rest_messages = [
+                message for message in history_messages
+                if not str(message.get("content", "")).startswith(PROFILE_MARKER)
+            ]
             long_context_message = [
                 {"role": "system", "content": HISTORY_DISCLAIMER}
-            ] + shape_history_messages(history_messages, self_id=agent.id)
+            ] + shape_history_messages(rest_messages, self_id=agent.id)
 
         # 群聊判定（用于 @when=group / @when=single）：按当次请求的 session_id / user_id
         # 前缀。实例级缓存的 system prompt 必须在这里按请求过滤，见 effective_system_prompt。
@@ -1543,6 +1558,7 @@ class ContextBuilder:
         # 只改一处会让"单次调用"和"两阶段调用"的提示词不一致。
         base_head = (
             system_prompt_messages
+            + profile_messages
             + long_context_message
             + task_memory_messages
             + user_input_messages

@@ -1,7 +1,7 @@
 grpcio==1.76.0
 grpcio-tools==1.76.0
 protobuf==6.33.5
-openviking==0.4.10
+openviking==0.5.3
 requests>=2.33.0
 beautifulsoup4==4.13.4
 playwright==1.62.0

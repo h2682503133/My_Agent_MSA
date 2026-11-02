@@ -5,6 +5,7 @@ from pathlib import Path
 import grpc
 
 from app import config
+from app import memory_assembly as assembly
 from app.logger import log
 from app.viking_store import store
 
@@ -17,6 +18,16 @@ try:
     import openviking_context_pb2_grpc
 except ImportError as exc:
     raise RuntimeError("gRPC generated files not found. Run bash scripts/gen_proto.sh first.") from exc
+
+
+def _mark_profile(item: dict) -> str:
+    """profile 单条加标记，供编排层把它放到历史免责框之上（其余原样，由消费者加【长期记忆】）。"""
+    content = str(item.get("content", "") or "")
+    if str(item.get("memory_type", "") or "") != assembly.TYPE_PROFILE:
+        return content
+    if content.startswith(assembly.PROFILE_MARKER):
+        return content
+    return f"{assembly.PROFILE_MARKER}\n{content}"
 
 
 class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServicer):
@@ -36,7 +47,7 @@ class OpenVikingContextService(openviking_context_pb2_grpc.OpenVikingContextServ
             memories=[
                 openviking_context_pb2.MemoryHit(
                     memory_id=item.get("memory_id", ""),
-                    content=item.get("content", ""),
+                    content=_mark_profile(item),
                     score=float(item.get("score", 0.0)),
                     token_count=int(item.get("token_count", 0)),
                 )
