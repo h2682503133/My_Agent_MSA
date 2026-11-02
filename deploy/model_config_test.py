@@ -58,7 +58,7 @@ def main() -> int:
     check("provider=ollama", entry["provider"] == "ollama")
     check("api_url 拼接 chat_path", entry["api_url"] == "http://127.0.0.1:11434/api/chat", entry["api_url"])
     check("模型名写入", entry["model"] == "qwen3:4b")
-    for profile in ("main", "tool", "reader", "talker", "writer"):
+    for profile in ("main", "tool", "reader", "talker"):
         check(f"default-{profile} → local-ollama", data2["aliases"][f"default-{profile}"] == "local-ollama")
     check("保留 embedding", "embedding" in data2["models"])
 

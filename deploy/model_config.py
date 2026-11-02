@@ -24,7 +24,7 @@ values.json 需要的键（缺 key 时按"保留模板"处理）：
   embedding.base_url / api_key / model   远端 embedding 覆盖（可选）
   ollama.embedding_model   本地 embedding 模型，默认 nomic-embed-text
   ollama.embed_path        本地 embedding 路径，默认 /api/embed（Ollama 新版返回 {embeddings:[[]]}）
-  profiles          可选：要绑定的 profile 列表，默认 main,tool,reader,talker,writer
+  profiles          可选：要绑定的 profile 列表，默认 main,tool,reader,talker
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import json
 import sys
 from pathlib import Path
 
-DEFAULT_PROFILES = ["main", "tool", "reader", "talker", "writer"]
+DEFAULT_PROFILES = ["main", "tool", "reader", "talker"]
 
 
 def _load(path: Path) -> dict:

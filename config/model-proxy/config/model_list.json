@@ -43,13 +43,6 @@
       "temperature": 1.4,
       "model_params": {}
     },
-    "writer": {
-      "api_url": "http://host.docker.internal:11434/api/chat",
-      "method": "POST",
-      "model": "qwen3:14b",
-      "temperature": 1.4,
-      "model_params": {}
-    },
     "imitator": {
       "provider": "openai_compatible",
       "api_url": "https://api.deepseek.com/chat/completions",
@@ -80,7 +73,6 @@
     "default-tool": "tool",
     "default-reader": "reader",
     "default-talker": "talker",
-    "default-writer": "writer",
     "h268-imitator": "imitator",
     "default-embedding": "embedding"
   }

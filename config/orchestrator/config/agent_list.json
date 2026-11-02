@@ -37,14 +37,6 @@
         "SOUL.md"
       ]
     },
-    "writer": {
-      "model_profile": "default-writer",
-      "temperature": 1.4,
-      "commit_limit": 0,
-      "files": [
-        "SOUL.md"
-      ]
-    },
     "talker": {
       "model_profile": "default-talker",
       "temperature": 1.4,

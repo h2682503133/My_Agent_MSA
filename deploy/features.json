@@ -194,7 +194,7 @@
           "label": "要绑定的 profile",
           "type": "string",
           "required": false,
-          "default": "main,tool,reader,talker,writer",
+          "default": "main,tool,reader,talker",
           "help": "生成 model_list.json 时把 default-<名字> 指向所选来源",
           "dashboard": {
             "tab": "配置管理",
