@@ -64,7 +64,7 @@ def _is_legacy_flat_config(data: dict[str, Any]) -> bool:
 def load_agent_config(path: Path, user_id: str, agent_id: str) -> dict[str, Any]:
     import sys
     print(f"[load_agent_config] user_id={user_id!r} agent_id={agent_id!r}", file=sys.stderr, flush=True)
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         data = json.load(f)
 
     # 兼容原来的平铺格式：{"main": {...}, "tool": {...}}

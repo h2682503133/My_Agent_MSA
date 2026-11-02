@@ -77,6 +77,12 @@ def record_dispatch(task, target_agent_id: str, content, caller_id: str) -> None
         task.main_memory.append(render_dispatch_memory(target_agent_id, text))
 
 
+_MODEL_FAIL_HINT = (
+    "（排查：dashboard →「配置管理」→ model-proxy/config/model_list.json "
+    "检查 api_url / api_key / model 是否还是模板占位值）"
+)
+
+
 class AgentRuntime:
     """
     原 core/Agent/Agent.py 的微服务化版本。
@@ -1232,7 +1238,7 @@ class AgentRuntime:
                 # 若配置位置实际是单模态模型，API 会原样报错（如“不支持图片”），
                 # 该报错即对用户的提示，不应静默吞掉。
                 if model_profile == base_model_profile:
-                    error_text = f"【模型请求失败】{exc}"
+                    error_text = f"【模型请求失败】{exc}" + _MODEL_FAIL_HINT
                     self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
                     return
                 chat_log(
@@ -1249,7 +1255,7 @@ class AgentRuntime:
                         params=params
                     )
                 except Exception as exc2:
-                    error_text = f"【模型请求失败】{exc2}"
+                    error_text = f"【模型请求失败】{exc2}" + _MODEL_FAIL_HINT
                     self._emit_user_message(task, emit, error_text, final=True, agent_id=self.id)
                     return
 

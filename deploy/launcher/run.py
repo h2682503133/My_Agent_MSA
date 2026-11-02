@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import signal
@@ -25,16 +26,21 @@ import time
 from pathlib import Path
 
 try:  # 既支持 python -m launcher.run，也支持 python deploy/launcher/run.py
-    from .deps import venv_python
+    from .deps import build_lock, needs_install, venv_python, write_lock
     from .plan import Plan, build, init_config, write_capability
     from .services import SERVICES
+    from .stdio import child_env, use_utf8
 except ImportError:  # pragma: no cover - 直接跑脚本时
     import sys as _sys
 
     _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from launcher.deps import venv_python
+    from launcher.deps import build_lock, needs_install, venv_python, write_lock
     from launcher.plan import Plan, build, init_config, write_capability
     from launcher.services import SERVICES
+    from launcher.stdio import child_env, use_utf8
+
+# 面板/管道调用时 stdout 不是控制台，中文输出会 UnicodeEncodeError，先固定成 UTF-8
+use_utf8()
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -99,12 +105,30 @@ def _child_python(plan: Plan) -> str:
     return str(candidate) if candidate.exists() else sys.executable
 
 
+def _service_venv_exe(plan: Plan, svc) -> Path:
+    """独立 venv 服务的可执行文件：<数据目录>/venvs/<名字>/Scripts/<cmd[0]>(.exe)。"""
+    base = Path(plan.data_dir) / "venvs" / svc.venv
+    scripts = base / ("Scripts" if os.name == "nt" else "bin")
+    exe = scripts / svc.cmd[0]
+    if os.name == "nt" and not exe.suffix:
+        exe = exe.with_suffix(".exe")
+    return exe
+
+
 def _spawn(plan: Plan, svc) -> subprocess.Popen:
-    svc_dir = plan.repo_root / "services" / svc.dir_name
+    venv_exe = _service_venv_exe(plan, svc) if getattr(svc, "venv", "") else None
+    if venv_exe is not None:
+        svc_dir = Path(plan.data_dir) if getattr(svc, "cwd", "service") == "data" else (
+            plan.repo_root / "services" / svc.dir_name)
+    else:
+        svc_dir = plan.repo_root / "services" / svc.dir_name
     log_path = plan.data_dir / "logs" / f"{svc.id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, **plan.env, "PYTHONPATH": str(svc_dir)}
-    cmd = [_child_python(plan), *svc.cmd]
+    env = child_env({**os.environ, **plan.env, "PYTHONPATH": str(svc_dir)})
+    if venv_exe is not None:
+        cmd = [str(venv_exe), *svc.cmd[1:]]
+    else:
+        cmd = [_child_python(plan), *svc.cmd]
     creation = 0
     if os.name == "nt":
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
@@ -147,7 +171,7 @@ def _spawn_web(plan: Plan) -> subprocess.Popen | None:
     return subprocess.Popen(
         cmd,
         cwd=str(plan.repo_root),
-        env={**os.environ, **plan.env},
+        env=child_env({**os.environ, **plan.env}),
         stdout=handle,
         stderr=subprocess.STDOUT,
         creationflags=creation,
@@ -176,7 +200,7 @@ def _spawn_assets(plan: Plan) -> subprocess.Popen | None:
     return subprocess.Popen(
         cmd,
         cwd=str(plan.repo_root),
-        env={**os.environ, **plan.env},
+        env=child_env({**os.environ, **plan.env}),
         stdout=handle,
         stderr=subprocess.STDOUT,
         creationflags=creation,
@@ -213,8 +237,126 @@ def _pid_alive(pid: int) -> bool:
     except Exception:  # noqa: BLE001
         return False
 
+_LOCK_NAME = "launcher.lock"
+
+
+def _acquire_lock(plan: Plan) -> bool:
+    """防止两个启动器同时跑（各自写 pids.json，互相把对方进程变孤儿）。"""
+    lock = Path(plan.data_dir) / _LOCK_NAME
+    if lock.exists():
+        try:
+            other = int((lock.read_text(encoding="ascii") or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            other = 0
+        if other and other != os.getpid() and _pid_alive(other):
+            _log(f"✘ 已有启动器在运行（pid {other}）：先 --stop，或结束该进程后再启动")
+            return False
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(str(os.getpid()), encoding="ascii")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"⚠ 写锁文件失败（忽略）：{exc}")
+        return True
+    atexit.register(lambda: lock.unlink(missing_ok=True))
+    return True
+
+
+def _reconcile_previous(plan: Plan) -> None:
+    """启动前把上一轮还活着的子进程收掉，避免孤儿（表现为 QQ 重复回复）。"""
+    state_path = Path(plan.data_dir) / "pids.json"
+    if not state_path.exists():
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        state_path.unlink(missing_ok=True)
+        return
+    killed = 0
+    for item in state.get("processes") or []:
+        pid = item.get("pid")
+        if not isinstance(pid, int) or not _pid_alive(pid):
+            continue
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+            else:
+                os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except Exception:  # noqa: BLE001
+            pass
+    if killed:
+        _log(f"收尾上一轮残留进程 {killed} 个（避免孤儿/重复回复）")
+        time.sleep(1.0)
+    state_path.unlink(missing_ok=True)
+
+
+def _sync_deps(plan: Plan) -> None:
+    """依赖与"当前选中的服务集合"对齐。
+
+    为什么需要：venv 是按**第一次安装时**的服务集合建的；后来切模式
+    （例如 qq=onebot → qq=satori 会换掉 qq-llbot-service）就会缺包，
+    表现为服务起来直接 ModuleNotFoundError。这里用 deps 的 stamp 判断，
+    不一致就跑一次 deps.py --install 补齐。
+    """
+    venv_py = venv_python(plan.data_dir)
+    if not venv_py.exists():
+        return  # 没 venv：start() 后面会给安装提示
+    try:
+        resolved, _conflicts, _overrides, _extra = build_lock(plan)
+        lock = write_lock(plan, resolved)
+        if not needs_install(plan.data_dir, lock, "shared"):
+            return
+        _log("依赖与当前功能不一致，开始同步（pip 输出如下；约 1~5 分钟，"
+             "不想等可加 --no-deps 跳过）…")
+        deps_script = REPO_ROOT / "deploy" / "launcher" / "deps.py"
+        cmd = [
+            sys.executable, "-X", "utf8", str(deps_script),
+            "--data-dir", str(plan.data_dir),
+            "--features", ",".join(plan.features),
+            "--modes", getattr(plan, "modes_text", "") or "",
+            "--install",
+        ]
+        # 直接继承 stdout/stderr：pip 的进度会实时出现在控制台，
+        # 而不是"看起来卡住几分钟"。
+        proc = subprocess.run(cmd)
+        if proc.returncode != 0:
+            _log(f"⚠ 依赖同步失败（退出码 {proc.returncode}），服务可能起不来；"
+                 "可手动执行 deps.py --install 看完整报错")
+        else:
+            _log("依赖已补齐")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"⚠ 依赖检查失败（忽略，继续启动）：{exc}")
+
+
+def _init_openviking(plan: Plan) -> None:
+    """本机自建 openviking：首次启动后建 account/用户/api_key（幂等）。"""
+    if not any(svc.id == "openviking" for svc in plan.services):
+        return
+    port = SERVICES["openviking"].ports["http"]
+    deadline = time.time() + 60
+    while time.time() < deadline and not _port_open(port):
+        time.sleep(1)
+    if not _port_open(port):
+        _log("openviking 未监听，跳过初始化（可稍后在面板点「初始化 OpenViking」）")
+        return
+    try:
+        from launcher.openviking_init import ensure_openviking
+    except Exception:  # noqa: BLE001
+        from .openviking_init import ensure_openviking  # type: ignore
+    try:
+        result = ensure_openviking(plan.data_dir, f"http://127.0.0.1:{port}")
+        _log("openviking 初始化：" + str(result.get("detail") or "ok"))
+    except Exception as exc:  # noqa: BLE001
+        _log(f"⚠ openviking 初始化失败：{exc}（可稍后在面板重试）")
+
+
 def start(plan: Plan) -> int:
     prepare(plan)
+    if not _acquire_lock(plan):
+        return 1
+    _reconcile_previous(plan)
+    if not getattr(plan, "deps_skip", False):
+        _sync_deps(plan)
     if venv_python(plan.data_dir).exists():
         _log(f"使用共享 venv 解释器：{venv_python(plan.data_dir)}")
     else:
@@ -225,6 +367,8 @@ def start(plan: Plan) -> int:
         )
     for warning in plan.warnings:
         _log(f"提示：{warning}")
+    for note in getattr(plan, "info", []) or []:
+        _log(f"说明：{note}")
 
     started: list[tuple[str, subprocess.Popen, dict[str, int]]] = []
 
@@ -272,6 +416,8 @@ def start(plan: Plan) -> int:
 
     if pending:
         _log(f"未就绪：{list(pending)}（可看 logs/ 下对应日志）")
+
+    _init_openviking(plan)
 
     state = {
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -329,6 +475,7 @@ def stop(plan: Plan) -> int:
         except Exception as exc:  # noqa: BLE001
             _log(f"停止 {item.get('id')} 失败：{exc}")
     state_path.unlink(missing_ok=True)
+    (Path(plan.data_dir) / _LOCK_NAME).unlink(missing_ok=True)
     return 0
 
 
@@ -346,6 +493,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--check-deps", action="store_true")
+    parser.add_argument("--no-deps", action="store_true",
+                        help="启动前不检查/补装依赖（调试用）")
     parser.add_argument("--stop", action="store_true")
     parser.add_argument("--web-host", default=os.getenv("WEB_HOST", "127.0.0.1"),
                         help="单体网页监听地址；要让局域网访问用 0.0.0.0（默认只本机）")
@@ -377,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if check_deps(plan) == 0 else 1
     if args.stop:
         return stop(plan)
+    setattr(plan, "modes_text", args.modes or "")
+    setattr(plan, "deps_skip", bool(args.no_deps))
     return start(plan)
 
 

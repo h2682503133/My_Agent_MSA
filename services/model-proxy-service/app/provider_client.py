@@ -256,12 +256,29 @@ class ProviderClient:
         response = self._request("POST", api_url, headers, body)
         data = response.json()
 
-        embeddings = data.get("embeddings") or []
+        # 新版 /api/embed：{"embeddings": [[...], [...]]}
+        # 老版 /api/embeddings：{"embedding": [...]}（一次一条，逐条调用）
+        raw = data.get("embeddings")
+        vectors: list[list] = []
+        if isinstance(raw, list) and raw:
+            if all(isinstance(item, list) for item in raw):
+                vectors = raw
+            elif all(isinstance(item, (int, float)) for item in raw):
+                vectors = [raw]           # 单条但被拍平成一维
+        if not vectors:
+            single = data.get("embedding")
+            if isinstance(single, list) and single and all(isinstance(x, (int, float)) for x in single):
+                if len(texts) > 1:
+                    raise RuntimeError(
+                        "该 Ollama 端点（/api/embeddings）一次只返回一条向量，"
+                        f"但本次需要 {len(texts)} 条；请把 profile 换成 /api/embed"
+                    )
+                vectors = [single]
+
         items: list[dict[str, Any]] = []
-        for i, vec in enumerate(embeddings):
-            if not isinstance(vec, list):
-                continue
-            items.append({"index": i, "vector": [float(x) for x in vec]})
+        for i, vec in enumerate(vectors):
+            if isinstance(vec, list):
+                items.append({"index": i, "vector": [float(x) for x in vec]})
 
         if not items:
             raise RuntimeError(f"embedding response has no vectors: {str(data)[:300]}")

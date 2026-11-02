@@ -105,7 +105,8 @@ async def case_inbound_private():
     task = sched.tasks[0]
     assert task["user_id"] == "2195239690", task
     assert task["session_id"] == "qq_2195239690", task
-    assert task["channel"] == config.CHANNEL == "qqofficial", task
+    assert task["channel"] == config.ROUTE_CHANNEL, task
+    assert config.BINDING_CHANNEL == "qqofficial", config.BINDING_CHANNEL
     assert task["content"] == "你好", task
     assert task["client_message_id"] == "m1", task
     print("[OK] 私聊入站：openid 解析为规范 id，session=qq_{规范id}")

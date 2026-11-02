@@ -23,6 +23,15 @@ from schemas import (
     WorkspaceFileWrite,
 )
 from sse_hub import SSEHub
+
+try:  # 图片地址改写（网页同源）；单独成文件便于离线单测
+    from asset_urls import rewrite_asset_urls, rewrite_images
+except ImportError:  # pragma: no cover
+    def rewrite_asset_urls(text):  # type: ignore[misc]
+        return text
+
+    def rewrite_images(images):  # type: ignore[misc]
+        return images or []
 from tool_client import build_tool_client
 from user_client import build_user_client
 
@@ -84,6 +93,14 @@ async def scheduler_event_consumer() -> None:
     ):
         # 在线 → 推 SSE 并回报成功；离线 → 回报失败，由调度器决定转投其它渠道还是缓冲
         # （转投/缓冲只有调度器一个所有者，见 offline_deliver 的说明）。
+        # 网页在集群外：把 image-assets-service 之类的内网图片地址改成 /api/assets/…
+        if os.getenv("WEB_ASSET_URL_REWRITE", "1") not in {"0", "false", "no"}:
+            try:
+                event.text = rewrite_asset_urls(event.text or "")
+                event.images = rewrite_images(event.images)
+            except Exception as _rewrite_exc:  # noqa: BLE001 - 改写失败不能拖垮投递
+                print(f"[gateway] 图片地址改写失败（按原样投递）: {_rewrite_exc}", flush=True)
+
         delivered = await sse_hub.publish(event)
         if delivered:
             await ack_delivered(event)
@@ -500,7 +517,20 @@ async def unbind_channel(
 # ═══════════════════════════════════════════════════════════════
 # 工作空间
 # ═══════════════════════════════════════════════════════════════
-WORKSPACE_USERS_BASE = os.getenv("WORKSPACE_USERS_BASE", "/app/workspace/users")
+try:  # 单机（无 tool-runtime）时的工作空间本地实现（见 workspace_local.py）
+    import workspace_local
+except ImportError:  # pragma: no cover
+    workspace_local = None
+
+
+try:  # 统一存储前缀（见 storage_paths.py）
+    from storage_paths import users_base as _users_base
+except ImportError:  # pragma: no cover
+    def _users_base(env_name="WORKSPACE_USERS_BASE", default="/app/workspace/users"):
+        from pathlib import Path as _P
+        return _P(os.getenv(env_name, default))
+
+WORKSPACE_USERS_BASE = str(_users_base())
 
 
 def _user_workspace(user_id: str) -> str:
@@ -516,7 +546,10 @@ async def list_workspace_files(
 ):
     ensure_allowed_user(user_id)
 
-    result = await tool_client.list_workspace(workspace_dir=_user_workspace(user_id))
+    if workspace_local is not None and workspace_local.enabled():
+        result = workspace_local.list_dir(_user_workspace(user_id), _clean_path(path))
+    else:
+        result = await tool_client.list_workspace(workspace_dir=_user_workspace(user_id))
     raw = result.get("output", "")
 
     # Parse all entries from tool-runtime output
@@ -587,7 +620,10 @@ async def read_workspace_file(
 ):
     ensure_allowed_user(user_id)
 
-    result = await tool_client.file_read(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
+    if workspace_local is not None and workspace_local.enabled():
+        result = workspace_local.read_file(_user_workspace(user_id), _clean_path(path))
+    else:
+        result = await tool_client.file_read(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
     return {
         "ok": result.get("ok", False),
         "path": path,
@@ -605,7 +641,10 @@ async def raw_workspace_file(
     """返回原始文件内容（用于图片等二进制预览）。"""
     ensure_allowed_user(user_id)
 
-    result = await tool_client.file_read(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
+    if workspace_local is not None and workspace_local.enabled():
+        result = workspace_local.read_file(_user_workspace(user_id), _clean_path(path), limit=32 * 1024 * 1024)
+    else:
+        result = await tool_client.file_read(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error", "file not found"))
 
@@ -637,21 +676,40 @@ async def raw_workspace_file(
     media_type = mime_map.get(ext, "application/octet-stream")
 
     from fastapi.responses import Response
+
+    if result.get("binary"):
+        import base64 as _b64
+
+        return Response(content=_b64.b64decode(content), media_type=media_type)
     return Response(content=content.encode("utf-8"), media_type=media_type)
 
 @app.get("/api/assets/{filename:path}")
 async def serve_asset(filename: str):
     """Serve shared assets (images etc.) from the assets PVC."""
     import os as _os
-    assets_root = _os.getenv("ASSETS_DIR", "/app/assets")
-    filepath = Path(assets_root) / filename
-
     try:
-        filepath.resolve().relative_to(Path(assets_root).resolve())
-    except ValueError:
-        raise HTTPException(status_code=403, detail="path traversal denied")
+        from storage_paths import resolve as _resolve_path
+    except ImportError:  # pragma: no cover
+        from pathlib import Path as _P
 
-    if not filepath.exists() or not filepath.is_file():
+        def _resolve_path(env_name, *parts, default=""):
+            return _P(os.getenv(env_name) or default or ".".join(parts))
+
+    assets_root = Path(str(_resolve_path("ASSETS_DIR", "assets", default="/app/assets")))
+    # 布局差异：集群里 ASSETS_DIR=/app/assets，真实文件在 assets/images/ 下；
+    # 单体里 ASSETS_DIR 直接就是 assets/images。两处都找一遍，避免 /api/assets/* 404。
+    candidates = [assets_root / filename, assets_root / "images" / filename]
+    filepath = None
+    for candidate in candidates:
+        try:
+            candidate.resolve().relative_to(assets_root.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="path traversal denied")
+        if candidate.exists() and candidate.is_file():
+            filepath = candidate
+            break
+
+    if filepath is None:
         raise HTTPException(status_code=404, detail="asset not found")
 
     ext = filepath.suffix.lower()
@@ -679,7 +737,10 @@ async def write_workspace_file(
 ):
     ensure_allowed_user(user_id)
 
-    result = await tool_client.file_write(path=_clean_path(path), text=req.text, workspace_dir=_user_workspace(user_id))
+    if workspace_local is not None and workspace_local.enabled():
+        result = workspace_local.write_text(_user_workspace(user_id), _clean_path(path), req.text)
+    else:
+        result = await tool_client.file_write(path=_clean_path(path), text=req.text, workspace_dir=_user_workspace(user_id))
     return {
         "ok": result.get("ok", False),
         "path": path,
@@ -714,7 +775,10 @@ async def upload_workspace_file(
         raise HTTPException(status_code=413, detail=f"file too large: {len(data)} bytes > 48MB")
 
     data_b64 = base64.b64encode(data).decode("ascii")
-    result = await tool_client.file_upload(path=rel, data_base64=data_b64, workspace_dir=_user_workspace(user_id))
+    if workspace_local is not None and workspace_local.enabled():
+        result = workspace_local.write_bytes(_user_workspace(user_id), rel, data)
+    else:
+        result = await tool_client.file_upload(path=rel, data_base64=data_b64, workspace_dir=_user_workspace(user_id))
     return {
         "ok": result.get("ok", False),
         "path": rel,
@@ -731,7 +795,10 @@ async def delete_workspace_file(
 ):
     ensure_allowed_user(user_id)
 
-    result = await tool_client.delete_file(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
+    if workspace_local is not None and workspace_local.enabled():
+        result = workspace_local.delete(_user_workspace(user_id), _clean_path(path))
+    else:
+        result = await tool_client.delete_file(path=_clean_path(path), workspace_dir=_user_workspace(user_id))
     return {
         "ok": result.get("ok", False),
         "path": path,

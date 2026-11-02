@@ -30,7 +30,14 @@ class ContextClient:
     def __init__(self):
         self._stub = None
 
+    @staticmethod
+    def backend_enabled() -> bool:
+        """是否启用 openviking-context 服务（目标为空 = 只用本地记忆）。"""
+        return bool(str(getattr(config, "OPENVIKING_CONTEXT_TARGET", "") or "").strip())
+
     def _get_stub(self):
+        if not self.backend_enabled():
+            raise RuntimeError("openviking-context 未启用（OPENVIKING_CONTEXT_TARGET 为空）")
         if self._stub is None:
             channel = grpc.insecure_channel(config.OPENVIKING_CONTEXT_TARGET)
             self._stub = openviking_context_pb2_grpc.OpenVikingContextStub(channel)
@@ -47,8 +54,13 @@ class ContextClient:
         max_messages: int = 6,
         commit_limit: int = 0,
     ):
-        if openviking_context_pb2 is None:
-            raise RuntimeError("openviking_context protobuf is not generated")
+        if openviking_context_pb2 is None or not self.backend_enabled():
+            # 本地记忆模式：直接用本地窗口 + 长期摘要，不打 gRPC
+            return local_search(
+                user_id=user_id,
+                session_id=session_id,
+                agent_id=agent_id or "main",
+            )
 
         try:
             request = openviking_context_pb2.SearchContextRequest(
@@ -100,7 +112,8 @@ class ContextClient:
             # 本地也无历史时，注入提示让模型感知长期记忆不可用
             return [{
                 "role": "system",
-                "content": "【系统提示】OpenViking 长期记忆服务未启用或不可用，本次对话没有历史记忆与 RAG 上下文。",
+                "content": "【系统提示】当前使用本地记忆（无 OpenViking）：本次对话没有历史记录；"
+                           "长期记忆会按轮数自动压缩保存。",
             }]
 
     def search_world_info(
@@ -162,8 +175,16 @@ class ContextClient:
         max_messages: int = 6,
         metadata=None,
     ):
-        if openviking_context_pb2 is None:
-            raise RuntimeError("openviking_context protobuf is not generated")
+        if openviking_context_pb2 is None or not self.backend_enabled():
+            return local_append(
+                user_id=user_id,
+                session_id=session_id,
+                agent_id=agent_id or "main",
+                user_message=user_message,
+                assistant_message=assistant_message,
+                commit_limit=commit_limit,
+                max_messages=max_messages,
+            )
 
         try:
             request = openviking_context_pb2.AppendTurnRequest(
@@ -192,5 +213,7 @@ class ContextClient:
                 agent_id=agent_id or "main",
                 user_message=user_message,
                 assistant_message=assistant_message,
+                commit_limit=commit_limit,
+                max_messages=max_messages,
             )
             return False

@@ -1,0 +1,1262 @@
+{
+  "schema": 1,
+  "conventions": {
+    "feature": "一个功能 = 一种能力；实现方式用 mode / 设置项表达，不再拆成多个功能",
+    "kind": "kind 不写在功能上：modes 里没有 downloads 的档 = none/fill，带 downloads 且需 allow_download 才能装 = download",
+    "settings": "字段：key / label / type(string|secret|path|int|enum|bool) / required / default / values / when / help",
+    "when": "按其它字段取值条件生效，例如 {\"source\": \"install\"}",
+    "capabilities": "功能只声明能力取值，不列工具名；工具可见性 = TOOL.json 的 groups 档位 × capability",
+    "targets": "部署目标（引擎/存储/LAN/是否允许自动下载）不是功能，由 installer 探测 + 用户确认",
+    "templates": "仓库 config/ 下的是**最简模板**（分布式架构里靠复制分发）；安装/部署只复制到目标数据目录，从不改模板本身；model_list.json 由 deploy/model_config.py 按模型来源生成到副本里",
+    "deploy_vs_dashboard": "能在 dashboard 里设置的（模型、QQ 凭据、OpenViking key 等）不出现在一键部署页；部署页只负责功能选择、要启动哪些服务、以及只能通过环境变量注入的部署期参数，并在界面上提示「去 dashboard → 哪个页签 → 改哪个文件」",
+    "tiers": "T0=裸 Windows（源码+Python，无 Docker）；T1=Windows+Docker（compose）；T2=Windows+Docker Desktop k8s（现状）；T3=裸 Linux；T4=Linux+Docker/compose；T5=任意 k8s。modes[].tiers / settings[].value_tiers 表示该实现方式在哪些档可用，缺省=所有档。"
+  },
+  "defaults": {
+    "preset": "minimal",
+    "allow_download": false
+  },
+  "presets": {
+    "minimal": [
+      "core",
+      "memory"
+    ],
+    "standard": [
+      "core",
+      "memory",
+      "model.local",
+      "tools.basic",
+      "timer",
+      "qq",
+      "skills"
+    ],
+    "full": [
+      "*"
+    ]
+  },
+  "targets": {
+    "engine": {
+      "label": "部署引擎",
+      "type": "enum",
+      "values": [
+        "auto",
+        "local",
+        "compose",
+        "k8s"
+      ],
+      "default": "auto",
+      "help": "auto 按 k8s 可用 → compose 可用 → local 的顺序判定"
+    },
+    "storage": {
+      "label": "存储",
+      "type": "enum",
+      "values": [
+        "auto",
+        "local-dir",
+        "volume",
+        "nfs",
+        "hostpath"
+      ],
+      "default": "auto",
+      "help": "T0/T3 用 local-dir；compose 用 volume；k8s 需要 nfs/hostpath"
+    },
+    "storage_server": {
+      "label": "NFS Server",
+      "type": "string",
+      "when": {
+        "storage": "nfs"
+      }
+    },
+    "storage_root": {
+      "label": "NFS 根路径",
+      "type": "string",
+      "default": "/srv/nfs/my-agent",
+      "when": {
+        "storage": "nfs"
+      }
+    },
+    "storage_node": {
+      "label": "单节点名",
+      "type": "string",
+      "when": {
+        "storage": "hostpath"
+      }
+    },
+    "lan": {
+      "label": "局域网访问",
+      "type": "bool",
+      "default": false
+    },
+    "lan_bind": {
+      "label": "绑定地址",
+      "type": "string",
+      "default": "127.0.0.1",
+      "when": {
+        "lan": true
+      }
+    },
+    "lan_ports": {
+      "label": "对外端口",
+      "type": "string",
+      "default": "5210,5700,5102",
+      "when": {
+        "lan": true
+      }
+    },
+    "allow_download": {
+      "label": "允许自动下载依赖",
+      "type": "bool",
+      "default": false,
+      "help": "关闭时，需要下载的功能会被跳过并写入 degraded 列表，不报错"
+    }
+  },
+  "features": [
+    {
+      "id": "core",
+      "name": "最简运行（对话 + 面板）",
+      "required": true,
+      "services": [
+        "user-service",
+        "gateway-backend-service",
+        "frontend-service",
+        "task-scheduler-service",
+        "agent-orchestrator-service",
+        "model-proxy-service",
+        "dashboard-service"
+      ],
+      "requires": [],
+      "modes": {
+        "default": {
+          "label": "源码 + Python 即可",
+          "settings": [],
+          "downloads": []
+        }
+      },
+      "settings": [
+        {
+          "key": "model.source",
+          "label": "模型来源",
+          "type": "enum",
+          "values": [
+            "remote",
+            "local"
+          ],
+          "required": true,
+          "default": "remote",
+          "help": "remote=自己的 API；local=本机 Ollama（勾选「本地模型」功能）",
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "model.base_url",
+          "label": "模型 API 地址",
+          "type": "string",
+          "required": true,
+          "when": {
+            "model.source": "remote"
+          },
+          "help": "如 https://api.moonshot.cn/v1/chat/completions",
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "model.api_key",
+          "label": "模型 API Key",
+          "type": "secret",
+          "required": true,
+          "when": {
+            "model.source": "remote"
+          },
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "model.model",
+          "label": "模型名",
+          "type": "string",
+          "required": true,
+          "when": {
+            "model.source": "remote"
+          },
+          "default": "moonshot-v1-8k",
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "model.profiles",
+          "label": "要绑定的 profile",
+          "type": "string",
+          "required": false,
+          "default": "main,tool,reader,talker,writer",
+          "help": "生成 model_list.json 时把 default-<名字> 指向所选来源",
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "data_dir",
+          "label": "数据目录",
+          "type": "path",
+          "required": false,
+          "default": "%LOCALAPPDATA%/MyAgent/data"
+        },
+        {
+          "key": "web.port",
+          "label": "网页端口",
+          "type": "int",
+          "default": 5210
+        },
+        {
+          "key": "dashboard.port",
+          "label": "面板端口",
+          "type": "int",
+          "default": 5700
+        },
+        {
+          "key": "embedding.source",
+          "label": "embedding 来源",
+          "type": "enum",
+          "values": [
+            "remote",
+            "local"
+          ],
+          "required": true,
+          "default": "remote",
+          "help": "remote=沿用模板/远端 embedding；local=本机 Ollama（/api/embed）",
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "embedding.base_url",
+          "label": "embedding 地址",
+          "type": "string",
+          "required": false,
+          "when": {
+            "embedding.source": "remote"
+          },
+          "help": "留空=沿用仓库模板里的 entry",
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "embedding.model",
+          "label": "embedding 模型名",
+          "type": "string",
+          "required": false,
+          "when": {
+            "embedding.source": "remote"
+          },
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        },
+        {
+          "key": "embedding.api_key",
+          "label": "embedding API Key",
+          "type": "secret",
+          "required": false,
+          "when": {
+            "embedding.source": "remote"
+          },
+          "dashboard": {
+            "tab": "配置管理",
+            "path": "model-proxy/config/model_list.json"
+          }
+        }
+      ],
+      "config": [
+        "config/orchestrator/config/",
+        "config/orchestrator/system_prompt/",
+        "config/model-proxy/config/"
+      ],
+      "capabilities": {
+        "tool_runtime": false
+      },
+      "degrade": "最简档不启动 tool-runtime；模型来源必须是 remote 或 local 之一，生成 model_list.json 时把 default-* 指向对应来源"
+    },
+    {
+      "id": "model.local",
+      "name": "本地模型接入（Ollama，外部服务）",
+      "requires": [
+        "core"
+      ],
+      "default_mode": "connect",
+      "modes": {
+        "connect": {
+          "label": "连接已有 Ollama（只填地址）",
+          "settings": [
+            {
+              "key": "ollama.url",
+              "label": "Ollama 地址",
+              "type": "string",
+              "required": true,
+              "default": "http://127.0.0.1:11434",
+              "help": "单体/宿主机直连填 127.0.0.1；容器内连宿主填 host.docker.internal",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            },
+            {
+              "key": "ollama.chat_path",
+              "label": "对话接口路径",
+              "type": "string",
+              "required": false,
+              "default": "/api/chat",
+              "help": "Ollama 原生 /api/chat；OpenAI 兼容层 /v1/chat/completions",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            },
+            {
+              "key": "ollama.model",
+              "label": "模型名",
+              "type": "string",
+              "required": true,
+              "default": "qwen3:4b",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            },
+            {
+              "key": "ollama.profile",
+              "label": "entries 名",
+              "type": "string",
+              "required": false,
+              "default": "local-ollama",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            },
+            {
+              "key": "ollama.embedding_model",
+              "label": "本地 embedding 模型",
+              "type": "string",
+              "required": false,
+              "default": "nomic-embed-text",
+              "when": {
+                "embedding.source": "local"
+              },
+              "help": "embedding 来源选 local 时用；Ollama 的 /api/embed",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            }
+          ],
+          "downloads": []
+        },
+        "install": {
+          "label": "我们帮你装 Ollama",
+          "settings": [
+            {
+              "key": "ollama.port",
+              "label": "端口",
+              "type": "int",
+              "default": 11434
+            },
+            {
+              "key": "ollama.models_dir",
+              "label": "模型目录",
+              "type": "path",
+              "required": true,
+              "default": "%LOCALAPPDATA%/MyAgent/data/ollama"
+            },
+            {
+              "key": "ollama.model",
+              "label": "要拉取的模型",
+              "type": "string",
+              "required": true,
+              "default": "qwen3:4b",
+              "help": "越大越吃显存；低配建议 4B 以下量化版",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            },
+            {
+              "key": "ollama.profile",
+              "label": "entries 名",
+              "type": "string",
+              "required": false,
+              "default": "local-ollama",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            },
+            {
+              "key": "ollama.embedding_model",
+              "label": "本地 embedding 模型",
+              "type": "string",
+              "required": false,
+              "default": "nomic-embed-text",
+              "when": {
+                "embedding.source": "local"
+              },
+              "help": "embedding 来源选 local 时用；Ollama 的 /api/embed",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "model-proxy/config/model_list.json"
+              }
+            }
+          ],
+          "downloads": [
+            {
+              "id": "ollama-runtime",
+              "label": "Ollama 运行时（Windows 安装包 / Linux 脚本 / 容器镜像）",
+              "size_hint": "≈120MB（不含模型）",
+              "how": "官网安装包或 ollama/ollama 镜像"
+            },
+            {
+              "id": "ollama-model",
+              "label": "模型权重（按所选模型）",
+              "size_hint": "4–8GB",
+              "how": "ollama pull <模型名>"
+            }
+          ]
+        }
+      },
+      "capabilities": {},
+      "degrade": "不勾选时用远端模型；勾选后把 core 的 model.source 设为 local（embedding 可单独仍走远端）。连不上只影响对应 profile",
+      "notes": [
+        "Ollama 不是我们启动的服务：它是用户自己在宿主机/容器里跑的外部服务，本功能只决定 model_list.json 写哪条 entry",
+        "仓库里的 model_list.json 是最简模板，安装时复制到数据目录后再由 deploy/model_config.py 生成，模板本身不动"
+      ]
+    },
+    {
+      "id": "memory",
+      "name": "记忆",
+      "requires": [
+        "core"
+      ],
+      "default_mode": "local",
+      "modes": {
+        "local": {
+          "label": "本地记忆（窗口滚动 / 轮数压缩）",
+          "settings": [
+            {
+              "key": "local.mode",
+              "label": "模式",
+              "type": "enum",
+              "values": [
+                "window",
+                "compressed"
+              ],
+              "default": "window",
+              "help": "window=只保留最近 N 轮；compressed=滚出的消息打包给 reader 压缩成长期摘要"
+            },
+            {
+              "key": "local.commit_limit",
+              "label": "压缩触发轮数",
+              "type": "int",
+              "default": 15,
+              "when": {
+                "local.mode": "compressed"
+              },
+              "help": "与 agent_list.json 的 commit_limit 同义，0=沿用 agent 配置"
+            },
+            {
+              "key": "local.max_messages",
+              "label": "窗口条数",
+              "type": "int",
+              "default": 6
+            }
+          ],
+          "downloads": []
+        },
+        "openviking": {
+          "label": "长期记忆 / 知识库",
+          "settings": [
+            {
+              "key": "ov.source",
+              "label": "来源",
+              "type": "enum",
+              "values": [
+                "existing",
+                "install"
+              ],
+              "default": "existing",
+              "value_tiers": {
+                "install": [
+                  "T1",
+                  "T2",
+                  "T4",
+                  "T5"
+                ]
+              }
+            },
+            {
+              "key": "ov.server_url",
+              "label": "OpenViking 地址",
+              "type": "string",
+              "required": true,
+              "when": {
+                "ov.source": "existing"
+              },
+              "help": "如 http://192.168.1.9:1933（对方已部署）"
+            },
+            {
+              "key": "ov.api_key",
+              "label": "API Key",
+              "type": "secret",
+              "required": true,
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "openviking"
+              }
+            },
+            {
+              "key": "ov.root_api_key",
+              "label": "Root API Key（初始化用户用，可选）",
+              "type": "secret",
+              "required": false,
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "openviking"
+              }
+            },
+            {
+              "key": "ov.data_path",
+              "label": "数据目录",
+              "type": "path",
+              "required": true,
+              "when": {
+                "ov.source": "install"
+              }
+            },
+            {
+              "key": "ov.port",
+              "label": "端口",
+              "type": "int",
+              "default": 1933,
+              "when": {
+                "ov.source": "install"
+              }
+            }
+          ],
+          "downloads": [
+            {
+              "id": "openviking-server",
+              "label": "OpenViking server 镜像",
+              "size_hint": "≈1.5GB",
+              "how": "容器镜像拉取",
+              "when": {
+                "ov.source": "install"
+              }
+            },
+            {
+              "id": "embedding-service",
+              "label": "embedding 服务镜像",
+              "size_hint": "≈600MB",
+              "how": "本项目镜像",
+              "when": {
+                "ov.source": "install"
+              }
+            }
+          ]
+        }
+      },
+      "services": {
+        "openviking": [
+          "openviking-context-service",
+          "openviking-server"
+        ]
+      },
+      "config": [
+        "config/openviking/"
+      ],
+      "capabilities": {
+        "memory_mode": [
+          "local",
+          "openviking"
+        ]
+      },
+      "degrade": "openviking 未启用或连不上 → 回落本地窗口滚动（local_context，默认 4 轮）"
+    },
+    {
+      "id": "tools.basic",
+      "name": "工具调用（基础工具）",
+      "requires": [
+        "core"
+      ],
+      "services": [
+        "tool-runtime-service"
+      ],
+      "modes": {
+        "default": {
+          "label": "启动 tool-runtime",
+          "settings": [],
+          "downloads": []
+        }
+      },
+      "settings": [
+        {
+          "key": "tool.workspace_dir",
+          "label": "工作区目录",
+          "type": "path",
+          "required": false,
+          "default": "%LOCALAPPDATA%/MyAgent/data/workspace"
+        },
+        {
+          "key": "tool.skill_root",
+          "label": "技能目录",
+          "type": "path",
+          "required": false,
+          "default": "%LOCALAPPDATA%/MyAgent/data/skills"
+        },
+        {
+          "key": "tool.image_dir",
+          "label": "图片目录",
+          "type": "path",
+          "required": false,
+          "default": "%LOCALAPPDATA%/MyAgent/data/images"
+        }
+      ],
+      "capabilities": {
+        "tool_runtime": true,
+        "image_gen": [
+          "off",
+          "enabled"
+        ],
+        "fetch_extract": [
+          "full",
+          "llm",
+          "keyword"
+        ]
+      },
+      "capability_defaults": {
+        "image_gen": {
+          "rule": "model_list 里存在 kind=image 的 profile",
+          "on": "enabled",
+          "off": "off"
+        },
+        "fetch_extract": {
+          "rule": "embedding + reader profile 是否可用",
+          "full": "两者都有",
+          "llm": "只有 reader",
+          "keyword": "都没有"
+        }
+      },
+      "degrade": "不勾 → 不启动 tool-runtime；image_gen=off 时 image-gen 工具不出现；fetch_extract=keyword 时长页面只做关键词召回"
+    },
+    {
+      "id": "timer",
+      "name": "定时任务",
+      "requires": [
+        "core"
+      ],
+      "services": [
+        "timer-task-service"
+      ],
+      "modes": {
+        "default": {
+          "label": "进程内定时扫描（零填写零下载）",
+          "settings": [
+            {
+              "key": "timer.dir",
+              "label": "任务目录",
+              "type": "path",
+              "required": false,
+              "default": "%LOCALAPPDATA%/MyAgent/data/timer-tasks"
+            },
+            {
+              "key": "timer.scan_fast",
+              "label": "快扫间隔（秒）",
+              "type": "int",
+              "default": 5
+            },
+            {
+              "key": "timer.scan_slow",
+              "label": "慢扫间隔（秒）",
+              "type": "int",
+              "default": 60
+            }
+          ],
+          "downloads": []
+        }
+      },
+      "capabilities": {},
+      "degrade": "不勾 → 定时任务工具/入口不生效，其余功能不受影响"
+    },
+    {
+      "id": "skills",
+      "name": "技能（ClawHub 搜索 / 安装 / 执行）",
+      "requires": [
+        "tools.basic"
+      ],
+      "default_mode": "local",
+      "modes": {
+        "local": {
+          "label": "本机 clawhub",
+          "settings": [
+            {
+              "key": "clawhub.skill_root",
+              "label": "技能目录",
+              "type": "path",
+              "required": false,
+              "default": "%LOCALAPPDATA%/MyAgent/data/skills"
+            }
+          ],
+          "downloads": [
+            {
+              "id": "node-clawhub",
+              "label": "Node.js + clawhub CLI",
+              "size_hint": "≈80MB",
+              "how": "随包捆绑或 npm 安装"
+            }
+          ]
+        },
+        "ssh": {
+          "label": "外部 VM 上的 clawhub",
+          "settings": [
+            {
+              "key": "ssh.host",
+              "label": "SSH 主机",
+              "type": "string",
+              "required": true
+            },
+            {
+              "key": "ssh.user",
+              "label": "SSH 用户",
+              "type": "string",
+              "required": true
+            },
+            {
+              "key": "ssh.port",
+              "label": "SSH 端口",
+              "type": "int",
+              "default": 22
+            },
+            {
+              "key": "ssh.key",
+              "label": "SSH 私钥路径",
+              "type": "secret",
+              "required": true
+            },
+            {
+              "key": "ssh.skill_root",
+              "label": "远端技能目录",
+              "type": "string",
+              "required": true,
+              "default": "/srv/nfs/my-agent/workspace/skills"
+            }
+          ],
+          "downloads": []
+        }
+      },
+      "capabilities": {
+        "clawhub": [
+          "off",
+          "local",
+          "ssh"
+        ],
+        "skill_exec": [
+          "off",
+          "partial",
+          "full"
+        ]
+      },
+      "degrade": "不勾 → 技能只读（skill-list / skill-overview 可用），不能搜索/安装；skill_exec=partial 时执行前提示「该平台技能兼容性未验证」"
+    },
+    {
+      "id": "browser",
+      "name": "浏览器操作",
+      "requires": [
+        "tools.basic"
+      ],
+      "default_mode": "connect",
+      "modes": {
+        "connect": {
+          "label": "连接已有 MCP / CDP",
+          "settings": [
+            {
+              "key": "browser.transport",
+              "label": "协议",
+              "type": "enum",
+              "values": [
+                "mcp",
+                "cdp"
+              ],
+              "default": "mcp"
+            },
+            {
+              "key": "browser.mcp_url",
+              "label": "MCP 地址",
+              "type": "string",
+              "required": true,
+              "when": {
+                "browser.transport": "mcp"
+              },
+              "help": "如 http://127.0.0.1:9335/mcp"
+            },
+            {
+              "key": "browser.cdp_url",
+              "label": "CDP 地址",
+              "type": "string",
+              "required": true,
+              "when": {
+                "browser.transport": "cdp"
+              },
+              "help": "如 http://127.0.0.1:9222"
+            }
+          ],
+          "downloads": []
+        },
+        "manage": {
+          "label": "我们启动浏览器 + MCP + 中继",
+          "settings": [
+            {
+              "key": "managed.browser",
+              "label": "浏览器",
+              "type": "string",
+              "default": "msedge"
+            },
+            {
+              "key": "managed.profile_dir",
+              "label": "profile 目录",
+              "type": "path",
+              "default": "%LOCALAPPDATA%/MyAgent/browser-profile"
+            },
+            {
+              "key": "managed.ports",
+              "label": "端口（MCP/中继/发布）",
+              "type": "string",
+              "default": "9333,9334,9335"
+            }
+          ],
+          "downloads": [
+            {
+              "id": "playwright-mcp",
+              "label": "Playwright MCP（Node）",
+              "size_hint": "≈120MB",
+              "how": "npx 下载"
+            }
+          ],
+          "tiers": [
+            "T1",
+            "T2",
+            "T4",
+            "T5"
+          ]
+        }
+      },
+      "capabilities": {
+        "browser": [
+          "off",
+          "connect",
+          "managed"
+        ]
+      },
+      "degrade": "不勾 → browser 工具不进目录，提示词不出现"
+    },
+    {
+      "id": "search",
+      "name": "联网搜索",
+      "requires": [
+        "tools.basic"
+      ],
+      "default_mode": "builtin",
+      "modes": {
+        "builtin": {
+          "label": "内置回落（Bing 中国站，零下载）",
+          "settings": [],
+          "downloads": [],
+          "notes": "复用 web_search.py 现有回落链：SearXNG 命中 0 条或无地址时走 cn.bing.com（RSS 优先、HTML 兜底）；只支持「关键词|条数」，无引擎/语言/时间过滤；结果仅取 title/url/snippet"
+        },
+        "searxng": {
+          "label": "连接 / 安装 SearXNG",
+          "settings": [
+            {
+              "key": "search.source",
+              "label": "来源",
+              "type": "enum",
+              "values": [
+                "existing",
+                "install"
+              ],
+              "default": "existing",
+              "value_tiers": {
+                "install": [
+                  "T1",
+                  "T2",
+                  "T4",
+                  "T5"
+                ]
+              }
+            },
+            {
+              "key": "search.url",
+              "label": "SearXNG 地址",
+              "type": "string",
+              "required": true,
+              "when": {
+                "search.source": "existing"
+              },
+              "help": "如 http://192.168.1.9:8080"
+            },
+            {
+              "key": "search.port",
+              "label": "端口",
+              "type": "int",
+              "default": 8080,
+              "when": {
+                "search.source": "install"
+              }
+            }
+          ],
+          "downloads": [
+            {
+              "id": "searxng-image",
+              "label": "SearXNG 镜像",
+              "size_hint": "≈400MB",
+              "how": "容器镜像拉取",
+              "when": {
+                "search.source": "install"
+              }
+            }
+          ]
+        },
+        "off": {
+          "label": "关闭联网搜索",
+          "settings": [],
+          "downloads": []
+        }
+      },
+      "capabilities": {
+        "search": [
+          "off",
+          "builtin",
+          "searxng"
+        ]
+      },
+      "degrade": "off → web-search 工具不出现；builtin → 零下载可用但结果质量受限，杂项里标注「内置回落（Bing CN）」"
+    },
+    {
+      "id": "external-exec",
+      "name": "外部执行（dsh / codex）",
+      "requires": [
+        "tools.basic"
+      ],
+      "default_mode": "local",
+      "modes": {
+        "local": {
+          "label": "本机可执行",
+          "settings": [
+            {
+              "key": "exec.dsh_enabled",
+              "label": "启用 dsh",
+              "type": "bool",
+              "default": true
+            },
+            {
+              "key": "exec.dsh_ws",
+              "label": "dsh WS 地址",
+              "type": "string",
+              "when": {
+                "exec.dsh_enabled": true
+              },
+              "help": "如 ws://127.0.0.1:8644/ws"
+            },
+            {
+              "key": "exec.dsh_token",
+              "label": "dsh Token",
+              "type": "secret",
+              "required": false,
+              "when": {
+                "exec.dsh_enabled": true
+              }
+            },
+            {
+              "key": "exec.dsh_workspace",
+              "label": "dsh 默认工作区",
+              "type": "path",
+              "required": false,
+              "when": {
+                "exec.dsh_enabled": true
+              }
+            },
+            {
+              "key": "exec.codex_enabled",
+              "label": "启用 codex",
+              "type": "bool",
+              "default": true
+            },
+            {
+              "key": "exec.codex_bin",
+              "label": "codex 可执行路径",
+              "type": "string",
+              "default": "codex",
+              "when": {
+                "exec.codex_enabled": true
+              }
+            }
+          ],
+          "downloads": [
+            {
+              "id": "codex-cli",
+              "label": "Codex CLI（npm）",
+              "size_hint": "≈60MB",
+              "how": "npm 安装",
+              "when": {
+                "exec.codex_enabled": true
+              }
+            }
+          ]
+        },
+        "ssh": {
+          "label": "外部 VM",
+          "settings": [
+            {
+              "key": "exec.ssh_host",
+              "label": "SSH 主机",
+              "type": "string",
+              "required": true
+            },
+            {
+              "key": "exec.ssh_user",
+              "label": "SSH 用户",
+              "type": "string",
+              "required": true
+            },
+            {
+              "key": "exec.ssh_key",
+              "label": "SSH 私钥",
+              "type": "secret",
+              "required": true
+            },
+            {
+              "key": "exec.remote_workspace",
+              "label": "远端工作区",
+              "type": "string",
+              "required": true,
+              "default": "/srv/nfs/my-agent/workspace"
+            }
+          ],
+          "downloads": []
+        }
+      },
+      "capabilities": {
+        "external_exec": [
+          "off",
+          "local",
+          "ssh"
+        ]
+      },
+      "degrade": "不勾 → dsh / codex 工具不出现",
+      "mode_status": {
+        "local": "planned"
+      },
+      "notes": [
+        "local 模式（本机 codex/clawhub）尚未实现：当前 codex 只能 SSH 到外部 VM；clawhub 支持 local/ssh 两种"
+      ]
+    },
+    {
+      "id": "qq",
+      "name": "QQ 接入",
+      "requires": [
+        "core"
+      ],
+      "default_mode": "onebot",
+      "services": [
+        "task-scheduler-service"
+      ],
+      "modes": {
+        "satori": {
+          "label": "Satori 协议（我们的 llbot 或对方的）",
+          "services": [
+            "qq-llbot-service"
+          ],
+          "settings": [
+            {
+              "key": "satori.host",
+              "label": "Satori 主机",
+              "type": "string",
+              "required": true,
+              "help": "对方的 llbot / 桥地址",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "qq-llbot/qq_llbot_config.json"
+              }
+            },
+            {
+              "key": "satori.port",
+              "label": "Satori 端口",
+              "type": "int",
+              "default": 5600,
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "qq-llbot/qq_llbot_config.json"
+              }
+            },
+            {
+              "key": "satori.token",
+              "label": "Satori Token",
+              "type": "secret",
+              "required": false,
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "qq-llbot/qq_llbot_config.json"
+              }
+            },
+            {
+              "key": "satori.manage_llbot",
+              "label": "由我们启动 llbot",
+              "type": "bool",
+              "default": false,
+              "value_tiers": {
+                "true": [
+                  "T2",
+                  "T5"
+                ]
+              }
+            },
+            {
+              "key": "satori.llbot_webui_port",
+              "label": "llbot WebUI 端口",
+              "type": "int",
+              "default": 3080,
+              "when": {
+                "satori.manage_llbot": true
+              }
+            },
+            {
+              "key": "satori.llbot_satori_port",
+              "label": "llbot Satori 端口",
+              "type": "int",
+              "default": 5600,
+              "when": {
+                "satori.manage_llbot": true
+              }
+            }
+          ],
+          "downloads": [
+            {
+              "id": "llbot-image",
+              "label": "llbot 镜像",
+              "size_hint": "≈1GB",
+              "how": "容器镜像拉取",
+              "when": {
+                "satori.manage_llbot": true
+              }
+            }
+          ]
+        },
+        "onebot": {
+          "label": "OneBot 11（NapCat 或 llbot 的 OneBot 通道）",
+          "services": [
+            "qq-onebot-service"
+          ],
+          "settings": [
+            {
+              "key": "onebot.ws_mode",
+              "label": "连接方式",
+              "type": "enum",
+              "values": [
+                "forward",
+                "reverse"
+              ],
+              "default": "forward"
+            },
+            {
+              "key": "onebot.url",
+              "label": "正向 WS 地址",
+              "type": "string",
+              "required": true,
+              "when": {
+                "onebot.ws_mode": "forward"
+              },
+              "help": "如 ws://127.0.0.1:3001/",
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "qq-llbot/qq_llbot_config.json"
+              }
+            },
+            {
+              "key": "onebot.listen",
+              "label": "反向 WS 监听",
+              "type": "string",
+              "default": "0.0.0.0:6700",
+              "required": true,
+              "when": {
+                "onebot.ws_mode": "reverse"
+              },
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "qq-llbot/qq_llbot_config.json"
+              }
+            },
+            {
+              "key": "onebot.token",
+              "label": "Access Token",
+              "type": "secret",
+              "required": false,
+              "dashboard": {
+                "tab": "配置管理",
+                "path": "qq-llbot/qq_llbot_config.json"
+              }
+            }
+          ],
+          "downloads": []
+        }
+      },
+      "capabilities": {
+        "qq_adapter": [
+          "none",
+          "satori",
+          "onebot"
+        ]
+      },
+      "degrade": "不勾 → 只保留网页/面板对话，QQ 渠道不注入",
+      "notes": [
+        "onebot 模式连 NapCat / LLOneBot / go-cqhttp；正向 WS 填 url，反向 WS 填 listen，token 可选"
+      ]
+    },
+    {
+      "id": "hostfiles",
+      "name": "宿主文件读写",
+      "requires": [
+        "tools.basic"
+      ],
+      "default_mode": "default",
+      "modes": {
+        "default": {
+          "label": "授予一个宿主根目录",
+          "settings": [
+            {
+              "key": "host.root",
+              "label": "宿主根目录",
+              "type": "path",
+              "required": true,
+              "help": "T0 直接本地路径；容器/集群档需把该目录挂进 pod"
+            }
+          ],
+          "downloads": []
+        }
+      },
+      "capabilities": {
+        "host_files": [
+          "off",
+          "enabled"
+        ]
+      },
+      "degrade": "不勾 → windows-file-copy / windows-file-move 工具不出现"
+    }
+  ]
+}

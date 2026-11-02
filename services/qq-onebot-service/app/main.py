@@ -23,6 +23,60 @@ def _safe_workspace_segment(user_id: str) -> str:
     return "default" if safe in {".", ".."} else safe
 
 
+_MIME_BY_EXT = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+}
+
+
+def _mime_of(head: bytes, url: str) -> str:
+    """优先按文件头判断 mime，其次按扩展名。"""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"GIF8"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head.startswith(b"BM"):
+        return "image/bmp"
+    ext = ""
+    raw = str(url or "").split("?")[0]
+    if "." in raw.rsplit("/", 1)[-1]:
+        ext = "." + raw.rsplit(".", 1)[-1].lower()
+    return _MIME_BY_EXT.get(ext, "image/jpeg")
+
+
+async def _to_data_url(url: str) -> str:
+    """http(s) 图片 → data URL；已经是 data URL/本地路径就原样返回。
+
+    orchestrator 的 image_store.store_image 只接受 data URL（落盘 + 给模型看图），
+    所以渠道拿到的 http 地址必须在这里先抓下来。
+    """
+    value = str(url or "").strip()
+    if not value or value.startswith("data:"):
+        return value
+    if not value.lower().startswith(("http://", "https://")):
+        return value
+    try:
+        import base64
+
+        import httpx
+
+        async with httpx.AsyncClient(timeout=config.ONEBOT_IMAGE_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(value)
+            resp.raise_for_status()
+            data = resp.content
+        if not data:
+            return value
+        mime = _mime_of(data[:16], value)
+        return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[qq-onebot] 图片下载失败 {value[:80]}: {exc}", flush=True)
+        return value
+
+
 async def _save_files(user_id: str, files: list[dict]) -> list[str]:
     """把收到的文件落到用户工作区（与 orchestrator/tool-runtime 同一路径规则）。"""
     notes: list[str] = []
@@ -51,8 +105,8 @@ async def _save_files(user_id: str, files: list[dict]) -> list[str]:
                 resp.raise_for_status()
                 dest = user_dir / name
                 dest.write_bytes(resp.content)
-            rel = f"/app/workspace/users/{safe_user}/{name}"
-            notes.append(f"[已收到文件] {name}（{len(resp.content)} bytes）已保存至 {rel}，可用文件工具读取")
+            rel = f"users/{safe_user}/{name}"
+            notes.append(f"[已收到文件] {name}（{len(resp.content)} bytes）已保存至工作区 {rel}（相对用户工作目录），可用文件工具读取")
         except Exception as exc:  # noqa: BLE001
             notes.append(f"[收到文件] {name}，但下载失败：{exc}")
     return notes
@@ -74,6 +128,9 @@ async def main() -> None:
             content = (content + "\n" if content else "") + "\n".join(file_notes)
         if not content and not images:
             return
+
+        # 图片落地：orchestrator 只认 data URL，先把渠道给的 http 地址抓下来
+        images = [await _to_data_url(u) for u in images]
 
         result = await scheduler.create_task(
             user_id=parsed.user_id,

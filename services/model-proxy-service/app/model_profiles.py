@@ -83,7 +83,9 @@ class ModelProfileStore:
                 f"or fallback {self.fallback_profiles_path}"
             )
 
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig：Windows 记事本 / PowerShell 的 "UTF8" 会带 BOM，
+        # 用纯 utf-8 读会直接抛 "Unexpected UTF-8 BOM"，新用户改完配置就聊不了。
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
 
     def get_profile(self, name: str | None) -> dict[str, Any]:

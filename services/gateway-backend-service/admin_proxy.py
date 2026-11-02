@@ -33,9 +33,18 @@ PROXY_TARGETS: dict[str, str] = {
 # 整站反代（独立端口）：端口 → (服务名, 目标地址, 环境变量)
 # 端口号**沿用各服务原来的**（3080 LLBot WebUI / 5700 管理面板），
 # 只是由 gateway 这个容器监听并整站反代 —— 外面访问的端口不变。
-PASSTHROUGH_PORTS: dict[int, tuple[str, str]] = {
+_PASSTHROUGH_PORTS: dict[int, tuple[str, str]] = {
     3080: ("llbot", os.getenv("LLBOT_WEBUI_TARGET", "http://llbot:3080")),
     5700: ("dashboard", PROXY_TARGETS["dashboard"]),
+}
+
+# 哪些端口要在本进程里整站反代。k8s 里由 gateway 统一收口（3080/5700）；
+# 单机模式（没有 k8s Service DNS）要把 dashboard 直接跑在 5700，所以设空：
+#   GATEWAY_PASSTHROUGH_PORTS=""
+_enabled = os.getenv("GATEWAY_PASSTHROUGH_PORTS", "3080,5700").replace(" ", "")
+_allowed = {int(item) for item in _enabled.split(",") if item.isdigit()}
+PASSTHROUGH_PORTS: dict[int, tuple[str, str]] = {
+    port: value for port, value in _PASSTHROUGH_PORTS.items() if port in _allowed
 }
 
 # 逐跳头：不能透传（RFC 7230）
@@ -140,5 +149,5 @@ PASSTHROUGH_APPS: dict[int, FastAPI] = {
     for port, (name, target) in PASSTHROUGH_PORTS.items()
 }
 
-# 兼容早期引用
-llbot_proxy_app = PASSTHROUGH_APPS[3080]
+# 兼容早期引用（单机模式可能没启用 3080 反代）
+llbot_proxy_app = PASSTHROUGH_APPS.get(3080)

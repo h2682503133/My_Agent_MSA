@@ -23,5 +23,9 @@
     "self_id": "",
     "group_require_at": true,
     "_说明": "NapCat/LLOneBot/go-cqhttp 的 OneBot 11 接口。forward=适配器连 NapCat 的 WS；reverse=NapCat 里填 ws 反向地址到 ws_listen。token 与 NapCat 配置保持一致；self_id 填机器人 QQ 号（群聊里判断是否被 @）。"
+  },
+  "assets": {
+    "base": "",
+    "_说明": "资产（表情/图床）对外基址。留空 = http://127.0.0.1:5102（本机够用）。当图片要被别的机器/容器拉取时填那个地址，例如 NapCat 在宿主、单体在虚拟机：http://10.244.62.117:5102"
   }
 }

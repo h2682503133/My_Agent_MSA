@@ -26,6 +26,11 @@ TIMER_TASK_TARGET = os.getenv(
     "timer-task-service.agent.svc.cluster.local:5103",
 )
 
+# 运行环境能力档案：部署程序生成，运行期只读（见 app/capabilities.py）
+# 目录按三根抽象：容器内 /app/...，单体模式由部署程序指到数据目录
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app"))
+CAPABILITY_PATH = Path(os.getenv("CAPABILITY_PATH", str(DATA_DIR / "capability.json")))
+
 MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "30"))
 TOOL_TIMEOUT_SECONDS = int(os.getenv("TOOL_TIMEOUT_SECONDS", "120"))
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "300"))
@@ -42,7 +47,14 @@ MOCK_DOWNSTREAM = False
 
 AGENT_CONFIG_PATH = Path(os.getenv("AGENT_CONFIG_PATH", str(BASE_DIR / "config" / "agent_list.json")))
 SYSTEM_PROMPT_DIR = Path(os.getenv("SYSTEM_PROMPT_DIR", str(BASE_DIR / "system_prompt")))
-WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", str(BASE_DIR / "workspace")))
+# 统一存储前缀：设置了 MYAGENT_STORAGE_ROOT 就按 <root>/workspace 推导，
+# 否则退回各路径自己的环境变量/默认值（容器里仍是 /app/workspace）
+try:
+    from app import storage_paths as _storage
+except ImportError:  # pragma: no cover
+    import storage_paths as _storage  # type: ignore[no-redef]
+
+WORKSPACE_DIR = _storage.resolve("WORKSPACE_DIR", "workspace", default=str(BASE_DIR / "workspace"))
 
 # 系统杂项设置（dashboard 写入）：当前仅 image_receive_enabled 图像接收开关
 SYSTEM_SETTINGS_PATH = Path(

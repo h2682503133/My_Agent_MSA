@@ -62,6 +62,9 @@
                 <Button x:Name="BtnDeploy" Content="🚀 一键部署"
                         Style="{StaticResource NavButton}" Click="NavButton_Click"/>
 
+                <Button x:Name="BtnStandalone" Content="🧩 单体模式"
+                        Style="{StaticResource NavButton}" Click="NavButton_Click"/>
+
                 <Button x:Name="BtnLLBot" Content="🤖 LLBot"
                         Style="{StaticResource NavButton}" Click="NavButton_Click"/>
 

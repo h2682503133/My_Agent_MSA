@@ -34,10 +34,11 @@ CATALOG = {
                 {"name": "file-write", "args": "路径|内容", "desc": "写文件", "groups": ["文件", "L1"]},
                 {"name": "worldinfo-write", "args": "关键词|内容", "desc": "写世界书", "groups": ["记忆", "L2"]},
                 {"name": "shell", "args": "命令", "desc": "执行命令", "groups": ["执行", "L3"]},
-                {"name": "browser", "args": "动作", "desc": "操作浏览器", "groups": ["工具", "L4"]},
+                {"name": "browser", "args": "动作", "desc": "操作浏览器", "groups": ["工具", "L4", "cap:browser"]},
                 {"name": "fetch", "args": "url", "desc": "读网页（GET）", "groups": ["网络", "L1"]},
                 {"name": "fetch", "args": "url|method|data", "desc": "写请求", "groups": ["网络", "L3"]},
                 {"name": "no-tag", "args": "", "desc": "没写标签", "groups": ["杂项"]},
+                {"name": "dsh", "args": "任务", "desc": "需要外部执行", "groups": ["生成", "L4", "cap:external_exec"]},
             ],
         },
         {"id": "只有高档", "title": "高档专用", "tools": [
@@ -83,6 +84,33 @@ def main():
     print("TOOL.md 选择器与档位过滤叠加")
     picked = cb.render_tool_catalog(CATALOG, {"sections": ["*"], "tools": ["L3"]}, {0, 1})
     check("选择器点名 L3 但用户无权 → 空", "shell" not in picked and "fetch" not in picked, picked[:80])
+
+
+    print("能力标签过滤（cap:xxx）")
+    import os
+    from app import capabilities as caps
+
+    orig = os.environ.get("MYAGENT_CAP_browser")
+    os.environ["MYAGENT_CAP_browser"] = "off"
+    try:
+        filtered = cb.render_tool_catalog(CATALOG, {"sections": ["*"]}, {0, 1, 2, 3, 4})
+        check("能力关闭 → browser 不注入", "browser" not in filtered, filtered[:120])
+        check("其它工具不受影响", "dsh" in filtered or "file-read" in filtered)
+    finally:
+        if orig is None:
+            os.environ.pop("MYAGENT_CAP_browser", None)
+        else:
+            os.environ["MYAGENT_CAP_browser"] = orig
+
+    os.environ["MYAGENT_CAP_external_exec"] = "off"
+    try:
+        filtered2 = cb.render_tool_catalog(CATALOG, {"sections": ["*"]}, {0, 1, 2, 3, 4})
+        check("external_exec 关闭 → dsh 不注入", "dsh" not in filtered2, filtered2[:120])
+    finally:
+        os.environ.pop("MYAGENT_CAP_external_exec", None)
+
+    both = cb.render_tool_catalog(CATALOG, {"sections": ["*"]}, {0, 1, 2, 3, 4})
+    check("能力都开 → 两个都出现", "browser" in both and "dsh" in both, both[:120])
 
     print()
     if FAILS:

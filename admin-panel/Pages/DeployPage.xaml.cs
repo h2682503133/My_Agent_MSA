@@ -1,100 +1,42 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
-using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
-using MyAgentAdminPanel.Models;
 using MyAgentAdminPanel.Services;
 
 namespace MyAgentAdminPanel.Pages;
 
+/// <summary>
+/// 一键部署（k8s 路线）：**按功能**选择，不再按服务。
+/// 功能清单来自 deploy/features.json；勾选后动态要求填写该功能所需的信息，
+/// 缺必填就报错（提示"取消勾选即退化"），齐了再构建镜像 + apply 清单 + 同步配置。
+/// </summary>
 public partial class DeployPage : Page
 {
     private readonly DockerService _docker;
     private readonly KubectlService _kubectl;
-    public ObservableCollection<ServiceInfo> Services { get; } = new();
 
-    /// <summary>必要服务（Web 对话最小闭环），与 deploy-all.ps1 的 $CORE_SERVICES 一致</summary>
-    private static readonly string[] CoreServices =
-    {
-        "frontend-service", "gateway-backend-service",
-        "task-scheduler-service", "agent-orchestrator-service", "model-proxy-service",
-    };
+    private readonly List<FeatureDef> _features = new();
+    private readonly Dictionary<string, Control> _editors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _values = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>服务依赖：勾选 context 自动带 server，与 deploy-all.ps1 的 $DEPENDENCIES 一致</summary>
-    private static readonly Dictionary<string, string[]> Dependencies = new(StringComparer.OrdinalIgnoreCase)
+    // 服务 → 需要同步到 NFS 的配置（相对仓库根；多项用逗号分隔）
+    private static readonly Dictionary<string, string> ServiceConfigMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["openviking-context-service"] = new[] { "openviking-server" },
-    };
-
-    /// <summary>服务 → 需要同步到 NFS 的配置（相对 config/），与 deploy-all.ps1 的 $CONFIG_MAP 一致</summary>
-    private static readonly Dictionary<string, string[]> ConfigMap = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["agent-orchestrator-service"] = new[]
-        {
-            "config/orchestrator/config/agent_list.json",
-            "config/orchestrator/config/system_settings.json",
-            "config/orchestrator/system_prompt/",
-        },
-        ["model-proxy-service"] = new[] { "config/model-proxy/config/model_list.json" },
-        ["openviking-server"] = new[] { "config/openviking/ov.conf" },
-        ["openviking-context-service"] = new[] { "config/openviking/root_api_key", "config/openviking/api_key" },
-        ["qq-llbot-service"] = new[] { "config/qq-llbot/qq_llbot_config.json" },
-        ["tool-runtime-service"] = new[] { "config/openviking/api_key" },
-        // dashboard 为管理面板，浏览/编辑整个配置目录
-        ["dashboard-service"] = new[]
-        {
-            "config/orchestrator/config/agent_list.json",
-            "config/orchestrator/config/system_settings.json",
-            "config/orchestrator/system_prompt/",
-            "config/model-proxy/config/model_list.json",
-            "config/openviking/ov.conf",
-            "config/openviking/root_api_key",
-            "config/openviking/api_key",
-            "config/qq-llbot/qq_llbot_config.json",
-        },
-    };
-
-    private static readonly Dictionary<string, string> ServiceHints = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["frontend-service"] = "Web 前端（nginx）",
-        ["gateway-backend-service"] = "Web 后端网关（SSE）",
-        ["task-scheduler-service"] = "任务调度",
-        ["agent-orchestrator-service"] = "Agent 运行时",
-        ["model-proxy-service"] = "模型代理",
-        ["timer-task-service"] = "定时任务",
-        ["qq-llbot-service"] = "QQ 渠道",
-        ["openviking-context-service"] = "长期记忆(RAG，自动带 server)",
-        ["openviking-server"] = "语义检索库（外部镜像）",
-        ["user-service"] = "用户信息",
-        ["dashboard-service"] = "管理面板",
-        ["tool-runtime-service"] = "工具执行（需 WSL）",
-        ["image-assets-service"] = "图床",
-    };
-
-    private static readonly (string Name, string Yaml)[] YamlMap =
-    {
-        ("dashboard-service", "deploy/services/dashboard-service.yaml"),
-        ("agent-orchestrator-service", "deploy/services/agent-orchestrator-service.yaml"),
-        ("task-scheduler-service", "deploy/services/task-scheduler-service.yaml"),
-        ("timer-task-service", "deploy/services/timer-task-service.yaml"),
-        ("gateway-backend-service", "deploy/services/gateway-backend-service.yaml"),
-        ("qq-llbot-service", "deploy/services/qq-llbot-service.yaml"),
-        ("model-proxy-service", "deploy/services/model-proxy-service.yaml"),
-        ("openviking-context-service", "deploy/services/openviking-context-service.yaml"),
-        ("openviking-server", "deploy/services/openviking-server.yaml"),
-        ("user-service", "deploy/services/user-service.yaml"),
-        ("frontend-service", "deploy/services/frontend-service.yaml"),
-        ("tool-runtime-service", ""), // 特殊部署脚本，无 YAML
+        ["agent-orchestrator-service"] = "config/orchestrator/config,config/orchestrator/system_prompt",
+        ["model-proxy-service"] = "config/model-proxy/config",
+        ["openviking-server"] = "config/openviking",
+        ["openviking-context-service"] = "config/openviking",
+        ["qq-llbot-service"] = "config/qq-llbot",
+        ["qq-official-service"] = "config/qq-official",
+        ["tool-runtime-service"] = "config/openviking",
+        ["dashboard-service"] = "config",
     };
 
     public DeployPage(DockerService docker, KubectlService kubectl)
@@ -102,384 +44,620 @@ public partial class DeployPage : Page
         InitializeComponent();
         _docker = docker;
         _kubectl = kubectl;
-        ServiceList.ItemsSource = Services;
-        Loaded += (s, e) => ParseDeployScript();
+        Loaded += (_, _) => ReloadFeatures();
     }
 
-    private void ParseDeployScript()
-    {
-        var projectRoot = FindProjectRoot();
-        var ps1Path = Path.Combine(projectRoot, "deploy-all.ps1");
+    // ── 功能清单（deploy/features.json）─────────────────────
 
-        if (!File.Exists(ps1Path))
+    private sealed class SettingDef
+    {
+        public string Key = "";
+        public string Label = "";
+        public string Type = "string";
+        public bool Required;
+        public string Default = "";
+        public List<string> Values = new();
+        public Dictionary<string, string> When = new(StringComparer.OrdinalIgnoreCase);
+        public string Help = "";
+        public string DashboardTab = "";
+        public string DashboardPath = "";
+    }
+
+    private sealed class FeatureDef
+    {
+        public string Id = "";
+        public string Name = "";
+        public bool Required;
+        public List<string> Modes = new();
+        public string Mode = "";
+        public List<string> Services = new();
+        public Dictionary<string, List<string>> ModeServices = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, List<SettingDef>> ModeSettings = new(StringComparer.OrdinalIgnoreCase);
+        public List<SettingDef> Settings = new();
+        public Dictionary<string, List<string>> ModeDownloads = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> ModeStatus = new(StringComparer.OrdinalIgnoreCase);   // planned = 未实现
+        public Dictionary<string, List<string>> ModeTiers = new(StringComparer.OrdinalIgnoreCase); // 该实现方式适用的环境档
+        public bool Selected;
+    }
+
+    private string ProjectRoot => FindProjectRoot();
+
+    private void ReloadFeatures()
+    {
+        _features.Clear();
+        FeaturePanel.Children.Clear();
+        SettingsPanel.Children.Clear();
+        _editors.Clear();
+        _values.Clear();
+
+        var path = Path.Combine(ProjectRoot, "deploy", "features.json");
+        if (!File.Exists(path))
         {
-            AppendLog($"[系统] 找不到 {ps1Path}，使用内置服务列表");
-            LoadBuiltinServices();
+            AppendLog($"[错误] 找不到 {path}");
+            return;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            foreach (var feature in doc.RootElement.GetProperty("features").EnumerateArray())
+            {
+                var def = new FeatureDef
+                {
+                    Id = Str(feature, "id"),
+                    Name = Str(feature, "name"),
+                    Required = Bool(feature, "required"),
+                    Selected = Bool(feature, "required"),
+                };
+                if (feature.TryGetProperty("modes", out var modes) && modes.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var mode in modes.EnumerateObject())
+                    {
+                        def.Modes.Add(mode.Name);
+                        if (mode.Value.TryGetProperty("settings", out var settings) && settings.ValueKind == JsonValueKind.Array)
+                            def.ModeSettings[mode.Name] = ParseSettings(settings);
+                        if (mode.Value.TryGetProperty("downloads", out var downloads) && downloads.ValueKind == JsonValueKind.Array)
+                            def.ModeDownloads[mode.Name] = downloads.EnumerateArray()
+                                .Select(d => Str(d, "label")).Where(s => s.Length > 0).ToList();
+                        if (mode.Value.TryGetProperty("tiers", out var modeTiers) && modeTiers.ValueKind == JsonValueKind.Array)
+                            def.ModeTiers[mode.Name] = modeTiers.EnumerateArray()
+                                .Select(t => t.GetString() ?? "").Where(t => t.Length > 0).ToList();
+                        if (mode.Value.TryGetProperty("services", out var modeServices) && modeServices.ValueKind == JsonValueKind.Array)
+                            def.ModeServices[mode.Name] = modeServices.EnumerateArray()
+                                .Select(s => s.GetString() ?? "").Where(s => s.Length > 0).ToList();
+                    }
+                    def.Mode = def.Modes.FirstOrDefault() ?? "";
+                }
+                if (feature.TryGetProperty("mode_status", out var modeStatus) && modeStatus.ValueKind == JsonValueKind.Object)
+                    foreach (var item in modeStatus.EnumerateObject())
+                        def.ModeStatus[item.Name] = item.Value.GetString() ?? "";
+                if (feature.TryGetProperty("settings", out var baseSettings) && baseSettings.ValueKind == JsonValueKind.Array)
+                    def.Settings = ParseSettings(baseSettings);
+                if (feature.TryGetProperty("services", out var servicesEl))
+                {
+                    if (servicesEl.ValueKind == JsonValueKind.Array)
+                        def.Services.AddRange(servicesEl.EnumerateArray()
+                            .Select(s => s.GetString() ?? "").Where(s => s.Length > 0));
+                    else if (servicesEl.ValueKind == JsonValueKind.Object)
+                        foreach (var item in servicesEl.EnumerateObject())
+                            if (item.Value.ValueKind == JsonValueKind.Array)
+                                def.ModeServices[item.Name] = item.Value.EnumerateArray()
+                                    .Select(s => s.GetString() ?? "").Where(s => s.Length > 0).ToList();
+                }
+                _features.Add(def);
+            }
+        }
+        catch (Exception exc)
+        {
+            AppendLog($"[错误] 解析 features.json 失败：{exc.Message}");
             return;
         }
 
-        try
+        BuildFeaturePanel();
+        RebuildSettings();
+        RefreshPlan();
+        AppendLog($"[系统] 已读取 {_features.Count} 个功能");
+    }
+
+    private static List<SettingDef> ParseSettings(JsonElement array)
+    {
+        var result = new List<SettingDef>();
+        foreach (var item in array.EnumerateArray())
         {
-            var content = File.ReadAllText(ps1Path);
-            // $IMAGES: "name" = @{ dir = "..."; ... }  版本号不再写在脚本里，从部署文件读取
-            var imagePattern = @"""([^""]+)""\s*=\s*@\{\s*dir\s*=\s*""([^""]+)""";
-            var yamlPattern = @"""([^""]+)""\s*=\s*""([^""]+)""";
-
-            var images = Regex.Matches(content, imagePattern);
-            var yamls = new Dictionary<string, string>();
-            var yamlSection = Regex.Match(content, @"\$YAML_MAP\s*=\s*@\{([^}]+)\}", RegexOptions.Singleline);
-            if (yamlSection.Success)
+            var def = new SettingDef
             {
-                var yamlMatches = Regex.Matches(yamlSection.Groups[1].Value, yamlPattern);
-                foreach (Match m in yamlMatches)
-                    yamls[m.Groups[1].Value] = m.Groups[2].Value;
-            }
-
-            var parsed = new List<(string name, string dir, string yaml, string tag)>();
-            foreach (Match m in images)
+                Key = Str(item, "key"),
+                Label = Str(item, "label"),
+                Type = Str(item, "type") is { Length: > 0 } t ? t : "string",
+                Required = Bool(item, "required"),
+                Default = Str(item, "default"),
+                Help = Str(item, "help"),
+            };
+            if (item.TryGetProperty("values", out var values) && values.ValueKind == JsonValueKind.Array)
+                def.Values.AddRange(values.EnumerateArray().Select(v => v.GetString() ?? "").Where(v => v.Length > 0));
+            if (item.TryGetProperty("dashboard", out var dashboard) && dashboard.ValueKind == JsonValueKind.Object)
             {
-                var name = m.Groups[1].Value;
-                var dir = m.Groups[2].Value;
-                var yaml = yamls.TryGetValue(name, out var y) ? y : "";
-                var tag = ResolveTagFromDeployFiles(projectRoot, name, yaml);
-                parsed.Add((name, dir, yaml, tag));
+                def.DashboardTab = Str(dashboard, "tab");
+                def.DashboardPath = Str(dashboard, "path");
             }
-
-            BuildServiceList(parsed);
-            AppendLog($"[系统] 从 {ps1Path} 解析到 {Services.Count} 个服务（版本号自动从部署文件读取）");
+            if (item.TryGetProperty("when", out var when) && when.ValueKind == JsonValueKind.Object)
+                foreach (var pair in when.EnumerateObject())
+                    def.When[pair.Name] = pair.Value.ValueKind switch
+                    {
+                        JsonValueKind.True => "true",
+                        JsonValueKind.False => "false",
+                        _ => pair.Value.ToString(),
+                    };
+            if (def.Key.Length > 0) result.Add(def);
         }
-        catch (Exception ex)
+        return result;
+    }
+
+    private static string Str(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? "" : "";
+
+    private static bool Bool(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+
+    private const string CurrentTier = "T2";   // 一键部署页只服务 k8s 档
+
+    /// <summary>该实现方式在当前环境档是否可用（未实现 / tiers 不含本档 → 不可用）。</summary>
+    private static bool ModeUsable(FeatureDef feature, string mode)
+    {
+        if (feature.ModeStatus.TryGetValue(mode, out var status) && status == "planned") return false;
+        if (feature.ModeTiers.TryGetValue(mode, out var tiers) && tiers.Count > 0 && !tiers.Contains(CurrentTier))
+            return false;
+        return true;
+    }
+
+    private void BuildFeaturePanel()
+    {
+        FeaturePanel.Children.Clear();
+        foreach (var feature in _features)
         {
-            AppendLog($"[系统] 解析失败: {ex.Message}");
-            LoadBuiltinServices();
+            var row = new StackPanel { Margin = new Thickness(0, 2, 0, 4) };
+            var line = new StackPanel { Orientation = Orientation.Horizontal };
+            var check = new CheckBox
+            {
+                IsChecked = feature.Selected,
+                IsEnabled = !feature.Required,
+                Content = feature.Name,
+                FontWeight = FontWeights.SemiBold,
+            };
+            check.Checked += (_, _) => { feature.Selected = true; RebuildSettings(); RefreshPlan(); };
+            check.Unchecked += (_, _) => { feature.Selected = false; RebuildSettings(); RefreshPlan(); };
+            line.Children.Add(check);
+
+            if (feature.Modes.Count > 0)
+            {
+                var combo = new ComboBox { Width = 130, Margin = new Thickness(10, 0, 0, 0), Height = 24 };
+                foreach (var mode in feature.Modes)
+                {
+                    var label = mode;
+                    if (feature.ModeStatus.TryGetValue(mode, out var st) && st == "planned") label += "（未实现）";
+                    else if (feature.ModeTiers.TryGetValue(mode, out var tiers) && tiers.Count > 0 && !tiers.Contains(CurrentTier))
+                        label += "（本环境不支持）";
+                    combo.Items.Add(label);
+                }
+                var firstReady = feature.Modes.FirstOrDefault(m => ModeUsable(feature, m));
+                if (firstReady is not null) feature.Mode = firstReady;
+                combo.SelectedIndex = feature.Modes.IndexOf(feature.Mode);
+                combo.SelectionChanged += (_, _) =>
+                {
+                    if (combo.SelectedItem is string mode)
+                    {
+                        feature.Mode = mode;
+                        RebuildSettings();
+                        RefreshPlan();
+                    }
+                };
+                line.Children.Add(combo);
+            }
+            row.Children.Add(line);
+            FeaturePanel.Children.Add(row);
         }
     }
 
-    /// <summary>构建选择列表：core 组合项 + 各服务 + tool-runtime 的 codex/clawhub 子项</summary>
-    private void BuildServiceList(List<(string name, string dir, string yaml, string tag)> parsed)
+    // ── 动态参数表单 ────────────────────────────────────────
+
+    private readonly List<string> _dashboardHints = new();
+
+    private void RebuildSettings()
     {
-        Services.Clear();
+        _editors.Clear();
+        SettingsPanel.Children.Clear();
+        _dashboardHints.Clear();
 
-        // 1) 必要服务组合项（默认勾选）
-        Services.Add(new ServiceInfo
+        foreach (var feature in _features.Where(f => f.Selected))
         {
-            Name = "必要服务",
-            Hint = "Web 对话最小闭环（推荐）",
-            Tag = "×5",
-            IsCore = true,
-            IsSelected = true,
-        });
+            var items = new List<SettingDef>();
+            items.AddRange(feature.Settings);
+            if (feature.Mode.Length > 0 && feature.ModeSettings.TryGetValue(feature.Mode, out var modeSettings))
+                items.AddRange(modeSettings);
 
-        // 2) 各服务（tool-runtime 后紧跟其功能子项 codex / clawhub）
-        foreach (var (name, dir, yaml, tag) in parsed)
-        {
-            Services.Add(new ServiceInfo
+            var downloads = feature.Mode.Length > 0 && feature.ModeDownloads.TryGetValue(feature.Mode, out var dl)
+                ? dl : new List<string>();
+
+            if (items.Count == 0 && downloads.Count == 0) continue;
+
+            SettingsPanel.Children.Add(new TextBlock
             {
-                Name = name,
-                Directory = dir,
-                Tag = tag,
-                YamlPath = yaml,
-                Hint = ServiceHints.TryGetValue(name, out var h) ? h : "",
-                IsSelected = CoreServices.Contains(name),
+                Text = feature.Name,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 8, 0, 4),
             });
 
-            if (name == "tool-runtime-service")
-            {
-                Services.Add(new ServiceInfo { Name = "codex", Hint = "代码生成（需 @openai/codex）", IsFeature = true, ParentName = "tool-runtime-service", IsSelected = true });
-                Services.Add(new ServiceInfo { Name = "clawhub", Hint = "技能执行（需 node + clawhub）", IsFeature = true, ParentName = "tool-runtime-service", IsSelected = true });
-            }
-        }
-    }
-
-    /// <summary>
-    /// 版本号自动从部署文件读取：优先 deploy/services/&lt;name&gt;.yaml 的 image 字段；
-    /// tool-runtime 无 YAML，从 deploy/tool-runtime-apply.sh 的 TOOL_RUNTIME_IMAGE 读取。
-    /// </summary>
-    private static string ResolveTagFromDeployFiles(string projectRoot, string name, string yaml)
-    {
-        try
-        {
-            if (name == "tool-runtime-service")
-            {
-                var scriptPath = Path.Combine(projectRoot, "deploy", "tool-runtime-apply.sh");
-                if (File.Exists(scriptPath))
+            if (downloads.Count > 0)
+                SettingsPanel.Children.Add(new TextBlock
                 {
-                    var m = Regex.Match(File.ReadAllText(scriptPath),
-                        @"TOOL_RUNTIME_IMAGE[^:]*:\s*[^:]+:([^\s""}]+)");
-                    if (m.Success) return m.Groups[1].Value;
+                    Text = $"需下载：{string.Join("、", downloads)}",
+                    FontSize = 11,
+                    Foreground = System.Windows.Media.Brushes.DarkOrange,
+                    Margin = new Thickness(0, 0, 0, 4),
+                });
+
+            foreach (var def in items)
+            {
+                if (!WhenSatisfied(def, feature)) continue;
+                if (def.DashboardTab.Length > 0)
+                {
+                    // 能在 dashboard 里改的，不在部署页重复问，只提示去哪改
+                    var hint = $"dashboard「{def.DashboardTab}」→ {def.DashboardPath}：{def.Label}";
+                    if (!_dashboardHints.Contains(hint)) _dashboardHints.Add(hint);
+                    continue;
                 }
-                return "";
+                SettingsPanel.Children.Add(BuildEditorRow(def));
             }
+        }
 
-            if (string.IsNullOrEmpty(yaml)) return "";
-            var yamlPath = Path.Combine(projectRoot, yaml);
-            if (!File.Exists(yamlPath)) return "";
-            var line = Regex.Match(File.ReadAllText(yamlPath), @"(?m)^\s*image:\s*(\S+)\s*$").Groups[1].Value;
-            if (string.IsNullOrEmpty(line)) return "";
-            var parts = line.Split(':');
-            return parts[parts.Length - 1];
-        }
-        catch
+        if (_dashboardHints.Count > 0)
         {
-            return "";
+            var box = new StackPanel { Margin = new Thickness(0, 8, 0, 4) };
+            box.Children.Add(new TextBlock
+            {
+                Text = "以下配置部署后在 dashboard 里设置（部署页不再重复询问）：",
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 12,
+            });
+            foreach (var hint in _dashboardHints)
+                box.Children.Add(new TextBlock
+                {
+                    Text = "· " + hint,
+                    FontSize = 11,
+                    Foreground = System.Windows.Media.Brushes.DimGray,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            SettingsPanel.Children.Add(box);
         }
+
+        if (SettingsPanel.Children.Count == 0)
+            SettingsPanel.Children.Add(new TextBlock
+            {
+                Text = "所选功能无需填写资料。",
+                Foreground = System.Windows.Media.Brushes.Gray,
+                Margin = new Thickness(0, 4, 0, 4),
+            });
     }
 
-    private void LoadBuiltinServices()
+    private bool WhenSatisfied(SettingDef def, FeatureDef feature)
     {
-        var builtin = new (string name, string dir, string tag)[]
+        foreach (var pair in def.When)
         {
-            ("dashboard-service", "services/dashboard-service", "v2"),
-            ("agent-orchestrator-service", "services/agent-orchestrator-service", "v11"),
-            ("task-scheduler-service", "services/task-scheduler-service", "v5"),
-            ("timer-task-service", "services/timer-task-service", "v2"),
-            ("gateway-backend-service", "services/gateway-backend-service", "v4"),
-            ("qq-llbot-service", "services/qq-llbot-service", "v1"),
-            ("model-proxy-service", "services/model-proxy-service", "v3"),
-            ("openviking-context-service", "services/openviking-context-service", "v17"),
-            ("openviking-server", "external", "v0.4.10"),
-            ("tool-runtime-service", "services/tool-runtime-service", "v1"),
-            ("user-service", "services/user-service", "v1"),
-            ("frontend-service", "services/frontend-service", "v1"),
-        };
-        var projectRoot = FindProjectRoot();
-        var parsed = new List<(string, string, string, string)>();
-        foreach (var (name, dir, tag) in builtin)
-        {
-            var yaml = YamlMap.FirstOrDefault(x => x.Name == name).Yaml ?? "";
-            var resolved = ResolveTagFromDeployFiles(projectRoot, name, yaml);
-            parsed.Add((name, dir, yaml, string.IsNullOrEmpty(resolved) ? tag : resolved));
+            // 条件键可能是：本功能的模式（如 mode=install）、其它设置项（如 ov.source）
+            var current = pair.Key is "mode" or "source" or "transport" or "protocol" or "ws_mode"
+                ? _features.FirstOrDefault(f => f.Mode.Length > 0 && f.ModeSettings.ContainsKey(f.Mode)) is { } any
+                    ? CurrentModeOf(pair.Key)
+                    : ""
+                : ReadValue(pair.Key);
+            if (current.Length == 0) current = ReadValue(pair.Key);
+            if (!string.Equals(current, pair.Value, StringComparison.OrdinalIgnoreCase)) return false;
         }
-        BuildServiceList(parsed);
+        return true;
     }
+
+    private string CurrentModeOf(string _) =>
+        // features.json 里的 when 条件多用「功能内的子模式」，这里取第一个已选功能的当前模式
+        _features.Where(f => f.Selected && f.Mode.Length > 0).Select(f => f.Mode).FirstOrDefault() ?? "";
+
+    private string ReadValue(string key)
+    {
+        if (_values.TryGetValue(key, out var value) && value.Length > 0) return value;
+        if (_editors.TryGetValue(key, out var editor))
+        {
+            return editor switch
+            {
+                TextBox tb => tb.Text,
+                PasswordBox pb => pb.Password,
+                ComboBox cb => cb.SelectedItem?.ToString() ?? "",
+                _ => "",
+            };
+        }
+        var def = _features.SelectMany(f => f.Settings)
+            .Concat(_features.SelectMany(f => f.ModeSettings.Values.SelectMany(x => x)))
+            .FirstOrDefault(d => d.Key == key);
+        return def?.Default ?? "";
+    }
+
+    private FrameworkElement BuildEditorRow(SettingDef def)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 2, 0, 6) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = def.Required ? $"{def.Label} *" : def.Label,
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+        });
+
+        Control editor;
+        if (def.Type == "enum" && def.Values.Count > 0)
+        {
+            var combo = new ComboBox { Height = 26 };
+            foreach (var value in def.Values) combo.Items.Add(value);
+            combo.SelectedItem = _values.TryGetValue(def.Key, out var current) && def.Values.Contains(current)
+                ? current
+                : (def.Default.Length > 0 && def.Values.Contains(def.Default) ? def.Default : def.Values[0]);
+            _values[def.Key] = combo.SelectedItem?.ToString() ?? "";
+            combo.SelectionChanged += (_, _) =>
+            {
+                _values[def.Key] = combo.SelectedItem?.ToString() ?? "";
+                RebuildSettings();
+                RefreshPlan();
+            };
+            editor = combo;
+        }
+        else if (def.Type == "secret")
+        {
+            var box = new PasswordBox { Height = 26, Password = _values.GetValueOrDefault(def.Key, "") };
+            box.PasswordChanged += (_, _) => _values[def.Key] = box.Password;
+            editor = box;
+        }
+        else
+        {
+            var box = new TextBox
+            {
+                Height = 26,
+                Text = _values.TryGetValue(def.Key, out var v) && v.Length > 0 ? v : def.Default,
+            };
+            box.TextChanged += (_, _) => _values[def.Key] = box.Text;
+            editor = box;
+        }
+        panel.Children.Add(editor);
+        _editors[def.Key] = editor;
+
+        if (def.Help.Length > 0)
+            panel.Children.Add(new TextBlock
+            {
+                Text = def.Help,
+                FontSize = 11,
+                Foreground = System.Windows.Media.Brushes.Gray,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        return panel;
+    }
+
+    // ── 计划 ────────────────────────────────────────────────
+
+    private List<string> SelectedServices(out List<string> missingRequired)
+    {
+        missingRequired = new List<string>();
+        var services = new List<string>();
+        foreach (var feature in _features.Where(f => f.Selected))
+        {
+            foreach (var service in feature.Services)
+                if (!services.Contains(service)) services.Add(service);
+            if (feature.Mode.Length > 0 && feature.ModeServices.TryGetValue(feature.Mode, out var modeServices))
+                foreach (var service in modeServices)
+                    if (!services.Contains(service)) services.Add(service);
+
+            var defs = new List<SettingDef>(feature.Settings);
+            if (feature.Mode.Length > 0 && feature.ModeSettings.TryGetValue(feature.Mode, out var modeSettings))
+                defs.AddRange(modeSettings);
+            foreach (var def in defs.Where(d => d.Required && WhenSatisfied(d, feature)))
+            {
+                if (ReadValue(def.Key).Trim().Length == 0)
+                    missingRequired.Add($"{feature.Name} · {def.Label}（{def.Key}）");
+            }
+        }
+        return services;
+    }
+
+    private void RefreshPlan()
+    {
+        var services = SelectedServices(out var missing);
+        var lines = new List<string>
+        {
+            "部署目标：k8s（当前面板执行后端）",
+            $"已选功能：{string.Join("、", _features.Where(f => f.Selected).Select(f => f.Name))}",
+            $"将启动服务（{services.Count}）：{string.Join("、", services)}",
+        };
+        if (!_features.Any(f => f.Selected && f.Id == "tools.basic"))
+            lines.Add("⚠ 未勾选「工具调用」：不部署 tool-runtime，工具目录不注入");
+        var downloads = _features.Where(f => f.Selected)
+            .SelectMany(f => f.Mode.Length > 0 && f.ModeDownloads.TryGetValue(f.Mode, out var dl) ? dl : new List<string>())
+            .Distinct().ToList();
+        if (downloads.Count > 0) lines.Add($"需下载：{string.Join("、", downloads)}");
+        if (_dashboardHints.Count > 0) lines.Add("部署后到 dashboard 设置：" + string.Join("；", _dashboardHints));
+        if (missing.Count > 0) lines.Add($"缺少必填：{string.Join("；", missing)}");
+        TxtPlan.Text = string.Join(Environment.NewLine, lines);
+    }
+
+    private void BtnReload_Click(object sender, RoutedEventArgs e) => ReloadFeatures();
+
+    private void BtnPreview_Click(object sender, RoutedEventArgs e) => RefreshPlan();
+
+    // ── 部署 ────────────────────────────────────────────────
 
     private async void BtnDeploy_Click(object sender, RoutedEventArgs e)
     {
-        BtnDeploy.IsEnabled = false;
-        LogOutput.Document.Blocks.Clear();
-        var projectRoot = FindProjectRoot();
-
-        // 展开选择：core 组合项 → 核心服务；排除 feature 子项
-        var selected = Services
-            .Where(s => s.IsSelected && !s.IsFeature && s.Name != "必要服务")
-            .ToList();
-        if (Services.FirstOrDefault(s => s.IsCore)?.IsSelected == true)
+        RefreshPlan();
+        var services = SelectedServices(out var missing);
+        if (missing.Count > 0)
         {
-            foreach (var name in CoreServices)
-            {
-                var svc = Services.FirstOrDefault(s => s.Name == name);
-                if (svc != null && !selected.Contains(svc))
-                {
-                    selected.Add(svc);
-                    AppendLog($"[提示] 必要服务：已自动加入 {name}");
-                }
-            }
+            AppendLog("[错误] 以下必填项为空：" + string.Join("；", missing));
+            AppendLog("       不想填就取消勾选对应功能（走退化版本），不要留空。");
+            return;
         }
-
-        // 依赖补齐：openviking-context-service → openviking-server
-        foreach (var svc in selected.ToList())
+        if (services.Count == 0)
         {
-            if (Dependencies.TryGetValue(svc.Name, out var deps))
-            {
-                foreach (var dep in deps)
-                {
-                    if (!selected.Any(s => s.Name == dep))
-                    {
-                        var depSvc = Services.FirstOrDefault(s => s.Name == dep);
-                        if (depSvc != null)
-                        {
-                            AppendLog($"[提示] {svc.Name} 依赖 {dep}，已自动加入");
-                            selected.Add(depSvc);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (selected.Count == 0)
-        {
-            AppendLog("[系统] 没有选择任何服务");
-            BtnDeploy.IsEnabled = true;
+            AppendLog("[错误] 没有需要部署的服务");
             return;
         }
 
-        AppendLog($"[系统] 开始部署 {selected.Count} 个服务: {string.Join(", ", selected.Select(s => s.Name))}");
+        BtnDeploy.IsEnabled = false;
+        LogOutput.Document.Blocks.Clear();
+        var root = ProjectRoot;
+        AppendLog($"[系统] 开始部署 {services.Count} 个服务：{string.Join(", ", services)}");
 
-        // 确保 namespace 和 RBAC
         AppendLog("[系统] 确保 namespace 和 RBAC...");
         _kubectl.RunCommand("create namespace agent --dry-run=client -o yaml | kubectl apply -f -");
         _kubectl.RunCommand("-n agent create role pod-log-reader --verb=get,list --resource=pods,pods/log --dry-run=client -o yaml | kubectl apply -f -");
         _kubectl.RunCommand("-n agent create rolebinding pod-log-reader-binding --role=pod-log-reader --serviceaccount=agent:default --dry-run=client -o yaml | kubectl apply -f -");
 
-        // 同步各服务需要的配置到 NFS
-        await SyncConfigToNfsAsync(selected.Select(s => s.Name));
+        await SyncConfigAsync(services);
+        await WriteCapabilityAsync();
 
-        // 构建 Docker 镜像
         AppendLog("\n═══ Docker 构建 ═══");
-        foreach (var svc in selected)
+        var tag = DateTime.Now.ToString("MMddHHmm");
+        foreach (var service in services)
         {
-            var dir = Path.Combine(projectRoot, svc.Directory);
-            if (!Directory.Exists(dir) || !File.Exists(Path.Combine(dir, "Dockerfile")))
+            var dir = Path.Combine(root, "services", service);
+            if (!File.Exists(Path.Combine(dir, "Dockerfile")))
             {
-                if (svc.Name == "openviking-server" || svc.Name == "image-assets-service")
-                    AppendLog($"[跳过] {svc.Name} - 外部镜像，无需构建");
-                else
-                    AppendLog($"[跳过] {svc.Name} - 目录或 Dockerfile 不存在");
+                AppendLog($"[跳过] {service} - 外部镜像/无 Dockerfile");
                 continue;
             }
-
-            AppendLog($"\n> 构建 agent/{svc.Name}:{svc.Tag} ...");
-            await RunAndWait($"docker build -t agent/{svc.Name}:{svc.Tag} {dir}");
+            await RunAndWait($"docker build -t agent/{service}:{tag} \"{dir}\"");
         }
 
-        // K8s 部署
         AppendLog("\n═══ K8s 部署 ═══");
-        var deployedOpenviking = false;
-        foreach (var svc in selected)
+        var openviking = false;
+        foreach (var service in services)
         {
-            // tool-runtime 特殊部署脚本（WSL），传入 codex/clawhub/OpenViking 开关
-            if (svc.Name == "tool-runtime-service")
+            if (service == "tool-runtime-service")
             {
-                var clawhub = Services.FirstOrDefault(x => x.Name == "clawhub")?.IsSelected ?? true;
-                var codex = Services.FirstOrDefault(x => x.Name == "codex")?.IsSelected ?? true;
-                var openviking = selected.Any(x => x.Name == "openviking-server");
-                var repoWsl = WslPath(projectRoot);
-                var env = $"ENABLE_CLAWHUB={(clawhub ? "true" : "false")} ENABLE_CODEX={(codex ? "true" : "false")} ENABLE_OPENVIKING={(openviking ? "true" : "false")}";
-                AppendLog($"\n> 部署 tool-runtime-service（WSL 特殊脚本）...");
+                var clawhub = _features.Any(f => f.Selected && f.Id == "skills");
+                var codex = _features.Any(f => f.Selected && f.Id == "external-exec");
+                var memory = _features.Any(f => f.Selected && f.Id == "memory" && f.Mode == "openviking");
+                var repoWsl = WslPath(root);
+                var env = $"ENABLE_CLAWHUB={(clawhub ? "true" : "false")} ENABLE_CODEX={(codex ? "true" : "false")} ENABLE_OPENVIKING={(memory ? "true" : "false")}";
+                AppendLog($"> 部署 tool-runtime-service（WSL 特殊脚本，{env}）");
                 await RunWslAsync($"cd '{repoWsl}' && {env} bash deploy/tool-runtime-apply.sh");
                 continue;
             }
 
-            if (string.IsNullOrEmpty(svc.YamlPath))
+            var yaml = Path.Combine(root, "deploy", "services", $"{service}.yaml");
+            if (!File.Exists(yaml))
             {
-                AppendLog($"[跳过] {svc.Name} - 无 YAML 映射");
+                AppendLog($"[跳过] {service} - 清单不存在: {yaml}");
                 continue;
             }
-            var yamlPath = Path.Combine(projectRoot, svc.YamlPath);
-            if (!File.Exists(yamlPath))
-            {
-                AppendLog($"[跳过] {svc.Name} - YAML 不存在: {yamlPath}");
-                continue;
-            }
-            AppendLog($"\n> 部署 {svc.Name} ...");
-            await RunAndWait($"kubectl apply -f {yamlPath}");
-            if (svc.Name == "openviking-server")
-                deployedOpenviking = true;
+            await RunAndWait($"kubectl apply -f \"{yaml}\"");
+            if (File.Exists(Path.Combine(root, "services", service, "Dockerfile")))
+                await RunAndWait($"kubectl -n agent set image deploy/{service} {service}=agent/{service}:{tag}");
+            if (service == "openviking-server") openviking = true;
         }
 
-        // openviking 初始化：创建 agent-service 用户并生成 api_key
-        if (deployedOpenviking)
-            await InitOpenvikingAsync();
+        if (openviking) await InitOpenvikingAsync();
 
-        AppendLog("\n[系统] 部署完成！");
+        AppendLog("\n[系统] 部署完成（降级说明见 dashboard「杂项 → 运行环境」）");
         BtnDeploy.IsEnabled = true;
+        _ = _docker;
     }
 
-    // ─── 配置同步到 NFS（只复制各服务需要的配置）───────────────
+    // ── 配置同步 / capability ───────────────────────────────
 
-    private async Task SyncConfigToNfsAsync(IEnumerable<string> services)
+    private async Task SyncConfigAsync(IEnumerable<string> services)
     {
-        AppendLog("[系统] 同步配置到 NFS（只复制各服务需要的配置）...");
-        var projectRoot = FindProjectRoot();
-        var repoWsl = WslPath(projectRoot);
+        AppendLog("[系统] 同步配置到 NFS...");
+        var root = ProjectRoot;
+        var repoWsl = WslPath(root);
         var nfsRoot = Environment.GetEnvironmentVariable("NFS_ROOT");
         if (string.IsNullOrEmpty(nfsRoot)) nfsRoot = "/srv/nfs/my-agent";
 
-        foreach (var svc in services)
+        foreach (var service in services)
         {
-            if (!ConfigMap.TryGetValue(svc, out var srcs)) continue;
-            foreach (var src in srcs)
+            if (!ServiceConfigMap.TryGetValue(service, out var spec)) continue;
+            foreach (var raw in spec.Split(',', StringSplitOptions.RemoveEmptyEntries))
             {
-                var rel = src.Replace("\\", "/").TrimEnd('/');
-                var idx = rel.LastIndexOf('/');
-                var destDir = idx > 0 ? $"{nfsRoot}/{rel.Substring(0, idx)}" : nfsRoot;
-                var cmd = $"mkdir -p '{destDir}' && cp -r '{repoWsl}/{rel}' '{destDir}/' 2>/dev/null || true";
-                AppendLog($"[sync] {svc} -> {rel}");
-                await RunWslAsync(cmd);
+                var rel = raw.Trim().Replace("\\", "/").TrimEnd('/');
+                var parent = rel.Contains('/') ? rel[..rel.LastIndexOf('/')] : "";
+                var destDir = parent.Length > 0 ? $"{nfsRoot}/{parent}" : nfsRoot;
+                await RunWslAsync($"mkdir -p '{destDir}' && cp -r '{repoWsl}/{rel}' '{destDir}/' 2>/dev/null || true");
+                AppendLog($"[sync] {service} ← {rel}");
             }
         }
-        AppendLog("[OK] 配置已同步到 NFS");
+        AppendLog("[OK] 配置已同步");
     }
 
-    // ─── openviking 初始化：创建 agent-service 用户并生成 api_key ──
+    /// <summary>按勾选的功能写 capability.json（orchestrator 与 dashboard 共读同一份）。</summary>
+
+    private async Task WriteCapabilityAsync()
+    {
+        bool Selected(string id) => _features.Any(f => f.Selected && f.Id == id);
+        string Mode(string id) => _features.FirstOrDefault(f => f.Id == id)?.Mode ?? "";
+
+        var features = new Dictionary<string, object>
+        {
+            ["tool_runtime"] = Selected("tools.basic"),
+            ["memory_mode"] = Mode("memory") == "openviking" ? "openviking" : "local",
+            ["openviking"] = Mode("memory") == "openviking",
+            ["clawhub"] = Selected("skills"),
+            ["skill_exec"] = Selected("skills"),
+            ["browser"] = Selected("browser") ? Mode("browser") : "off",
+            ["search"] = Selected("search") ? Mode("search") : "off",
+            ["external_exec"] = Selected("external-exec") ? Mode("external-exec") : "off",
+            ["host_files"] = Selected("hostfiles"),
+            ["image_gen"] = true,
+            ["fetch_extract"] = "full",
+            ["qq_adapter"] = Selected("qq") ? Mode("qq") : "none",
+            ["lan_expose"] = false,
+            ["storage"] = "nfs",
+        };
+        var degraded = new List<Dictionary<string, string>>();
+        if (!Selected("tools.basic")) degraded.Add(new() { ["feature"] = "tool_runtime", ["reason"] = "未勾选工具调用" });
+        if (Mode("memory") != "openviking") degraded.Add(new() { ["feature"] = "memory", ["reason"] = "使用本地窗口滚动" });
+        if (!Selected("browser")) degraded.Add(new() { ["feature"] = "browser", ["reason"] = "未勾选浏览器操作" });
+        if (!Selected("external-exec")) degraded.Add(new() { ["feature"] = "external-exec", ["reason"] = "未勾选外部执行" });
+
+        var payload = new Dictionary<string, object>
+        {
+            ["schema"] = 1,
+            ["runtime_tier"] = "T2",
+            ["os"] = "windows",
+            ["mode"] = "k8s",
+            ["generated_at"] = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"),
+            ["features"] = features,
+            ["degraded"] = degraded,
+        };
+        var temp = Path.Combine(Path.GetTempPath(), $"capability-{Guid.NewGuid():N}.json");
+        File.WriteAllText(temp, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+        var nfsRoot = Environment.GetEnvironmentVariable("NFS_ROOT");
+        if (string.IsNullOrEmpty(nfsRoot)) nfsRoot = "/srv/nfs/my-agent";
+        var target = $"{nfsRoot}/config/orchestrator/config/capability.json";
+        await RunWslAsync($"mkdir -p \"$(dirname '{target}')\" && cp '{WslPath(temp)}' '{target}'");
+        AppendLog($"[OK] capability.json → {target}");
+    }
+
+    // ── openviking 初始化 ───────────────────────────────────
 
     private async Task InitOpenvikingAsync()
     {
         AppendLog("[系统] 初始化 openviking（创建 agent-service 用户）...");
-        var projectRoot = FindProjectRoot();
-        var rootKeyFile = Path.Combine(projectRoot, "config", "openviking", "root_api_key");
+        var root = ProjectRoot;
+        var rootKeyFile = Path.Combine(root, "config", "openviking", "root_api_key");
         if (!File.Exists(rootKeyFile))
         {
-            AppendLog("[跳过] 缺少 config/openviking/root_api_key");
+            AppendLog("[警告] 缺少 config/openviking/root_api_key，跳过初始化");
             return;
         }
-        var rootKey = File.ReadAllText(rootKeyFile).Trim();
-        if (rootKey.Length == 0)
-        {
-            AppendLog("[跳过] root_api_key 为空");
-            return;
-        }
-
-        AppendLog("  等待 openviking Pod ready ...");
-        _kubectl.RunCommand("-n agent wait --for=condition=ready pod -l app=openviking --timeout=180s");
-
-        var pf = _kubectl.StartPortForward("openviking-init", "agent", "openviking", 1933, 1933);
-        await Task.Delay(3000);
-        try
-        {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            client.DefaultRequestHeaders.Add("X-API-Key", rootKey);
-            var body = new StringContent("{\"user_id\":\"agent-service\",\"role\":\"user\"}", Encoding.UTF8, "application/json");
-            var resp = await client.PostAsync("http://127.0.0.1:1933/api/v1/admin/accounts/my-agent/users", body);
-            var respText = await resp.Content.ReadAsStringAsync();
-
-            if (resp.IsSuccessStatusCode)
-            {
-                string? key = null;
-                using (var doc = JsonDocument.Parse(respText))
-                {
-                    if (doc.RootElement.TryGetProperty("result", out var r) &&
-                        r.TryGetProperty("user_key", out var uk))
-                        key = uk.GetString();
-                    else if (doc.RootElement.TryGetProperty("user_key", out var uk2))
-                        key = uk2.GetString();
-                }
-                if (!string.IsNullOrEmpty(key))
-                {
-                    File.WriteAllText(Path.Combine(projectRoot, "config", "openviking", "api_key"), key);
-                    AppendLog("[OK] agent-service 用户已创建，key 已写入 config/openviking/api_key");
-                    await SyncConfigToNfsAsync(new[] { "openviking-context-service", "tool-runtime-service", "dashboard-service" });
-                    _kubectl.RunCommand("-n agent rollout restart deployment/openviking-context-service");
-                    _kubectl.RunCommand("-n agent rollout restart deployment/tool-runtime-service");
-                }
-                else
-                {
-                    AppendLog($"[ERR] 响应中没有 user_key: {respText}");
-                }
-            }
-            else if ((int)resp.StatusCode == 409)
-            {
-                AppendLog("[提示] agent-service 用户已存在（409），保留现有 api_key");
-            }
-            else
-            {
-                AppendLog($"[ERR] 创建 agent-service 用户失败: {(int)resp.StatusCode} {respText}");
-            }
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"[ERR] 初始化 openviking 失败: {ex.Message}");
-        }
-        finally
-        {
-            _kubectl.StopPortForward("openviking-init");
-        }
+        await RunWslAsync($"cd '{WslPath(root)}' && bash deploy/openviking-init.sh 2>/dev/null || true");
     }
 
-    // ─── 进程执行辅助 ─────────────────────────────────────────
+    // ── 执行辅助 ────────────────────────────────────────────
 
     private async Task RunAndWait(string command)
     {
+        AppendLog($"> {command}");
         var psi = new ProcessStartInfo
         {
             FileName = "cmd.exe",
@@ -487,20 +665,11 @@ public partial class DeployPage : Page
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
         };
-
         using var proc = Process.Start(psi)!;
-        proc.OutputDataReceived += (s, e) =>
-        {
-            if (!string.IsNullOrEmpty(e.Data))
-                Dispatcher.Invoke(() => AppendLog(e.Data));
-        };
-        proc.ErrorDataReceived += (s, e) =>
-        {
-            if (!string.IsNullOrEmpty(e.Data))
-                Dispatcher.Invoke(() => AppendLog($"[ERR] {e.Data}"));
-        };
+        proc.OutputDataReceived += (_, e) => { if (!string.IsNullOrEmpty(e.Data)) Dispatcher.Invoke(() => AppendLog(e.Data)); };
+        proc.ErrorDataReceived += (_, e) => { if (!string.IsNullOrEmpty(e.Data)) Dispatcher.Invoke(() => AppendLog($"[ERR] {e.Data}")); };
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
         await proc.WaitForExitAsync();
@@ -515,76 +684,41 @@ public partial class DeployPage : Page
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
         };
-
         using var proc = Process.Start(psi)!;
-        proc.OutputDataReceived += (s, e) =>
-        {
-            if (!string.IsNullOrEmpty(e.Data))
-                Dispatcher.Invoke(() => AppendLog(e.Data));
-        };
-        proc.ErrorDataReceived += (s, e) =>
-        {
-            if (!string.IsNullOrEmpty(e.Data))
-                Dispatcher.Invoke(() => AppendLog($"[ERR] {e.Data}"));
-        };
+        proc.OutputDataReceived += (_, e) => { if (!string.IsNullOrEmpty(e.Data)) Dispatcher.Invoke(() => AppendLog(e.Data)); };
+        proc.ErrorDataReceived += (_, e) => { if (!string.IsNullOrEmpty(e.Data)) Dispatcher.Invoke(() => AppendLog($"[ERR] {e.Data}")); };
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
         await proc.WaitForExitAsync();
     }
 
-    /// <summary>Windows 路径 → WSL 路径（E:\github\My_Agent_MSA → /mnt/e/github/My_Agent_MSA）</summary>
     private static string WslPath(string projectRoot)
     {
-        var drive = Path.GetPathRoot(projectRoot)?.TrimEnd('\\', ':').ToLower() ?? "c";
-        var idx = projectRoot.IndexOf(':');
-        var rest = idx >= 0 ? projectRoot.Substring(idx + 1).Replace("\\", "/").TrimStart('/') : projectRoot.Replace("\\", "/");
-        return $"/mnt/{drive}/{rest}";
+        if (projectRoot.Length < 2) return projectRoot.Replace("\\", "/");
+        var drive = char.ToLower(projectRoot[0]);
+        var rest = projectRoot[2..].Replace("\\", "/");
+        return $"/mnt/{drive}{rest}";
     }
 
     private void AppendLog(string text)
     {
-        var para = new Paragraph(new Run(text))
+        Dispatcher.Invoke(() =>
         {
-            Margin = new Thickness(0, 0, 0, 0),
-            Foreground = System.Windows.Media.Brushes.LightGray
-        };
-        if (text.StartsWith("[ERR]"))
-            para.Foreground = System.Windows.Media.Brushes.OrangeRed;
-        else if (text.StartsWith("[系统]") || text.StartsWith("[OK]"))
-            para.Foreground = System.Windows.Media.Brushes.Cyan;
-        else if (text.StartsWith(">"))
-            para.Foreground = System.Windows.Media.Brushes.Yellow;
-        else if (text.StartsWith("[提示]"))
-            para.Foreground = System.Windows.Media.Brushes.Gold;
-
-        LogOutput.Document.Blocks.Add(para);
-        LogOutput.ScrollToEnd();
+            LogOutput.Document.Blocks.Add(new Paragraph(new Run(text)) { Margin = new Thickness(0) });
+            LogOutput.ScrollToEnd();
+        });
     }
 
-    /// <summary>
-    /// 从 exe 所在目录向上查找项目根目录（包含 deploy-all.ps1 或 services/）
-    /// 优先级：exe路径向上 → admin-panel源码目录向上 → 回退内置列表
-    /// </summary>
     private string FindProjectRoot()
     {
-        // 1. 从运行目录向上找
-        var dir = AppDomain.CurrentDomain.BaseDirectory;
-        while (!string.IsNullOrEmpty(dir))
+        var dir = AppContext.BaseDirectory;
+        for (var i = 0; i < 6 && !string.IsNullOrEmpty(dir); i++)
         {
-            if (File.Exists(Path.Combine(dir, "deploy-all.ps1")) &&
-                Directory.Exists(Path.Combine(dir, "services")))
-                return dir;
-            dir = Path.GetDirectoryName(dir)!;
+            if (File.Exists(Path.Combine(dir, "deploy", "features.json"))) return dir;
+            dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar)) ?? "";
         }
-
-        // 2. 从 admin-panel 源码目录向上找（dev 场景）
-        var srcDir = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", ".."));
-        if (File.Exists(Path.Combine(srcDir, "deploy-all.ps1")) &&
-            Directory.Exists(Path.Combine(srcDir, "services")))
-            return srcDir;
-
-        return AppDomain.CurrentDomain.BaseDirectory;
+        return Directory.GetCurrentDirectory();
     }
 }

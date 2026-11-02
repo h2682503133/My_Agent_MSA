@@ -35,18 +35,77 @@ import time
 from pathlib import Path
 
 try:  # 既支持 python -m，也支持直接跑脚本
-    from .plan import build
+    from .plan import build, init_config, write_capability
     from .services import SERVICES
+    from .stdio import use_utf8
 except ImportError:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from launcher.plan import build
+    from launcher.plan import build, init_config, write_capability
     from launcher.services import SERVICES
+    from launcher.stdio import use_utf8
+
+# 面板/管道调用时 stdout 不是控制台，中文输出会 UnicodeEncodeError，先固定成 UTF-8
+use_utf8()
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+FEATURES_JSON = Path(__file__).resolve().parent.parent / "features.json"
+
+
+def load_feature_catalog() -> list[dict]:
+    """功能清单的唯一来源：deploy/features.json（admin panel 也读这一份）。"""
+    try:
+        data = json.loads(FEATURES_JSON.read_text(encoding="utf-8-sig"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠ 读不到功能清单 {FEATURES_JSON}：{exc}")
+        return []
+    items = data.get("features") if isinstance(data, dict) else data
+    return [item for item in (items or []) if isinstance(item, dict) and item.get("id")]
+
+
+def describe_features() -> str:
+    """把可选的部署项打印出来（脚本与面板口径一致）。"""
+    rows = load_feature_catalog()
+    if not rows:
+        return "（没有读到功能清单）"
+    lines = ["可选的部署项（deploy/features.json）："]
+    for item in rows:
+        fid = item.get("id")
+        name = item.get("name") or ""
+        requires = item.get("requires") or []
+        services = item.get("services")
+        modes = list((item.get("modes") or {}).keys())
+        desc = f"  {fid:<16}{name}"
+        if requires:
+            desc += f"  [依赖 {','.join(requires)}]"
+        if modes:
+            desc += f"  [模式 {','.join(modes)}]"
+        if isinstance(services, list) and services:
+            desc += f"  [{len(services)} 个服务]"
+        elif isinstance(services, dict):
+            desc += f"  [模式对应服务: {','.join(services.keys())}]"
+        lines.append(desc)
+    lines.append("")
+    lines.append("用法：--features core,memory,qq    --modes memory=local,qq=onebot")
+    return "\n".join(lines)
+
 OVERRIDES = Path(__file__).resolve().parent / "requirements.mono.txt"
 # 兼容旧名（测试/外部引用）
 MONO_LOCK = OVERRIDES
 STAMP_NAME = ".deps-stamp.json"
+
+# ── 本机自建 openviking-server（独立 venv，可选）───────────────
+# 为什么单独一个 venv：它依赖 fastapi>=0.128 / protobuf>=6，与共享 venv 的 pin 冲突。
+# 为什么锁这两个版本：
+#   - openviking 0.4.10 = 与集群镜像同版本（ov.conf 结构一致）
+#   - volcengine-python-sdk 5.0.14 = 29MB 单轮子（含 volcenginesdkarkruntime 等模块）；
+#     5.0.56 是 0 字节元包，会拖几百个 volcenginesdk-* 子包，装到天荒地老
+OPENVIKING_VENV_NAME = "openviking"
+OPENVIKING_PIN = "openviking==0.4.10"
+OPENVIKING_SDK_PIN = "openviking-sdk"
+OPENVIKING_UMBRELLA = "volcengine-python-sdk==5.0.14"
+OPENVIKING_BASE_SDK = "volcengine"
+# 上游 0.4.10 是旧代码：mcp 2.x 把 FastMCP 改名/删掉了，会直接 import 失败
+OPENVIKING_EXTRA_PINS = ["mcp<2"]
 
 
 def venv_dir(data_dir: Path) -> Path:
@@ -348,12 +407,34 @@ def proto_command(python: Path, target: dict) -> list[str]:
     return cmd
 
 
+def _parse_modes(raw: str) -> dict[str, str]:
+    """把 "memory=local,qq=satori" 解析成 dict。"""
+    result: dict[str, str] = {}
+    for pair in str(raw or "").split(","):
+        if "=" not in pair:
+            continue
+        key, _, value = pair.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and value:
+            result[key] = value
+    return result
+
+
+def validate_features(raw: str) -> list[str]:
+    """返回不认识的 feature id（空列表=全部合法）。"""
+    catalog = {item["id"] for item in load_feature_catalog()}
+    if not catalog:
+        return []  # 清单读不到就不拦（不猜）
+    wanted = [f.strip() for f in str(raw or "").split(",") if f.strip()]
+    return [f for f in wanted if f not in catalog]
+
+
 def build_plan(args) -> tuple[object, dict, list[dict]]:
     plan = build(
         repo_root=Path(args.repo_root),
         data_dir=Path(args.data_dir),
         features=[f.strip() for f in args.features.split(",") if f.strip()],
-        modes={},
+        modes=_parse_modes(getattr(args, "modes", "")),
     )
     per_service = service_requirements(plan)
     return plan, per_service, conflict_report(per_service)
@@ -430,8 +511,102 @@ def ensure_venv(target_dir: Path, base_python: str) -> tuple[bool, str]:
     return True, f"已创建 venv：{target_dir}（{detail}）"
 
 
+def openviking_venv_dir(data_dir: Path) -> Path:
+    return Path(data_dir) / "venvs" / OPENVIKING_VENV_NAME
+
+
+def openviking_python(data_dir: Path) -> Path:
+    base = openviking_venv_dir(data_dir)
+    if os.name == "nt":
+        return base / "Scripts" / "python.exe"
+    return base / "bin" / "python"
+
+
+def _pip(python: Path, args: list[str], timeout: int = 120) -> int:
+    print(f"  pip {' '.join(args[:3])}...")
+    proc = subprocess.run(
+        [str(python), "-X", "utf8", "-m", "pip", "install", "--no-input",
+         "--disable-pip-version-check", "--timeout", str(timeout), "--retries", "3", *args],
+        text=True,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+    return proc.returncode
+
+
+def install_openviking_server(args, data_dir: Path) -> int:
+    """把 openviking-server 装进独立 venv（幂等，已装就跳过）。"""
+    target = openviking_venv_dir(data_dir)
+    ok, message = ensure_venv(target, args.python)
+    print(message)
+    if not ok:
+        return 1
+    python = openviking_python(data_dir)
+
+    index_args: list[str] = []
+    if getattr(args, "index_url", ""):
+        index_args += ["--index-url", args.index_url]
+    if getattr(args, "wheels", ""):
+        index_args += ["--no-index", "--find-links", args.wheels]
+
+    # 1) 本体（--no-deps：它的 Requires-Dist 里挂着 volcengine-python-sdk[ark] 巨型伞包）
+    if _pip(python, ["--no-deps", OPENVIKING_PIN, OPENVIKING_SDK_PIN, *index_args],
+            getattr(args, "timeout", 120)) != 0:
+        print("openviking 本体安装失败")
+        return 1
+
+    # 2) 按元数据补运行期依赖，剔除 volcengine 伞包（单独按固定版本装）
+    probe = subprocess.run(
+        [str(python), "-c",
+         "import importlib.metadata as m,sys;"
+         "print(chr(10).join(r for r in (m.requires('openviking') or [])"
+         " if 'volcengine' not in r.lower()))"],
+        capture_output=True, text=True,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+    if probe.returncode != 0:
+        print("读取 openviking 依赖清单失败：" + (probe.stderr or "")[-400:])
+        return 1
+    req_lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
+    req_path = Path(data_dir) / "deps" / "openviking.requirements.txt"
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    req_path.write_text("\n".join(req_lines) + "\n", encoding="utf-8")
+    print(f"  openviking 依赖 {len(req_lines)} 条（{req_path}）")
+    if _pip(python, ["-r", str(req_path), *index_args], max(180, getattr(args, "timeout", 120))) != 0:
+        print("openviking 依赖安装失败")
+        return 1
+
+    # 3) 旧代码需要的版本修正（新版 mcp 删了 FastMCP，openviking 0.4.10 直接 import 失败）
+    if _pip(python, [*OPENVIKING_EXTRA_PINS, *index_args], getattr(args, "timeout", 120)) != 0:
+        print("openviking 版本修正包安装失败")
+        return 1
+
+    # 4) volcengine：基础 SDK（SignerV4）+ 单轮子版 python-sdk（arkruntime 等模块）
+    if _pip(python, [OPENVIKING_BASE_SDK, OPENVIKING_UMBRELLA, *index_args],
+            getattr(args, "timeout", 120)) != 0:
+        print("volcengine SDK 安装失败（server 会在 import 阶段报 volcenginesdkarkruntime 缺失）")
+        return 1
+
+    # 4) 冒烟：能 import bootstrap 才算装好
+    check = subprocess.run(
+        [str(python), "-c", "import openviking.server.bootstrap; print('ok')"],
+        capture_output=True, text=True,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+    if check.returncode != 0 or "ok" not in (check.stdout or ""):
+        print("openviking-server 冒烟失败：" + ((check.stderr or check.stdout or "")[-500:]))
+        return 1
+    print(f"完成：openviking-server 就绪（{target}）")
+    return 0
+
+
 def install(args) -> int:
     data_dir = Path(args.data_dir)
+    bad = validate_features(args.features)
+    if bad:
+        print(f"✘ 未知的功能：{', '.join(bad)}")
+        print(describe_features())
+        return 2
+
     plan, per_service, conflicts = build_plan(args)
     print(describe(args, plan, per_service, conflicts))
     if conflicts and args.mode == "shared":
@@ -440,6 +615,17 @@ def install(args) -> int:
 
     if args.mode == "per-service":
         return _install_per_service(args, plan, per_service)
+
+    # 部署第一步：初始化数据目录（建目录 + 复制配置模板 + 写 capability/runtime）。
+    # 让新用户只需要记一条命令：deps.py --install，不用先单独 init。
+    for path in plan.dirs:
+        path.mkdir(parents=True, exist_ok=True)
+    added, kept = init_config(plan.repo_root, plan.data_dir)
+    write_capability(plan, plan.data_dir / "capability.json")
+    plan.data_dir.joinpath("runtime.json").write_text(
+        json.dumps(plan.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"数据目录已初始化：{plan.data_dir}（模板新增 {added}，沿用 {kept}）")
 
     ok, message = ensure_venv(venv_dir(data_dir), args.python)
     print(message)
@@ -511,7 +697,19 @@ def install(args) -> int:
         json.dumps(planned_stamp(data_dir, lock_path, args.mode), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print("完成：共享 venv 就绪")
+    print("完成：部署就绪（数据目录 + 共享 venv）")
+    print(f"启动：python -X utf8 deploy/launcher/run.py --data-dir \"{plan.data_dir}\" "
+          f"--features {','.join(plan.features)}")
+    print(f"停止：同上，末尾加 --stop")
+    print("部署后第一步：配置模型（浏览器打开 http://127.0.0.1:5700 →「配置管理」→ "
+          "model-proxy/config/model_list.json 填真实的 api_url / api_key / model）")
+    print("  —— 模板里的 key 是占位值，不换掉聊天会报 401/Unauthorized")
+
+    if any(svc.id == "openviking" for svc in plan.services):
+        print("\n本机自建 openviking：准备独立 venv")
+        if install_openviking_server(args, data_dir) != 0:
+            print("⚠ openviking-server 未就绪：记忆会退化为文件模式（面板可重试安装）")
+            return 1
     return 0
 
 
@@ -568,6 +766,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--features", default="core,memory")
+    parser.add_argument("--modes", default="",
+                        help='与 run.py 一致的选择，例如 "memory=local,qq=satori"；'
+                             "决定要装哪些服务的依赖")
     parser.add_argument("--mode", choices=["shared", "per-service"], default="shared")
     parser.add_argument("--python", default="", help="用于创建 venv 的基础解释器，默认当前解释器")
     parser.add_argument("--index-url", default=os.getenv("PIP_INDEX_URL", ""))
@@ -578,9 +779,38 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--check", action="store_true", help="只体检")
     parser.add_argument("--install", action="store_true", help="执行安装")
     parser.add_argument("--dry-run", action="store_true", help="只打印计划")
+    parser.add_argument("--init", action="store_true",
+                        help="只初始化数据目录（建目录 + 复制配置模板 + 写 capability/runtime）")
+    parser.add_argument("--list-features", action="store_true",
+                        help="列出可选的部署项（与 admin panel 同一份 features.json）")
+    parser.add_argument("--openviking", action="store_true",
+                        help="只安装/更新本机 openviking-server（独立 venv）")
     args = parser.parse_args(argv[1:])
 
+    if args.list_features:
+        print(describe_features())
+        return 0
+
+    bad = validate_features(args.features)
+    if bad:
+        print(f"✘ 未知的功能：{', '.join(bad)}")
+        print(describe_features())
+        return 2
+
     plan, per_service, conflicts = build_plan(args)
+
+    if args.init:
+        for path in plan.dirs:
+            path.mkdir(parents=True, exist_ok=True)
+        added, kept = init_config(plan.repo_root, plan.data_dir)
+        write_capability(plan, plan.data_dir / "capability.json")
+        (plan.data_dir / "runtime.json").write_text(
+            json.dumps(plan.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"数据目录已初始化：{plan.data_dir}（模板新增 {added}，沿用 {kept}）")
+        return 0
+
+    if args.openviking:
+        return install_openviking_server(args, Path(args.data_dir))
 
     if args.dry_run or args.check:
         print(describe(args, plan, per_service, conflicts))

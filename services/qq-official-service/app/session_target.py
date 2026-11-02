@@ -25,13 +25,23 @@ def parse_session_target(session_id: str) -> tuple[str, str] | None:
         return None
 
     # 剥渠道前缀：长的先剥，避免 "qqofficial_" 被 "qq_" 抢走
+    matched = False
     for prefix in ("qqofficial_g_", "qqofficial_", "qqo_", "qq_g_", "qq_"):
         if key.startswith(prefix):
             key = key[len(prefix):].strip()
             is_group = prefix.endswith("_g_")
+            matched = True
             break
     else:
         is_group = False
+
+    if not matched:
+        # 没有已知渠道前缀：只接受裸的 g_<群号>；其它（如 web_xxx）不是 QQ 官方渠道的会话，
+        # 之前会当成 openid 去发消息 → 必然失败，还会污染投递统计。
+        if key.startswith("g_"):
+            gid = key[len("g_"):].strip()
+            return ("group", gid) if gid else None
+        return None
 
     if not key:
         return None

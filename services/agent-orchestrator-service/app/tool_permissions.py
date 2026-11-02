@@ -297,6 +297,15 @@ def describe_for_prompt(user_id: str) -> str:
     """给提示词用的一段说明：只讲「当前能用什么」+ 黑名单工具，不暴露分级标准。"""
     user = str(user_id or "").strip()
     levels = set(available_levels(user))
+
+    # 最简档（不启动 tool-runtime）时直接告诉模型没有工具，避免它乱试
+    try:
+        from app import capabilities
+
+        if not capabilities.enabled("tool_runtime"):
+            return "【当前可用的工具】\n（本环境未启用工具调用：不要尝试调用任何工具，直接回答或说明限制。）"
+    except Exception:  # noqa: BLE001
+        pass
     # 工具清单直接从 TOOL.json 里挑（档位来自 groups 标签），同名多条取可用那一档
     available: list[str] = []
     seen: set[str] = set()
@@ -308,6 +317,17 @@ def describe_for_prompt(user_id: str) -> str:
             if not name or name == BLACKLIST_TOOL or name in seen:
                 continue
             if _entry_level(tool) in levels:
+                tokens = [
+                    str(item) for item in tool.get("groups") or []
+                    if str(item).strip().lower().startswith("cap:")
+                ]
+                try:
+                    from app import capabilities as _caps
+
+                    if tokens and not _caps.tool_allowed(tokens):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
                 available.append(name)
                 seen.add(name)
     blocked = 1 not in levels

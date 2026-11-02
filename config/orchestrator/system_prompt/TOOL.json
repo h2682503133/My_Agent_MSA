@@ -133,7 +133,7 @@
         {
           "name": "reply-image",
           "args": "关键词|图片|备注",
-          "desc": "设置「回复里某个关键词自动补一张图」（只作用于你自己；全局由管理员在 dashboard 维护）",
+          "desc": "维护「回复关键词 → 自动配图」规则（关键词|图片；图片留空=删除，全空=列出）。注意：这不是“把某张图发出去”的工具。要把一张已有图片发给用户，请用 get-image-url-from-local 取 url，再 send-image-by-url|url。",
           "groups": [
             "生成",
             "L1"
@@ -308,7 +308,7 @@
         {
           "name": "get-image-url-from-local",
           "args": "文件路径",
-          "desc": "获取本地图片的 URL",
+          "desc": "把工作区里的本地图片变成一个可访问的外链 URL（随后用 send-image-by-url 发送）。",
           "groups": [
             "图片",
             "L0"
@@ -317,7 +317,7 @@
         {
           "name": "send-image-by-url",
           "args": "url",
-          "desc": "通过 URL 发送图片给用户",
+          "desc": "把一张图片按 URL 发出去（url 可为工作区相对路径经 get-image-url-from-local 得到的外链）。",
           "groups": [
             "图片",
             "L0"

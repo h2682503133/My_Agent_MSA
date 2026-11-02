@@ -156,7 +156,7 @@ def start_scheduler():
     threading.Thread(target=slot_scheduler, daemon=True).start()
 
 def get_local_ip():
-    with open("config/gateway_setting.json", "r", encoding="utf-8") as f:
+    with open("config/gateway_setting.json", "r", encoding="utf-8-sig") as f:
         CONFIG = json.load(f)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:

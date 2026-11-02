@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -90,35 +90,23 @@ public class StandaloneService
 
     // ── 数据目录 ────────────────────────────────────────────
 
-    public (bool ok, string message) InitDataDir()
+    /// <summary>
+    /// 初始化数据目录：直接调用部署脚本（deps.py --init），
+    /// 不在面板里再实现一遍，避免和脚本出现两个事实源。
+    /// </summary>
+    public (bool ok, string message) InitDataDir(IEnumerable<string> features)
     {
-        try
-        {
-            Directory.CreateDirectory(DataDir);
-            foreach (var sub in new[] { "config", "workspace", "workspace/skills", "assets", "assets/images", "images", "users", "session", "timer-tasks", "logs" })
-                Directory.CreateDirectory(Path.Combine(DataDir, sub.Replace('/', Path.DirectorySeparatorChar)));
-
-            var srcConfig = Path.Combine(RepoRoot, "config");
-            var dstConfig = Path.Combine(DataDir, "config");
-            var copied = 0;
-            if (Directory.Exists(srcConfig))
-            {
-                foreach (var file in Directory.EnumerateFiles(srcConfig, "*", SearchOption.AllDirectories))
-                {
-                    var rel = Path.GetRelativePath(srcConfig, file);
-                    var target = Path.Combine(dstConfig, rel);
-                    if (File.Exists(target)) continue;     // 不覆盖已有配置
-                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                    File.Copy(file, target);
-                    copied++;
-                }
-            }
-            return (true, $"数据目录已就绪：{DataDir}（新增 {copied} 个配置文件）");
-        }
-        catch (Exception exc)
-        {
-            return (false, $"初始化数据目录失败：{exc.Message}");
-        }
+        var python = string.IsNullOrWhiteSpace(PythonPath) ? FindPython() : PythonPath;
+        if (string.IsNullOrWhiteSpace(python)) return (false, "找不到 python.exe");
+        if (!File.Exists(DepsScript)) return (false, $"找不到 {DepsScript}");
+        var featureList = string.Join(",", features);
+        Say($"初始化数据目录（调用 deploy/launcher/deps.py --init）：{DataDir}");
+        var (ok, output) = RunStreaming(
+            python,
+            $"-X utf8 \"{DepsScript}\" --data-dir \"{DataDir}\" --features \"{featureList}\" --init",
+            180,
+            RepoRoot);
+        return (ok, ok ? $"数据目录已就绪：{DataDir}" : $"初始化失败：{Tail(output)}");
     }
 
     // ── 依赖（共享 venv）────────────────────────────────────
@@ -134,10 +122,92 @@ public class StandaloneService
 
         var (ok, output) = Run(
             python,
-            $"\"{DepsScript}\" --data-dir \"{DataDir}\" --features \"{string.Join(",", features)}\" --check",
+            $"-X utf8 \"{DepsScript}\" --data-dir \"{DataDir}\" --features \"{string.Join(",", features)}\" --check",
             120,
             RepoRoot);
         return (ok, output);
+    }
+
+    public bool OpenvikingServerInstalled() =>
+        File.Exists(Path.Combine(DataDir, "venvs", "openviking", "Scripts", "openviking-server.exe"));
+
+    public bool OpenvikingApiKeyReady() =>
+        File.Exists(Path.Combine(DataDir, "config", "openviking", "api_key"));
+
+    /// <summary>安装/更新本机 openviking-server（独立 venv；首次约 8~10 分钟）。</summary>
+    public (bool ok, string message) InstallOpenviking()
+    {
+        var python = string.IsNullOrWhiteSpace(PythonPath) ? FindPython() : PythonPath;
+        if (string.IsNullOrWhiteSpace(python)) return (false, "找不到 python.exe");
+        if (!File.Exists(DepsScript)) return (false, $"找不到 {DepsScript}");
+        Say("开始安装 openviking-server（独立 venv，约 8~10 分钟，约 150 个包）…");
+        var (ok, output) = RunStreaming(
+            python,
+            $"-X utf8 \"{DepsScript}\" --data-dir \"{DataDir}\" --features \"core,memory\" --openviking",
+            1800,
+            RepoRoot);
+        return (ok, ok ? "openviking-server 已就绪" : $"安装失败：{Tail(output)}");
+    }
+
+    /// <summary>初始化本机 openviking：建 account + 服务用户 + 写 api_key（幂等）。</summary>
+    public (bool ok, string message) InitOpenviking()
+    {
+        var python = string.IsNullOrWhiteSpace(PythonPath) ? FindPython() : PythonPath;
+        if (string.IsNullOrWhiteSpace(python)) return (false, "找不到 python.exe");
+        var script = Path.Combine(RepoRoot, "deploy", "launcher", "openviking_init.py");
+        if (!File.Exists(script)) return (false, $"找不到 {script}");
+        var url = "http://127.0.0.1:1933";
+        var (ok, output) = Run(
+            python, $"-X utf8 \"{script}\" --data-dir \"{DataDir}\" --url \"{url}\"", 120, RepoRoot);
+        return (ok, ok ? "openviking 初始化完成（api_key 在 data/config/openviking/api_key）"
+                       : $"初始化失败：{Tail(output)}");
+    }
+
+    private static string Tail(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        var lines = text.Trim().Split('\n');
+        return lines.Length == 0 ? "" : lines[^1].Trim();
+    }
+
+    private (bool ok, string output) RunStreaming(string exe, string arguments, int timeoutSeconds, string workdir)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = arguments,
+                WorkingDirectory = workdir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+            // 子进程输出一律 UTF-8：Windows 默认 locale 编码（cp1252/cp936）会让脚本里的中文 print 崩
+            psi.Environment["PYTHONUTF8"] = "1";
+            psi.Environment["PYTHONIOENCODING"] = "utf-8";
+            using var proc = Process.Start(psi);
+            if (proc is null) return (false, "进程未创建");
+            var tail = new StringBuilder();
+            proc.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) { Say(e.Data); tail.AppendLine(e.Data); } };
+            proc.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) { Say(e.Data); tail.AppendLine(e.Data); } };
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            if (!proc.WaitForExit(timeoutSeconds * 1000))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                return (false, "超时");
+            }
+            proc.WaitForExit();
+            return (proc.ExitCode == 0, tail.ToString());
+        }
+        catch (Exception exc)
+        {
+            return (false, $"执行异常：{exc.Message}");
+        }
     }
 
     /// <summary>安装共享 venv 依赖并生成 gRPC stubs（首次较慢，输出实时进日志）。</summary>
@@ -151,7 +221,7 @@ public class StandaloneService
             var psi = new ProcessStartInfo
             {
                 FileName = python,
-                Arguments = $"\"{DepsScript}\" --data-dir \"{DataDir}\" --features \"{string.Join(",", features)}\" --install",
+                Arguments = $"-X utf8 \"{DepsScript}\" --data-dir \"{DataDir}\" --features \"{string.Join(",", features)}\" --install",
                 WorkingDirectory = RepoRoot,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -160,6 +230,9 @@ public class StandaloneService
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
+            // 子进程输出一律 UTF-8：Windows 默认 locale 编码（cp1252/cp936）会让脚本里的中文 print 崩
+            psi.Environment["PYTHONUTF8"] = "1";
+            psi.Environment["PYTHONIOENCODING"] = "utf-8";
             using var proc = Process.Start(psi);
             if (proc is null) return (false, "依赖安装进程未创建");
             var tail = new StringBuilder();
@@ -185,7 +258,7 @@ public class StandaloneService
         if (!ready) return (false, reason);
         var python = string.IsNullOrWhiteSpace(PythonPath) ? FindPython() : PythonPath;
         var outPath = Path.Combine(DataDir, "capability.json");
-        var (ok, output) = Run(python, $"\"{ProbeScript}\" --out \"{outPath}\"", 60, RepoRoot);
+        var (ok, output) = Run(python, $"-X utf8 \"{ProbeScript}\" --out \"{outPath}\"", 60, RepoRoot);
         return (ok, ok ? $"能力档案已生成：{outPath}" : $"探测失败：{output}");
     }
 
@@ -198,9 +271,23 @@ public class StandaloneService
             using var doc = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
             var root = doc.RootElement;
             var tier = root.TryGetProperty("runtime_tier", out var t) ? t.GetString() : "";
-            var degraded = root.TryGetProperty("degraded", out var d) && d.ValueKind == JsonValueKind.Array
-                ? d.GetArrayLength() : 0;
-            return $"档位 {tier}，降级 {degraded} 项";
+            var real = 0;
+            var info = 0;
+            if (root.TryGetProperty("degraded", out var d) && d.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in d.EnumerateArray())
+                {
+                    // level=info 的是说明项（单体没 Docker、适配器优先级…），不算降级
+                    var isInfo = item.ValueKind == JsonValueKind.Object
+                                 && item.TryGetProperty("level", out var lv)
+                                 && lv.ValueKind == JsonValueKind.String
+                                 && string.Equals(lv.GetString(), "info", StringComparison.OrdinalIgnoreCase);
+                    if (isInfo) info++; else real++;
+                }
+            }
+            return info > 0
+                ? $"档位 {tier}，降级 {real} 项（另有 {info} 条说明）"
+                : $"档位 {tier}，降级 {real} 项";
         }
         catch (Exception exc)
         {
@@ -218,7 +305,7 @@ public class StandaloneService
             return (true, "单体模式已在运行");
 
         var python = string.IsNullOrWhiteSpace(PythonPath) ? FindPython() : PythonPath;
-        var args = $"\"{LauncherScript}\" --repo-root \"{RepoRoot}\" --data-dir \"{DataDir}\" " +
+        var args = $"-X utf8 \"{LauncherScript}\" --repo-root \"{RepoRoot}\" --data-dir \"{DataDir}\" " +
                    $"--features \"{string.Join(",", features)}\"";
         if (!string.IsNullOrWhiteSpace(modes))
             args += $" --modes \"{modes}\"";
@@ -239,6 +326,9 @@ public class StandaloneService
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
+            // 子进程输出一律 UTF-8：Windows 默认 locale 编码（cp1252/cp936）会让脚本里的中文 print 崩
+            psi.Environment["PYTHONUTF8"] = "1";
+            psi.Environment["PYTHONIOENCODING"] = "utf-8";
             _launcher = Process.Start(psi);
             if (_launcher is null) return (false, "启动失败：进程未创建");
             _launcher.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Say(e.Data); };
@@ -259,7 +349,7 @@ public class StandaloneService
         var notes = new StringBuilder();
         if (File.Exists(LauncherScript))
         {
-            var (ok, output) = Run(python, $"\"{LauncherScript}\" --repo-root \"{RepoRoot}\" --data-dir \"{DataDir}\" --stop", 60, RepoRoot);
+            var (ok, output) = Run(python, $"-X utf8 \"{LauncherScript}\" --repo-root \"{RepoRoot}\" --data-dir \"{DataDir}\" --stop", 60, RepoRoot);
             notes.Append(ok ? "已按 pids.json 停止子进程" : $"停止脚本返回：{output}");
         }
         if (_launcher is { HasExited: false })
@@ -334,7 +424,12 @@ public class StandaloneService
         if (!File.Exists(path)) return $"（没有 {serviceId} 的日志）";
         try
         {
-            var all = File.ReadAllLines(path, Encoding.UTF8);
+            // 服务在跑时 launcher 一直持有这个文件的写句柄，必须显式允许共享读写，否则 ReadAllLines 会报"另一个进程占用"
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var all = new List<string>();
+            while (reader.ReadLine() is { } line) all.Add(line);
             return string.Join(Environment.NewLine, all.TakeLast(lines));
         }
         catch (Exception exc)
@@ -345,7 +440,7 @@ public class StandaloneService
 
     // ── 执行辅助 ────────────────────────────────────────────
 
-    private static (bool ok, string output) Run(string file, string args, int timeoutMs, string workdir)
+    private static (bool ok, string output) Run(string file, string args, int timeoutSeconds, string workdir)
     {
         try
         {
@@ -361,15 +456,24 @@ public class StandaloneService
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
+            // 子进程输出一律 UTF-8：Windows 默认 locale 编码（cp1252/cp936）会让脚本里的中文 print 崩
+            psi.Environment["PYTHONUTF8"] = "1";
+            psi.Environment["PYTHONIOENCODING"] = "utf-8";
             using var proc = Process.Start(psi);
             if (proc is null) return (false, "进程未创建");
-            var output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
-            if (!proc.WaitForExit(timeoutMs))
+            var output = new StringBuilder();
+            proc.OutputDataReceived += (_, e) => { if (e.Data != null) output.AppendLine(e.Data); };
+            proc.ErrorDataReceived += (_, e) => { if (e.Data != null) output.AppendLine(e.Data); };
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            // 注意：timeoutSeconds 是秒；用带超时的重载，子进程卡死时不会把界面一起挂住
+            if (!proc.WaitForExit(Math.Max(1, timeoutSeconds) * 1000))
             {
                 try { proc.Kill(true); } catch { }
-                return (false, "超时");
+                return (false, $"超时（{timeoutSeconds}s）");
             }
-            return (proc.ExitCode == 0, output.Trim());
+            proc.WaitForExit();
+            return (proc.ExitCode == 0, output.ToString().Trim());
         }
         catch (Exception exc)
         {

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import urllib.parse
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +20,7 @@ MODE_SERVICES = {
     "memory": {
         "local": [],
         "openviking": ["openviking-context-service"],
-        "openviking+install": ["openviking-context-service", "embedding-service"],
+        "openviking+install": ["openviking", "openviking-context-service", "embedding-service"],
     },
     "qq": {
         "satori": ["qq-llbot-service"],
@@ -52,7 +54,8 @@ class Plan:
     web_port: int = 0            # 单体前端端口（0 = 不起前端）
     assets_port: int = 0         # 单体图床端口（0 = 不起图床）
     gateway_port: int = 0        # /api 反代的上游
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)   # 真的降级（会影响功能）
+    info: list[str] = field(default_factory=list)       # 只是说明，不是降级（别让用户以为坏了）
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +78,7 @@ class Plan:
             "web": {"port": self.web_port, "upstream": f"http://127.0.0.1:{self.gateway_port}"} if self.web_port else {},
             "assets": {"port": self.assets_port} if self.assets_port else {},
             "warnings": self.warnings,
+            "info": self.info,
         }
 
 
@@ -178,6 +182,101 @@ def qq_settings(data_dir: Path) -> dict:
     return section if isinstance(section, dict) else {}
 
 
+def assets_settings(data_dir: Path) -> dict:
+    """launcher.json 的 assets 段：base = 对外可访问的资产基址。
+
+    默认 http://127.0.0.1:<assets_port>（本机浏览器/NapCat 都在同一台机器时够用）。
+    当图片要被**别的机器/容器**拉取时（例如 NapCat 在宿主、单体在虚拟机），
+    把它设成那台机器能访问到的地址，如 http://10.244.62.117:5102。
+    """
+    try:
+        data = load_settings(data_dir)
+    except ValueError as exc:
+        return {"_error": str(exc)}
+    section = data.get("assets") or {}
+    return section if isinstance(section, dict) else {}
+
+
+def timer_settings(data_dir: Path) -> dict:
+    """launcher.json 的 timer 段：dir / scan_fast / scan_slow。
+
+    不配就用默认：<DATA_DIR>/timer-tasks、5 秒快扫、60 秒慢扫。
+    服务自身的默认值是相对路径 ./roaming/tasks（容器内约定），单体下必须显式注入，
+    否则任务会落到进程工作目录，用户找不到、换目录也会丢。
+    """
+    try:
+        data = load_settings(data_dir)
+    except ValueError as exc:
+        return {"_error": str(exc)}
+    section = data.get("timer") or {}
+    return section if isinstance(section, dict) else {}
+
+
+def _posix(path: Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def ensure_openviking_conf(data_dir: Path) -> Path:
+    """为「本机自建 openviking」准备配置文件，返回 ov.conf 路径。
+
+    - root_api_key：<数据目录>/config/openviking/root_api_key，没有就随机生成一次
+    - ov.conf：保留用户已改过的 embedding / vlm 等段，只强制刷新
+      server.port / server.host / server.root_api_key / storage.workspace
+    """
+    conf_dir = Path(data_dir) / "config" / "openviking"
+    conf_dir.mkdir(parents=True, exist_ok=True)
+
+    root_key_file = conf_dir / "root_api_key"
+    if not root_key_file.is_file() or not root_key_file.read_text(encoding="utf-8").strip():
+        root_key_file.write_text(secrets.token_urlsafe(24), encoding="utf-8")
+    root_key = root_key_file.read_text(encoding="utf-8").strip()
+
+    conf_path = conf_dir / "ov.conf"
+    data: dict = {}
+    if conf_path.is_file():
+        try:
+            data = json.loads(conf_path.read_text(encoding="utf-8-sig"))
+        except Exception:  # noqa: BLE001
+            data = {}
+
+    server = data.get("server") if isinstance(data.get("server"), dict) else {}
+    server.update({
+        "root_api_key": root_key,
+        "host": "127.0.0.1",
+        "port": 1933,
+        "workers": int(server.get("workers") or 1),
+    })
+    data["server"] = server
+
+    storage = data.get("storage") if isinstance(data.get("storage"), dict) else {}
+    storage["workspace"] = _posix(Path(data_dir) / "openviking" / "workspace")
+    data["storage"] = storage
+
+    if "embedding" not in data:
+        # 默认指向本机 Ollama；模型名/维度可在 dashboard「配置管理」里改
+        data["embedding"] = {
+            "dense": {
+                "provider": "openai",
+                "api_base": "http://127.0.0.1:11434/v1",
+                "api_key": "ollama",
+                "model": "qwen3-embedding:0.6b",
+                "dimension": 1024,
+            },
+            "max_input_tokens": 24000,
+        }
+    if "vlm" not in data:
+        data["vlm"] = {
+            "provider": "openai",
+            "api_base": "",
+            "api_key": "",
+            "model": "",
+            "timeout": 60,
+        }
+
+    conf_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return conf_path
+
+
 def build(
     repo_root: Path,
     data_dir: Path,
@@ -210,6 +309,7 @@ def build(
     # 端口冲突检查（单体全跑在一台机器上）
     used: dict[int, str] = {}
     warnings: list[str] = []
+    info: list[str] = []
     for svc in services:
         for name, port in svc.ports.items():
             if port in used:
@@ -248,6 +348,23 @@ def build(
         env["TOOL_RUNTIME_GRPC_TARGET"] = env["TOOL_RUNTIME_TARGET"]
     if "timer-task-service" in ids:
         env["TIMER_TASK_TARGET"] = endpoint("timer-task-service") or ""
+        timer = timer_settings(data_dir)
+        if timer.get("_error"):
+            warnings.append(timer["_error"])
+        task_dir = str(timer.get("dir") or "").strip()
+        env["TIMER_TASK_DIR"] = task_dir or str(Path(data_dir) / "timer-tasks")
+        fast = str(timer.get("scan_fast") or "").strip()
+        slow = str(timer.get("scan_slow") or "").strip()
+        if fast:
+            env["TIMER_SCAN_INTERVAL_FAST"] = fast
+        if slow:
+            env["TIMER_SCAN_INTERVAL_SLOW"] = slow
+    if "openviking" in ids:
+        conf_path = ensure_openviking_conf(data_dir)
+        port = SERVICES["openviking"].ports["http"]
+        env["OPENVIKING_CONFIG_FILE"] = str(conf_path)
+        env["OPENVIKING_SERVER_URL"] = f"http://127.0.0.1:{port}"
+        env["OPENVIKING_ROOT_API_KEY"] = str(Path(data_dir) / "config" / "openviking" / "root_api_key")
     if "openviking-context-service" in ids:
         env["OPENVIKING_CONTEXT_TARGET"] = endpoint("openviking-context-service") or ""
 
@@ -257,7 +374,13 @@ def build(
         ov = openviking_settings(data_dir)
         if ov.get("_error"):
             warnings.append(ov["_error"])
-        server_url = str(os.getenv("OPENVIKING_SERVER_URL") or ov.get("server_url") or "").strip()
+        # 本机自建（install 模式）已注入 127.0.0.1：优先级最高，不能被旧配置里的外部地址盖掉
+        server_url = str(
+            env.get("OPENVIKING_SERVER_URL")
+            or os.getenv("OPENVIKING_SERVER_URL")
+            or ov.get("server_url")
+            or ""
+        ).strip()
         if server_url:
             env["OPENVIKING_SERVER_URL"] = server_url
             env["OPENVIKING_ACCOUNT"] = str(ov.get("account") or "my-agent")
@@ -338,10 +461,27 @@ def build(
             if qq.get("group_require_at") is not None:
                 env["ONEBOT_GROUP_REQUIRE_AT"] = "true" if qq.get("group_require_at") else "false"
         if mode:
-            warnings.append(f"QQ 适配器：{mode}（多适配器同时在线时按优先级 satori=100 > onebot=90 > official=50 投递）")
+            info.append(f"QQ 适配器：{mode}（多适配器同时在线时按优先级 satori=100 > onebot=90 > official=50 投递）")
 
     if "embedding-service" in ids:
         env["EMBEDDING_SERVICE_TARGET"] = endpoint("embedding-service") or ""
+    elif "openviking-context-service" in ids:
+        # 单体常把 OpenViking server 放在别处（集群/另一台机器），本机没有 embedding-service。
+        # 这时必须显式给一个向量服务地址，否则代码里的默认值 embedding-service:5303
+        # 是集群 DNS，连不上 → 记忆召回永久降级（只是不报错，很容易被忽略）。
+        ov_emb = str(os.getenv("EMBEDDING_SERVICE_TARGET") or "").strip()
+        if not ov_emb:
+            try:
+                ov_emb = str((openviking_settings(data_dir) or {}).get("embedding_target") or "").strip()
+            except Exception:  # noqa: BLE001
+                ov_emb = ""
+        if ov_emb:
+            env["EMBEDDING_SERVICE_TARGET"] = ov_emb
+        else:
+            warnings.append(
+                "未配置向量服务（launcher.json → openviking.embedding_target 或环境变量 "
+                "EMBEDDING_SERVICE_TARGET）：记忆召回会降级为跳过"
+            )
 
     if "tool-runtime-service" not in ids:
         warnings.append("未包含 tool-runtime-service：工具调用关闭（capability tool_runtime=false）")
@@ -392,7 +532,22 @@ def build(
 
     # ── 单机模式地址收口：把 k8s Service DNS 换成 127.0.0.1 ──
     assets_port = int(os.getenv("ASSETS_PORT") or 5102)
-    assets_base = f"http://127.0.0.1:{assets_port}"
+    _assets_cfg = assets_settings(data_dir)
+    if _assets_cfg.get("_error"):
+        warnings.append(_assets_cfg["_error"])
+    _assets_override = (
+        os.getenv("MYAGENT_ASSETS_BASE") or str(_assets_cfg.get("base") or "")
+    ).strip().rstrip("/")
+    if _assets_override and not _assets_override.lower().startswith(("http://", "https://")):
+        warnings.append(f"assets.base 不是 http(s) 地址，已忽略：{_assets_override}")
+        _assets_override = ""
+    # 默认给本机；跨机器（NapCat 在宿主、单体在 VM）时用 launcher.json 的 assets.base 覆盖
+    assets_base = _assets_override or f"http://127.0.0.1:{assets_port}"
+
+    # 图床的对外地址若不是本机，监听就必须放开到 0.0.0.0，否则那个 URL 不可达
+    _base_host = urllib.parse.urlparse(assets_base).hostname or "127.0.0.1"
+    if _base_host not in {"127.0.0.1", "localhost", "::1"}:
+        env["ASSETS_HOST"] = "0.0.0.0"
     dashboard_port = SERVICES["dashboard-service"].ports.get("http", 5700) if "dashboard-service" in ids else 0
     user_http = SERVICES["user-service"].ports.get("http", 5204) if "user-service" in ids else 0
 
@@ -420,6 +575,10 @@ def build(
     env["IMAGE_BASE_URL"] = f"{assets_base}/assets"
     env["REPLY_IMAGE_BASE_URL"] = f"{assets_base}/assets"
 
+    # OneBot 适配器：相对图片路径要用 NapCat 能访问到的绝对前缀（默认本机 gateway）
+    if "qq-onebot-service" in ids:
+        env["ONEBOT_MEDIA_BASE"] = f"http://{_base_host}:{gateway_port}"
+
     # 记忆后端：单体默认本地；只有 memory 用 openviking 且真的会起该服务时才给地址
     memory_mode = (modes or {}).get("memory", "local") if isinstance(modes, dict) else "local"
     if "openviking-context-service" in ids:
@@ -440,6 +599,7 @@ def build(
         env=env,
         dirs=dirs,
         warnings=warnings,
+        info=info,
         web_port=web_port,
         gateway_port=gateway_port,
         assets_port=assets_port,
@@ -508,12 +668,15 @@ def write_capability(plan: Plan, path: Path) -> None:
             "storage": "local-dir",
         },
         "degraded": [
-            {"feature": "container", "reason": "单体模式（未使用 Docker/k8s）"},
+            {"feature": "container", "reason": "单体模式（未使用 Docker/k8s）", "level": "info"},
         ],
     }
     # 启动期的降级原因也写进去（面板/网页「杂项」顶部会显示）：
     # 例：选了 openviking 记忆但没填服务器地址 → 记忆实际走文件模式。
     for item in getattr(plan, "warnings", []) or []:
         data["degraded"].append({"feature": "launcher", "reason": str(item)})
+    # 说明类（多适配器优先级之类）标 level=info：显示但不计入"降级 N 项"
+    for item in getattr(plan, "info", []) or []:
+        data["degraded"].append({"feature": "launcher", "reason": str(item), "level": "info"})
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

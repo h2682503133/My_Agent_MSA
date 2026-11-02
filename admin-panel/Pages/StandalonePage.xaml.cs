@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -7,8 +7,10 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using MyAgentAdminPanel.Services;
 
 namespace MyAgentAdminPanel.Pages;
@@ -19,11 +21,18 @@ public partial class StandalonePage : Page
     private const string CurrentTier = "T0";   // 单体页服务"无 Docker"档
     public ObservableCollection<FeatureItem> Features { get; } = new();
 
+    // 记住上一次读配置用的路径，路径变了才重新加载（避免每次刷新状态都重置勾选）
+    private string _loadedRepoRoot = "";
+    private string _loadedDataDir = "";
+
     public StandalonePage(StandaloneService standalone)
     {
         InitializeComponent();
         _standalone = standalone;
-        _standalone.Log += line => Dispatcher.Invoke(() => AppendLog(line));
+        // 注意：日志来自子进程的输出线程，必须用 BeginInvoke（异步投递）。
+        // 用 Dispatcher.Invoke 会和长时间运行按钮里的 WaitForExit 互等，把面板卡死。
+        _standalone.Log += line => Dispatcher.BeginInvoke(
+            DispatcherPriority.Normal, new Action(() => AppendLog(line)));
         FeatureList.ItemsSource = Features;
 
         if (string.IsNullOrWhiteSpace(_standalone.RepoRoot))
@@ -49,6 +58,7 @@ public partial class StandalonePage : Page
 
     private void LoadFeatures()
     {
+        _loadedRepoRoot = _standalone.RepoRoot;
         Features.Clear();
         var path = Path.Combine(_standalone.RepoRoot, "deploy", "features.json");
         if (!File.Exists(path))
@@ -103,11 +113,16 @@ public partial class StandalonePage : Page
     private List<string> SelectedFeatures() =>
         Features.Where(item => item.Enabled).Select(item => item.Id).ToList();
 
+    private bool OvLocalSelected => ChkOvLocal.IsChecked == true;
+
     private string BuildModes()
     {
         var memory = (CmbMemory.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "local";
         var qq = (CmbQq.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "satori";
-        return $"memory={memory},qq={qq}";
+        var modes = $"memory={memory},qq={qq}";
+        if (memory == "openviking" && OvLocalSelected)
+            modes += ",memory.source=install";
+        return modes;
     }
 
 
@@ -118,6 +133,7 @@ public partial class StandalonePage : Page
 
     private void LoadOvConfig()
     {
+        _loadedDataDir = _standalone.DataDir;
         try
         {
             var path = LauncherConfigPath;
@@ -136,12 +152,15 @@ public partial class StandalonePage : Page
                 return;
             }
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            if (doc.RootElement.TryGetProperty("openviking", out var ov) &&
-                ov.TryGetProperty("server_url", out var url))
+            if (doc.RootElement.TryGetProperty("openviking", out var ov))
             {
-                TxtOvUrl.Text = url.GetString() ?? "";
+                if (ov.TryGetProperty("server_url", out var url))
+                    TxtOvUrl.Text = url.GetString() ?? "";
+                if (ov.TryGetProperty("local", out var local))
+                    ChkOvLocal.IsChecked = local.ValueKind == JsonValueKind.True;
             }
             UpdateOvHint();
+            UpdateOvLocalStatus();
         }
         catch (Exception exc)
         {
@@ -178,7 +197,8 @@ public partial class StandalonePage : Page
                 ov = new JsonObject();
                 rootNode["openviking"] = ov;
             }
-            ov["server_url"] = TxtOvUrl.Text.Trim();
+            ov["server_url"] = OvLocalSelected ? "" : TxtOvUrl.Text.Trim();
+            ov["local"] = OvLocalSelected;
             ov["account"] ??= "my-agent";
             ov["account_mode"] ??= "fixed";
             ov["file_fallback"] ??= true;
@@ -200,6 +220,86 @@ public partial class StandalonePage : Page
         _standalone.RepoRoot = TxtRepoRoot.Text.Trim();
         var data = TxtDataDir.Text.Trim();
         if (!string.IsNullOrWhiteSpace(data)) _standalone.DataDir = data;
+        // 路径被改过就重新读一遍（面板可能不在仓库里启动，靠手动填路径）
+        if (!string.Equals(_loadedRepoRoot, _standalone.RepoRoot, StringComparison.OrdinalIgnoreCase))
+            LoadFeatures();
+        if (!string.Equals(_loadedDataDir, _standalone.DataDir, StringComparison.OrdinalIgnoreCase))
+            LoadOvConfig();
+    }
+
+    private void ChkOvLocal_Changed(object sender, RoutedEventArgs e) => UpdateOvLocalStatus();
+
+    private void UpdateOvLocalStatus()
+    {
+        if (TxtOvLocalStatus is null) return;
+        var installed = _standalone.OpenvikingServerInstalled();
+        var keyReady = _standalone.OpenvikingApiKeyReady();
+        TxtOvLocalStatus.Text = OvLocalSelected
+            ? $"运行环境：{(installed ? "已安装" : "未安装")} ｜ api_key：{(keyReady ? "已生成" : "未生成")}"
+            : "";
+    }
+
+    private bool _busy;
+
+    /// <summary>
+    /// 耗时操作（装依赖可能几分钟）放到后台线程跑，界面不冻结；
+    /// 用 BeginInvoke 回写日志，避免和 WaitForExit 互等。
+    /// </summary>
+    private async void RunBusy(string action, Func<(bool ok, string message)> work, Action? after = null)
+    {
+        if (_busy)
+        {
+            AppendLog("上一个操作还在跑，等它结束再点。");
+            return;
+        }
+        _busy = true;
+        SetActionButtonsEnabled(false);
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            var (ok, message) = await Task.Run(work);
+            AppendLog(message);
+            AppendLog(ok
+                ? $"✔ {action}完成（{watch.Elapsed.TotalSeconds:F1}s）"
+                : $"✘ {action}失败（{watch.Elapsed.TotalSeconds:F1}s）");
+        }
+        catch (Exception exc)
+        {
+            AppendLog($"✘ {action}异常：{exc.Message}");
+        }
+        finally
+        {
+            _busy = false;
+            SetActionButtonsEnabled(true);
+            after?.Invoke();
+            RefreshStatus();
+        }
+    }
+
+    private void SetActionButtonsEnabled(bool enabled)
+    {
+        foreach (var button in new[] { BtnInit, BtnInstallDeps, BtnProbe, BtnStart, BtnStop, BtnRefresh, BtnOvInstall, BtnOvInit })
+            button.IsEnabled = enabled;
+    }
+
+    /// <summary>后台线程往日志区补一句提示（必须经 Dispatcher）。</summary>
+    private void SayFromWorker(string message) =>
+        Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() => AppendLog(message)));
+
+    private void BtnOvInstall_Click(object sender, RoutedEventArgs e)
+    {
+        ApplyPaths();
+        RunBusy("安装 openviking-server",
+            () => _standalone.InstallOpenviking(),
+            UpdateOvLocalStatus);
+    }
+
+    private void BtnOvInit_Click(object sender, RoutedEventArgs e)
+    {
+        ApplyPaths();
+        RunBusy("初始化 openviking",
+            () => _standalone.InitOpenviking(),
+            UpdateOvLocalStatus);
     }
 
     private void BtnDetect_Click(object sender, RoutedEventArgs e)
@@ -229,18 +329,25 @@ public partial class StandalonePage : Page
     private void BtnInit_Click(object sender, RoutedEventArgs e)
     {
         ApplyPaths();
-        var (ok, message) = _standalone.InitDataDir();
-        AppendLog(message);
-        if (ok) AppendLog("提示：模型密钥请在 data/config/model-proxy/config/model_list.json 里填");
+        var initFeatures = SelectedFeatures();
+        if (initFeatures.Count == 0) initFeatures = new List<string> { "core" };
+        RunBusy("初始化数据目录", () =>
+        {
+            var (ok, message) = _standalone.InitDataDir(initFeatures);
+            if (ok) SayFromWorker("提示：模型密钥请在 data/config/model-proxy/config/model_list.json 里填");
+            return (ok, message);
+        });
     }
 
     private void BtnProbe_Click(object sender, RoutedEventArgs e)
     {
         ApplyPaths();
-        var (ok, message) = _standalone.Probe();
-        AppendLog(message);
-        if (!ok) AppendLog("可手动跑：python services/agent-orchestrator-service/tools/probe_env.py --print");
-        RefreshStatus();
+        RunBusy("探测环境", () =>
+        {
+            var (ok, message) = _standalone.Probe();
+            if (!ok) SayFromWorker("可手动跑：python services/agent-orchestrator-service/tools/probe_env.py --print");
+            return (ok, message);
+        });
     }
 
 
@@ -249,9 +356,12 @@ public partial class StandalonePage : Page
         ApplyPaths();
         var features = SelectedFeatures();
         AppendLog($"开始安装依赖（共享 venv，服务 {features.Count} 个；首次会下载并生成 gRPC stubs，请稍候）…");
-        var (ok, message) = _standalone.InstallDeps(features);
-        AppendLog(message);
-        if (ok) AppendLog("提示：之后启动会自动用 <数据目录>/venv 里的解释器");
+        RunBusy("安装依赖", () =>
+        {
+            var (ok, message) = _standalone.InstallDeps(features);
+            if (ok) SayFromWorker("提示：之后启动会自动用 <数据目录>/venv 里的解释器");
+            return (ok, message);
+        });
     }
 
     private void BtnStart_Click(object sender, RoutedEventArgs e)
@@ -265,18 +375,41 @@ public partial class StandalonePage : Page
         }
         AppendLog("提示：模型/embedding 请在 dashboard「配置管理」→ model-proxy/config/model_list.json 里填；"
                   + "模板里的占位 Key 不改会导致调用失败。");
-        var ovUrl = TxtOvUrl.Text.Trim();
-        var (ok, message) = _standalone.Start(features, BuildModes(), ovUrl);
-        AppendLog(message);
-        RefreshStatus();
+        var ovUrl = OvLocalSelected ? "" : TxtOvUrl.Text.Trim();
+        if (OvLocalSelected)
+            AppendLog("提示：已勾选「本机自建 openviking」→ 由单体自己起服务，服务器地址不再使用。");
+        var modes = BuildModes();
+        RunBusy("启动", () => _standalone.Start(features, modes, ovUrl), WatchStartup);
+    }
+
+    /// <summary>
+    /// 启动是异步的（launcher 起 8 个服务要十几秒才写 pids.json），
+    /// 后台盯一下 pids.json，起来了自动刷状态，避免用户看到「未启动」以为没起来。
+    /// </summary>
+    private async void WatchStartup()
+    {
+        var pids = Path.Combine(_standalone.DataDir, "pids.json");
+        for (var i = 0; i < 60; i++)
+        {
+            await Task.Delay(1000);
+            RefreshStatus();
+            if (File.Exists(pids))
+            {
+                AppendLog("服务已起来，状态已自动刷新");
+                return;
+            }
+        }
+        AppendLog("等了 60s 还没看到 pids.json：点「刷新状态」，或看日志区有没有报错");
     }
 
     private void BtnStop_Click(object sender, RoutedEventArgs e)
     {
         ApplyPaths();
-        var (_, message) = _standalone.Stop();
-        AppendLog(message);
-        RefreshStatus();
+        RunBusy("停止", () =>
+        {
+            var (_, message) = _standalone.Stop();
+            return (true, message);
+        });
     }
 
     private void BtnRefresh_Click(object sender, RoutedEventArgs e) => RefreshStatus();

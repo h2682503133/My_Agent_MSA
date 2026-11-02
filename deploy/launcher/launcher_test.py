@@ -71,7 +71,9 @@ def main() -> int:
                 clash = f"{svc.id}.{name}={port} vs {ports[port]}"
             ports[port] = f"{svc.id}.{name}"
     check("全开时端口仍唯一", clash == "", clash)
-    check("服务数 = 11", len(plan5.services) == 11, str(len(plan5.services)))
+    ids5 = {s.id for s in plan5.services}
+    check("本机自建 openviking 时会起服务本体", "openviking" in ids5, str(sorted(ids5)))
+    check("服务数 = 12", len(plan5.services) == 12, str(len(plan5.services)))
 
     print("目录与 capability")
     plan6 = build(ROOT, tmp, ["core", "memory"])
@@ -152,6 +154,80 @@ def main() -> int:
     check("TOOL_PROVIDERS 单体为本机实现",
           tplan.env.get("TOOL_PROVIDERS") == "file-copy=local,file-move=local,clawhub=local",
           str(tplan.env.get("TOOL_PROVIDERS")))
+
+
+    print("资产对外基址（跨机器取图）")
+    base_plan = build(ROOT, _Path(_tempfile.mkdtemp()), ["core", "memory"], {"memory": "local"})
+    check("默认资产基址 = 127.0.0.1",
+          base_plan.env.get("IMAGE_BASE_URL", "").startswith("http://127.0.0.1:"),
+          str(base_plan.env.get("IMAGE_BASE_URL")))
+    d2 = _Path(_tempfile.mkdtemp())
+    (d2 / "config").mkdir(parents=True, exist_ok=True)
+    (d2 / "config" / "launcher.json").write_text(json.dumps({"assets": {"base": "http://10.244.62.117:5102"}}), encoding="utf-8")
+    over_plan = build(ROOT, d2, ["core", "memory"], {"memory": "local"})
+    check("assets.base 覆盖生效",
+          over_plan.env.get("IMAGE_BASE_URL") == "http://10.244.62.117:5102/assets",
+          str(over_plan.env.get("IMAGE_BASE_URL")))
+
+    print("启动锁与上一轮收尾（防孤儿/重复回复，纯逻辑：不 spawn 进程）")
+    import os as _os
+    import tempfile as _tf
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(ROOT / "deploy"))
+    from launcher import run as _run
+
+    class _FakePlan:
+        def __init__(self, d):
+            self.data_dir = _Path(d)
+
+    _orig_alive = _run._pid_alive
+    _orig_run = _run.subprocess.run
+    try:
+        # 1) 锁指向"存活"的 pid → 拒绝启动
+        _d = _Path(_tf.mkdtemp())
+        (_d / "launcher.lock").write_text("12345", encoding="ascii")
+        _run._pid_alive = lambda pid: True
+        check("有存活的启动器时拒绝再启动", _run._acquire_lock(_FakePlan(_d)) is False)
+
+        # 2) 锁指向"已死"的 pid → 允许启动
+        _run._pid_alive = lambda pid: False
+        check("锁是死进程时允许启动", _run._acquire_lock(_FakePlan(_d)) is True)
+        check("接管后锁文件写的就是自己", (_d / "launcher.lock").read_text().strip() == str(_os.getpid()))
+
+        # 3) 收尾：pids.json 里的活进程会被 taskkill（用假实现，不真杀）
+        calls = []
+
+        class _FakeProc:
+            returncode = 0
+
+        def _fake_run(cmd, *a, **k):
+            calls.append(list(cmd))
+            return _FakeProc()
+
+        _d2 = _Path(_tf.mkdtemp())
+        (_d2 / "pids.json").write_text(
+            json.dumps({"processes": [
+                {"id": "qq-onebot-service", "pid": 4321},
+                {"id": "user-service", "pid": 8765},
+            ]}), encoding="utf-8")
+        _run._pid_alive = lambda pid: True
+        _run.subprocess.run = _fake_run
+        _run._reconcile_previous(_FakePlan(_d2))
+        check("启动前会收掉上一轮残留进程", len(calls) == 2, str(calls))
+        check("收尾后 pids.json 被清掉", not (_d2 / "pids.json").exists())
+
+        # 4) 死进程不浪费 taskkill
+        calls.clear()
+        _d3 = _Path(_tf.mkdtemp())
+        (_d3 / "pids.json").write_text(
+            json.dumps({"processes": [{"id": "x", "pid": 111}]}), encoding="utf-8")
+        _run._pid_alive = lambda pid: False
+        _run._reconcile_previous(_FakePlan(_d3))
+        check("死进程不会被 taskkill", calls == [], str(calls))
+    finally:
+        _run._pid_alive = _orig_alive
+        _run.subprocess.run = _orig_run
 
     print()
     if FAILS:

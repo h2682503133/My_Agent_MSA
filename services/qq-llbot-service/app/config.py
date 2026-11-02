@@ -19,7 +19,7 @@ _CONFIG_PATH = Path(os.getenv("QQ_LLBOT_CONFIG_PATH", "/service/config/qq_llbot_
 def _load_json_config() -> dict[str, Any]:
     if _CONFIG_PATH.exists():
         try:
-            with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            with open(_CONFIG_PATH, "r", encoding="utf-8-sig") as f:
                 return json.load(f)
         except Exception:
             pass

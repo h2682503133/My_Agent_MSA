@@ -109,6 +109,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app import config
+from app import prompt_paths
 from app import prompt_refs
 from app.image_store import image_marker
 from app.logger import debug_log
@@ -435,6 +436,8 @@ def _read_prompt_segment(
     - 解析失败抛 `prompt_refs.PromptRefError`（不静默降级）
     """
     raw = path.read_text(encoding="utf-8")
+    # 路径占位符（{{WORKSPACE_DIR}} 等）→ 当前环境真实路径，见 app/prompt_paths.py
+    raw = prompt_paths.render(raw)
     resolved = prompt_refs.resolve_segment(
         raw,
         agent_id=agent_id,
@@ -585,7 +588,10 @@ def load_tool_catalog(path: Path | None = None) -> dict:
     try:
         if not target.exists():
             return {}
-        data = json.loads(target.read_text(encoding="utf-8"))
+        raw = target.read_text(encoding="utf-8")
+        # 工具说明里可能写 {{WORKSPACE_DIR}} 这类占位符，先替换成当前环境路径
+        raw = prompt_paths.render(raw)
+        data = json.loads(raw)
         if isinstance(data, dict):
             return data
         debug_log(f"[tool] {target} 顶层不是对象，按缺失处理")
@@ -700,6 +706,19 @@ def render_tool_line(tool: dict) -> str:
     return "\n".join(lines)
 
 
+def _capability_ok(tool: dict) -> bool:
+    """工具的能力标签是否全部满足；capabilities 模块不可用时按可见处理（向后兼容）。"""
+    tokens = tool_capabilities(tool)
+    if not tokens:
+        return True
+    try:
+        from app import capabilities
+
+        return capabilities.tool_allowed(tokens)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _render_section(
     section: dict,
     section_id: str,
@@ -725,6 +744,8 @@ def _render_section(
             continue
         if allowed_levels is not None and tool_level(tool) not in allowed_levels:
             continue
+        if not _capability_ok(tool):
+            continue
         line = render_tool_line(tool)
         if line:
             lines.append(line)
@@ -736,6 +757,15 @@ def _render_section(
 
 
 _LEVEL_TOKENS = {"L0": 0, "L1": 1, "L2": 2, "L3": 3, "L4": 4}
+
+
+def tool_capabilities(tool: dict) -> list[str]:
+    """工具的 `cap:<能力>` 标签（写在 groups 里，与档位标签同处）。"""
+    return [
+        str(item).strip()
+        for item in (tool or {}).get("groups") or []
+        if str(item).strip().lower().startswith("cap:")
+    ]
 
 
 def tool_level(tool: dict) -> int:
@@ -969,6 +999,15 @@ class ContextBuilder:
 
             if key in _TOOL_FILE_NAMES:
                 # TOOL：选项写在 TOOL.md，清单统一来自全局 TOOL.json
+                try:
+                    from app import capabilities as _caps
+
+                    if not _caps.enabled("tool_runtime"):
+                        # 最简档：没有工具运行时，整段不注入（提示词里的权限段会说明）
+                        debug_log("[tool] tool_runtime 未启用，跳过 TOOL 注入")
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
                 try:
                     from app import tool_permissions
 

@@ -4,7 +4,7 @@ import json
 import os
 
 # 加载配置
-with open("config/gateway_setting.json", "r", encoding="utf-8") as f:
+with open("config/gateway_setting.json", "r", encoding="utf-8-sig") as f:
     CONFIG = json.load(f)
 
 from core.Task.Task import Task

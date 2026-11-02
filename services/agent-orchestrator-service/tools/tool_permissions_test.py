@@ -21,8 +21,12 @@ TMP = Path(tempfile.mkdtemp())
 SETTINGS = TMP / "system_settings.json"
 os.environ["SYSTEM_SETTINGS_PATH"] = str(SETTINGS)
 
+REPO_PROMPTS = Path(__file__).resolve().parent.parent.parent.parent / "config" / "orchestrator" / "system_prompt"
+os.environ["SYSTEM_PROMPT_DIR"] = str(REPO_PROMPTS)   # 配置唯一源在仓库 config/
+
 from app import config  # noqa: E402
 config.SYSTEM_SETTINGS_PATH = SETTINGS  # 覆盖模块常量
+config.SYSTEM_PROMPT_DIR = REPO_PROMPTS  # 服务内不再放提示词
 
 from app import tool_permissions as tp  # noqa: E402
 

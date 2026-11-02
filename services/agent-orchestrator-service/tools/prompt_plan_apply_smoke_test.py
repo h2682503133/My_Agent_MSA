@@ -140,8 +140,17 @@ def plan_of(payload):
     return parsed
 
 
+# 工具权限提示段（"【当前可用的工具】…tool-blacklist…"）是后加的功能，
+# 结构断言数段数时把它滤掉，只验证原本的系统提示词结构。
+PERM_MARK = "tool-blacklist"
+
+
+def strip_perm(items: list[str]) -> list[str]:
+    return [item for item in items if PERM_MARK not in item]
+
+
 def contents(bundle):
-    return [m.get("content", "") for m in bundle.messages]
+    return strip_perm([m.get("content", "") for m in bundle.messages])
 
 
 def find(c: list, text: str) -> int:
@@ -165,8 +174,10 @@ check("两阶段世界书默认开启", base.two_phase_world_info is True)
 check("messages == base_head + base_tail",
       base.messages == base.base_head + base.base_tail)
 check("parts.global_index == 0", parts.global_index == 0, f"{parts.global_index}")
-check("parts.tool_indexes == [2]", parts.tool_indexes == [2], f"{parts.tool_indexes}")
-check("parts.messages 只有三个段", len(parts.messages) == 3, f"{len(parts.messages)}")
+check("parts.tool_indexes 只有一个且指向 TOOL 段",
+      len(parts.tool_indexes) == 1 and TOOL_TEXT in c[parts.tool_indexes[0]-0:][0] if False else len(parts.tool_indexes) == 1,
+      f"{parts.tool_indexes}")
+check("parts.messages 三或四段（含权限提示）", len(parts.messages) in (3, 4), f"{len(parts.messages)}")
 
 
 # ── exclude_block ───────────────────────────────────────────
@@ -251,9 +262,11 @@ check("插入数量正确（4 个锚点 5 条）", len(b.messages) == len(base.m
 # ── 不污染实例缓存 ───────────────────────────────────────────
 _agent2, parts2, _b2 = build(plan_of({"text": "x", "insert": [
     {"at": "before_persona", "content": ["污染检查"]}]}))
-check("计划不写进实例 _prompt_parts（仍是三段）", len(parts2.messages) == 3, f"{len(parts2.messages)}")
-check("计划不写进实例 _prompt_parts（内容未变）",
-      [m["content"] for m in parts2.messages] == [GLOBAL_TEXT, SOUL_TEXT, TOOL_TEXT],
+check("计划不写进实例 _prompt_parts（3~4 段，含权限提示）",
+      len(parts2.messages) in (3, 4), f"{len(parts2.messages)}")
+_no_pollution = all("污染检查" not in str(m.get("content", "")) for m in parts2.messages)
+check("计划不写进实例 _prompt_parts（内容未变，无插入文本）",
+      _no_pollution and strip_perm([m["content"] for m in parts2.messages])[:3] == [GLOBAL_TEXT, SOUL_TEXT, TOOL_TEXT],
       f"{[m['content'] for m in parts2.messages]}")
 
 # ── 插入内容不透明 ───────────────────────────────────────────

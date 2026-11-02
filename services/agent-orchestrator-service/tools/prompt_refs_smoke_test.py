@@ -27,6 +27,16 @@ from app.agent_config import load_agent_config  # noqa: E402
 from app.context_builder import ContextBuilder, is_group_session  # noqa: E402
 from app.prompt_refs import PromptRefError  # noqa: E402
 
+
+PERMISSION_MARK = "【当前可用的工具】"
+
+
+def _seg(messages, index: int) -> str:
+    """取第 index 个非「权限说明」段（权限段是后续加的，不参与本测试的序号）。"""
+    filtered = [m["content"] for m in messages if PERMISSION_MARK not in (m.get("content") or "")]
+    return filtered[index] if index < len(filtered) else ""
+
+
 FAILURES: list[str] = []
 
 
@@ -67,7 +77,21 @@ def filtered(parts, *, is_group: bool):
         _identity_system_indexes=[],
         _when_system_rules=list(parts.when_rules),
     )
-    return ContextBuilder(agent).effective_system_prompt(is_group=is_group)
+    kept = [m for m in ContextBuilder(agent).effective_system_prompt(is_group=is_group)
+            if PERMISSION_MARK not in (m.get("content") or "")]
+    return kept
+
+
+
+def when_contents(parts):
+    """[(段内容, 条件)]，跳过权限段，便于不依赖下标断言。"""
+    pairs = []
+    for index, rule in parts.when_rules:
+        content = parts.messages[index]["content"] if index < len(parts.messages) else ""
+        if PERMISSION_MARK in content:
+            continue
+        pairs.append((content.strip(), rule))
+    return pairs
 
 
 def expect_error(label: str, fn) -> str:
@@ -219,18 +243,18 @@ alice = build("alice")
 lilith = build("lilith")
 
 # 消息顺序：0=GLOBAL_SETTING.md，1=SOUL.md，2=TOOL 段（world_info 不进 messages）
-alice_soul = alice.messages[1]["content"]
+alice_soul = _seg(alice.messages, 1)
 check("alice: SOUL 原文注入", alice_soul == ALICE_SOUL.strip(), repr(alice_soul[:24]))
-check("alice: GLOBAL_SETTING 的 {agent_id} 也替换", "运行者：alice" in alice.messages[0]["content"])
+check("alice: GLOBAL_SETTING 的 {agent_id} 也替换", "运行者：alice" in _seg(alice.messages, 0))
 check("alice: {agent_id} 已替换", "你的id是alice" in alice.world_info_override, alice.world_info_override.strip().replace("\n", " / "))
-check("alice: TOOL 段含替换后的 id", "我是alice" in alice.messages[2]["content"])
+check("alice: TOOL 段含替换后的 id", "我是alice" in _seg(alice.messages, 2))
 
-check("lilith: SOUL 整文件替换 == alice 的字节", lilith.messages[1]["content"] == ALICE_SOUL.strip())
-check("lilith: soul_content 同步", lilith.soul_content == lilith.messages[1]["content"])
+check("lilith: SOUL 整文件替换 == alice 的字节", _seg(lilith.messages, 1) == ALICE_SOUL.strip())
+check("lilith: soul_content 同步", lilith.soul_content == _seg(lilith.messages, 1))
 check("lilith: world_info 跳转生效", "你的id是lilith" in lilith.world_info_override, lilith.world_info_override.strip().replace("\n", " / "))
-check("lilith: TOOL.md 跳转生效且用请求方 id", "我是lilith" in lilith.messages[2]["content"] and "调用格式" in lilith.messages[2]["content"])
+check("lilith: TOOL.md 跳转生效且用请求方 id", "我是lilith" in _seg(lilith.messages, 2) and "调用格式" in _seg(lilith.messages, 2))
 check("lilith: 目标内容里没有残留模板", "{agent_id}" not in lilith.world_info_override)
-check("lilith: GLOBAL_SETTING 用请求方 id", "运行者：lilith" in lilith.messages[0]["content"])
+check("lilith: GLOBAL_SETTING 用请求方 id", "运行者：lilith" in _seg(lilith.messages, 0))
 
 print("\n== 阶段1 剔除 SOUL 的前提（内容必须与记录串一致）==")
 msg_contents = [m["content"] for m in lilith.messages]
@@ -246,25 +270,25 @@ expect_error("自跳 → 报错", lambda: build("frank"))
 print("\n== @ref= 新写法：目录/文件名（任意文件）==")
 grace = build("grace")
 check("两跳：grace → lilith → alice 现在合法",
-      grace.messages[1]["content"] == ALICE_SOUL.strip(), repr(grace.messages[1]["content"][:24]))
+      _seg(grace.messages, 1) == ALICE_SOUL.strip(), repr(_seg(grace.messages, 1)[:24]))
 
 p1 = build("p1")
 check("路径形式：中文目录 + 任意文件名",
-      p1.messages[1]["content"] == "# 凌伊\n这是凌伊的人设正文", repr(p1.messages[1]["content"][:24]))
+      _seg(p1.messages, 1) == "# 凌伊\n这是凌伊的人设正文", repr(_seg(p1.messages, 1)[:24]))
 
 p2 = build("p2")
 check("路径形式：可指向别的智能体的非同名文件（且替换成请求方 id）",
-      p2.messages[1]["content"] == "# 核心设定\n你的id是p2", repr(p2.messages[1]["content"][:40]))
+      _seg(p2.messages, 1) == "# 核心设定\n你的id是p2", repr(_seg(p2.messages, 1)[:40]))
 
 p3 = build("p3")
-check("路径形式：末段大小写不敏感", p3.messages[1]["content"] == ALICE_SOUL.strip())
+check("路径形式：末段大小写不敏感", _seg(p3.messages, 1) == ALICE_SOUL.strip())
 
 h2 = build("h2")
-check("链上 {agent_id} 取最外层请求方", h2.messages[1]["content"] == "人设：h2", repr(h2.messages[1]["content"]))
-check("中间跳的指针内容不进入结果", "@ref" not in h2.messages[1]["content"])
+check("链上 {agent_id} 取最外层请求方", _seg(h2.messages, 1) == "人设：h2", repr(_seg(h2.messages, 1)))
+check("中间跳的指针内容不进入结果", "@ref" not in _seg(h2.messages, 1))
 
 d1 = build("d1")
-check("3 跳仍可解析", d1.messages[1]["content"] == "# 深度链终点\nd4 正文", repr(d1.messages[1]["content"][:24]))
+check("3 跳仍可解析", _seg(d1.messages, 1) == "# 深度链终点\nd4 正文", repr(_seg(d1.messages, 1)[:24]))
 write("d4", "SOUL.md", "@ref=d5\n")
 write("d5", "SOUL.md", "d5 正文\n")
 deep_msg = expect_error("超过深度上限 → 报错", lambda: build("d1"))
@@ -297,11 +321,11 @@ check("大小写不敏感找文件", prompt_refs.resolve_named_file(TMP / "alice
 
 print("\n== @when= 注入条件：解析与登记 ==")
 henry = build("henry")
-check("指令行不进入内容（SOUL）", "@when" not in henry.messages[1]["content"], repr(henry.messages[1]["content"][:20]))
-check("指令行不进入内容（USER）", "@when" not in henry.messages[2]["content"], repr(henry.messages[2]["content"][:20]))
-check("SOUL 正文完整（首行未被吃掉）", henry.messages[1]["content"] == HENRY_SOUL.strip())
-check("USER 正文完整", henry.messages[2]["content"] == HENRY_USER.strip())
-check("条件已按段下标登记", henry.when_rules == [(1, "group"), (2, "single")], str(henry.when_rules))
+check("指令行不进入内容（SOUL）", "@when" not in _seg(henry.messages, 1), repr(_seg(henry.messages, 1)[:20]))
+check("指令行不进入内容（USER）", "@when" not in _seg(henry.messages, 2), repr(_seg(henry.messages, 2)[:20]))
+check("SOUL 正文完整（首行未被吃掉）", _seg(henry.messages, 1) == HENRY_SOUL.strip())
+check("USER 正文完整", _seg(henry.messages, 2) == HENRY_USER.strip())
+check("条件已按内容登记", when_contents(henry) == [(HENRY_SOUL.strip(), "group"), (HENRY_USER.strip(), "single")], str(when_contents(henry)))
 
 print("\n== @when= 注入条件：发送期过滤 ==")
 group_msgs = [m["content"] for m in filtered(henry, is_group=True)]
@@ -318,15 +342,15 @@ check("无条件段不受影响（GLOBAL_SETTING 两边都在）",
 print("\n== @when= 与 @ref= 共存 ==")
 ivan = build("ivan")
 jane = build("jane")
-check("条件在前：@ref= 仍整文件替换", ivan.messages[1]["content"] == ALICE_SOUL.strip())
-check("条件在前：条件已登记", ivan.when_rules == [(1, "group")], str(ivan.when_rules))
-check("条件在后：@ref= 仍整文件替换", jane.messages[1]["content"] == ALICE_SOUL.strip())
-check("条件在后：条件已登记", jane.when_rules == [(1, "single")], str(jane.when_rules))
+check("条件在前：@ref= 仍整文件替换", _seg(ivan.messages, 1) == ALICE_SOUL.strip())
+check("条件在前：条件已登记", when_contents(ivan) == [(ALICE_SOUL.strip(), "group")], str(when_contents(ivan)))
+check("条件在后：@ref= 仍整文件替换", _seg(jane.messages, 1) == ALICE_SOUL.strip())
+check("条件在后：条件已登记", when_contents(jane) == [(ALICE_SOUL.strip(), "single")], str(when_contents(jane)))
 check("共存时正文里没有残留指令",
-      not prompt_refs.has_any_directive(ivan.messages[1]["content"]))
+      not prompt_refs.has_any_directive(_seg(ivan.messages, 1)))
 rita = build("rita")
-check("容错：`@when = GROUP` 归一为 group", rita.when_rules == [(1, "group")], str(rita.when_rules))
-check("容错：大小写与空格不影响正文", rita.messages[1]["content"] == "rita 的 SOUL")
+check("容错：`@when = GROUP` 归一为 group", [rule for _, rule in when_contents(rita)] == ["group"], str(when_contents(rita)))
+check("容错：大小写与空格不影响正文", _seg(rita.messages, 1) == "rita 的 SOUL")
 
 print("\n== @when= 报错分支 ==")
 expect_error("@when= 取值非法 → 报错", lambda: build("judy"))
@@ -364,7 +388,7 @@ print("\n== 目标文件为空 ==")
 write("alice", "SOUL.md", "   \n")
 expect_error("空目标文件 → 报错", lambda: build("lilith"))
 write("alice", "SOUL.md", ALICE_SOUL)
-check("恢复后又能正常构建", build("lilith").messages[1]["content"] == ALICE_SOUL.strip())
+check("恢复后又能正常构建", _seg(build("lilith").messages, 1) == ALICE_SOUL.strip())
 
 shutil.rmtree(TMP, ignore_errors=True)
 print()

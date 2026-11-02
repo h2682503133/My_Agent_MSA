@@ -384,6 +384,11 @@ def _interval_range(schedule: dict) -> tuple[int, int]:
     return (secs, secs)
 
 
+def interval_range_of(schedule: dict) -> tuple[int, int]:
+    """对外公开的间隔区间读取（timer_task 里重排执行时段要用）。"""
+    return _interval_range(schedule)
+
+
 def next_trigger(schedule: dict, from_ts: float) -> float | None:
     """根据重复计划计算 from_ts 之后的下一次触发时间戳。"""
     if not schedule or schedule.get("type") != "interval":

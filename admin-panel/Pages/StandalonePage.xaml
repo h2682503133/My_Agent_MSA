@@ -1,4 +1,4 @@
-﻿<Page x:Class="MyAgentAdminPanel.Pages.StandalonePage"
+<Page x:Class="MyAgentAdminPanel.Pages.StandalonePage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       Title="单体模式"
@@ -67,6 +67,17 @@
                     </Grid>
                     <TextBlock x:Name="TxtOvHint" FontSize="11" Foreground="#888" Margin="0,6,0,0" TextWrapping="Wrap"
                                Text="保存后需「停止 → 启动」单体模式才生效（写入 data/config/launcher.json）。"/>
+
+                    <CheckBox x:Name="ChkOvLocal" Margin="0,10,0,0"
+                              Content="本机自建（不用 Docker；首次安装约 8~10 分钟）"
+                              Checked="ChkOvLocal_Changed" Unchecked="ChkOvLocal_Changed"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <Button x:Name="BtnOvInstall" Content="安装/更新运行环境" Height="28" Padding="10,0" Click="BtnOvInstall_Click"/>
+                        <Button x:Name="BtnOvInit" Content="初始化（建账号 + key）" Height="28" Padding="10,0" Margin="8,0,0,0" Click="BtnOvInit_Click"/>
+                        <TextBlock x:Name="TxtOvLocalStatus" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11" Foreground="#666"/>
+                    </StackPanel>
+                    <TextBlock FontSize="11" Foreground="#888" Margin="0,6,0,0" TextWrapping="Wrap"
+                               Text="勾选后由单体自己起 OpenViking（独立 venv，端口 1933），不需要服务器地址。embedding 模型默认指向本机 Ollama（qwen3-embedding:0.6b），模型名/地址请在 dashboard「配置管理」里改。"/>
                 </StackPanel>
             </Border>
 

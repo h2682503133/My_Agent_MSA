@@ -203,8 +203,27 @@ def _bootstrap_permissions() -> None:
         log(f"[permission] 迁移失败（忽略）：{exc}")
 
 
+def _log_paths() -> None:
+    """打印实际使用的配置目录；目录不存在时明确告警（不要把"读不到"变成"空提示词"）。"""
+    pairs = {
+        "SYSTEM_PROMPT_DIR": config.SYSTEM_PROMPT_DIR,
+        "CONFIG_DIR": config.CONFIG_DIR,
+        "AGENT_CONFIG_PATH": config.AGENT_CONFIG_PATH,
+        "WORKSPACE_DIR": getattr(config, "WORKSPACE_DIR", None),
+    }
+    for name, path in pairs.items():
+        if path is None:
+            continue
+        exists = Path(path).exists()
+        log(f"[配置目录检查] {name}={path} {'✔' if exists else '✘ 不存在（请用环境变量指向 config/ 目录）'}")
+    if not Path(config.SYSTEM_PROMPT_DIR).exists():
+        log("[配置目录检查] 警告：SYSTEM_PROMPT_DIR 不存在，提示词会是空的！"
+            "容器里应指向挂载目录；单体模式由 launcher 注入。")
+
+
 def serve():
     _bootstrap_permissions()
+    _log_paths()
     # 图片以 base64 data URL 传输，放宽 gRPC 单条消息大小上限（128 MiB）
     max_msg_bytes = 128 * 1024 * 1024
     server = grpc.server(

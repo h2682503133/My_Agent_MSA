@@ -17,9 +17,16 @@ async function loadCapabilities() {
     const color = item => (item.enabled ? '#4caf50' : '#e8b04b');
     list.innerHTML = (data.items || []).map(item =>
       `<div><span style="color:${color(item)};">●</span> ${item.label}：${item.value}</div>`).join('');
-    if ((data.degraded || []).length) {
-      list.innerHTML += '<div style="margin-top:6px;color:#e8b04b;">降级：' +
-        data.degraded.map(d => `${d.feature}（${d.reason}）`).join('；') + '</div>';
+    const degraded = (data.degraded || []).filter(d => (d.level || 'degrade') !== 'info');
+    const notes = (data.degraded || []).filter(d => d.level === 'info');
+    if (degraded.length) {
+      list.innerHTML += '<div style="margin-top:6px;color:#e8b04b;">降级 ' + degraded.length + ' 项：' +
+        degraded.map(d => `${d.feature}（${d.reason}）`).join('；') + '</div>';
+    }
+    if (notes.length) {
+      // 说明项：例如"单体模式没 Docker"，是正常形态，不算降级
+      list.innerHTML += '<div style="margin-top:6px;color:#888;">说明：' +
+        notes.map(d => `${d.feature}（${d.reason}）`).join('；') + '</div>';
     }
   } catch (err) {
     summary.textContent = `读取运行环境失败：${err}`;

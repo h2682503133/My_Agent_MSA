@@ -40,5 +40,9 @@ OFFLINE_SEND_FAILURES = int(os.getenv("OFFLINE_SEND_FAILURES", "3"))
 
 # 单条消息最多下载几张图片
 ONEBOT_MAX_IMAGES = int(os.getenv("ONEBOT_MAX_IMAGES", "9"))
+# 相对图片路径（如 /api/assets/x.jpg）的补全基址；留空=原样发送。
+# NapCat 在别的机器上时，必须填它访问得到的地址（如 http://10.0.0.5:5210）。
+ONEBOT_MEDIA_BASE = os.getenv("ONEBOT_MEDIA_BASE", "").strip().rstrip("/")
+
 # 图片下载超时（秒）
 ONEBOT_IMAGE_TIMEOUT = float(os.getenv("ONEBOT_IMAGE_TIMEOUT", "15"))

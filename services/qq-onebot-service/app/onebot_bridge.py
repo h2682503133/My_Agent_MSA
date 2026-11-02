@@ -11,12 +11,35 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 import urllib.parse
 from typing import Awaitable, Callable
 
 import websockets
+
+# ── websockets 版本差异：头参数名不一样 ──────────────────────────────
+#   websockets 12/13（legacy connect）→ extra_headers
+#   websockets 14+（asyncio connect）→ additional_headers
+# 两个环境都遇到过（容器 13.1 / 单体 VM 新版），所以按实际签名选。
+def _headers_kwarg() -> str:
+    try:
+        params = inspect.signature(websockets.connect).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "additional_headers" in params:
+        return "additional_headers"
+    if "extra_headers" in params:
+        return "extra_headers"
+    try:
+        major = int(str(websockets.__version__).split(".")[0])
+    except Exception:  # noqa: BLE001
+        major = 0
+    return "additional_headers" if major >= 14 else "extra_headers"
+
+
+HEADERS_KW = _headers_kwarg()
 
 from app import config
 from app.onebot_protocol import (
@@ -147,8 +170,23 @@ class OneBotBridge:
         finally:
             self._api_futures.pop(echo, None)
 
+    @staticmethod
+    def _absolute_media(url: str) -> str:
+        """相对路径补成 NapCat 可访问的绝对地址（http/https/base64/file 原样返回）。"""
+        value = str(url or "").strip()
+        if not value:
+            return value
+        if value.startswith(("http://", "https://", "base64://", "file://", "data:")):
+            return value
+        base = config.ONEBOT_MEDIA_BASE
+        if not base:
+            return value
+        return base + (value if value.startswith("/") else "/" + value)
+
     async def send(self, session_id: str, text: str = "", images: list[str] | None = None) -> bool:
         """把文本/图片推给某个会话；返回是否成功（失败由上层决定退订/重试）。"""
+        if images:
+            images = [self._absolute_media(u) for u in images]
         try:
             action, params = build_send_payload(session_id, text=text, images=images)
         except ValueError as exc:
@@ -161,7 +199,7 @@ class OneBotBridge:
             return False
         ok = str(response.get("status") or "").lower() == "ok" or bool(response.get("retcode") == 0)
         if not ok:
-            print(f"[qq-onebot] 发送被拒 session={session_id}: {str(response)[:200]}", flush=True)
+            print(f"[qq-onebot] 发送被拒 session={session_id} images={images}: {str(response)[:200]}", flush=True)
         return ok
 
     # ── 连接方式 ────────────────────────────────────────────
@@ -174,7 +212,7 @@ class OneBotBridge:
             try:
                 async with websockets.connect(
                     config.ONEBOT_WS_URL,
-                    additional_headers=headers,
+                    **{HEADERS_KW: headers},
                     max_size=16 * 1024 * 1024,
                     open_timeout=10,
                 ) as ws:
@@ -222,8 +260,8 @@ class OneBotBridge:
             try:
                 async with websockets.connect(
                     config.ONEBOT_WS_URL,
-                    additional_headers=({"Authorization": f"Bearer {config.ONEBOT_TOKEN}"}
-                                        if config.ONEBOT_TOKEN else {}),
+                    **{HEADERS_KW: ({"Authorization": f"Bearer {config.ONEBOT_TOKEN}"}
+                                    if config.ONEBOT_TOKEN else {})},
                     open_timeout=5,
                     max_size=16 * 1024 * 1024,
                 ) as ws:

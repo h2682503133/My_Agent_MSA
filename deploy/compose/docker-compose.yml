@@ -1,0 +1,351 @@
+# My_Agent MSA —— Docker Compose 部署（无 k8s 路线，T1/T4）
+#
+# 覆盖：核心对话 + 面板 + 可选功能（工具/记忆/QQ/搜索/图床/定时）
+# 不覆盖：宿主浏览器托管、局域网保留端口、k8s 专属能力（这些走 admin-panel 或 features.json 的下载档）
+#
+# 功能 ↔ profile 对照（见 deploy/features.json）：
+#   core     —— 默认（不需要 --profile）
+#   tools.basic        → --profile tools
+#   memory.openviking  → --profile memory
+#   search             → --profile search
+#   qq (satori)        → --profile qq
+#   qq-official        → --profile qq-official
+#   timer              → --profile timer
+#
+# 用法（在 deploy/compose 目录）：
+#   cp .env.example .env            # 填模型地址/密钥
+#   docker compose up -d            # 核心
+#   docker compose --profile tools --profile memory up -d
+#
+# 数据全部落在 ./data 下（bind mount，方便备份/迁移；Windows 上路径为 NTFS）
+
+x-common: &common
+  restart: unless-stopped
+  networks:
+    - my-agent
+
+x-config: &config-volume "./data/config"
+
+services:
+  # ─── 核心：模型代理 ────────────────────────────────────────
+  model-proxy-service:
+    <<: *common
+    build:
+      context: ../../services/model-proxy-service
+    image: agent/model-proxy-service:compose
+    environment:
+      MODEL_PROXY_GRPC_PORT: "5302"
+      MODEL_LIST_PATH: /app/config/model_list.json
+      MODEL_PROFILES_PATH: /app/config/model_profiles.json
+      REQUEST_TIMEOUT_SECONDS: "300"
+    volumes:
+      - *config-volume
+    working_dir: /app/config
+    command: ["python", "-m", "app.server"]
+
+  # ─── 核心：用户 ───────────────────────────────────────────
+  user-service:
+    <<: *common
+    build:
+      context: ../../services/user-service
+    image: agent/user-service:compose
+    environment:
+      USER_GRPC_PORT: "5104"
+      USER_HTTP_PORT: "5204"
+      USER_DATA_DIR: /data/users
+    volumes:
+      - ./data/users:/data/users
+
+  # ─── 核心：调度 ───────────────────────────────────────────
+  task-scheduler-service:
+    <<: *common
+    build:
+      context: ../../services/task-scheduler-service
+    image: agent/task-scheduler-service:compose
+    environment:
+      SCHEDULER_PORT: "5100"
+      ORCHESTRATOR_TARGET: agent-orchestrator-service:5300
+      SCHEDULER_MAX_TASK_TIME: "300"
+      GRPC_DEADLINE_SECONDS: "310"
+      SCHEDULER_BATCH_SIZE: "2"
+
+  # ─── 核心：编排 ───────────────────────────────────────────
+  agent-orchestrator-service:
+    <<: *common
+    build:
+      context: ../../services/agent-orchestrator-service
+    image: agent/agent-orchestrator-service:compose
+    environment:
+      ORCHESTRATOR_GRPC_PORT: "5300"
+      OPENVIKING_CONTEXT_TARGET: openviking-context-service:5301
+      MODEL_PROXY_TARGET: model-proxy-service:5302
+      TOOL_RUNTIME_TARGET: tool-runtime-service:5303
+      TIMER_TASK_TARGET: timer-task-service:5103
+      AGENT_CONFIG_PATH: /app/config/agent_list.json
+      SYSTEM_PROMPT_DIR: /app/system_prompt
+      PROCESS_DIR: /app/config/process
+      WORKSPACE_DIR: /app/workspace
+      CAPABILITY_PATH: /app/config/capability.json
+      MAX_AGENT_STEPS: "30"
+    volumes:
+      - ./data/config/orchestrator/config:/app/config
+      - ./data/config/orchestrator/system_prompt:/app/system_prompt
+      - ./data/workspace:/app/workspace
+    depends_on:
+      - model-proxy-service
+      - user-service
+      - task-scheduler-service
+
+  # ─── 核心：Web 网关（SSE）─────────────────────────────────
+  gateway-backend-service:
+    <<: *common
+    build:
+      context: ../../services/gateway-backend-service
+    image: agent/gateway-backend-service:compose
+    environment:
+      SCHEDULER_CLIENT_MODE: grpc
+      SCHEDULER_GRPC_TARGET: task-scheduler-service:5100
+      USER_GRPC_TARGET: user-service:5104
+      USER_SERVICE_URL: http://user-service:5204
+      ORCHESTRATOR_LOG_TARGET: agent-orchestrator-service:5300
+      SUBSCRIBER_ID: web-gateway-1
+      ASSETS_DIR: /app/assets
+      OFFLINE_BUFFER_MAX: "50"
+      OFFLINE_BUFFER_TTL: "0"
+      OFFLINE_FORWARD_TIMEOUT: "8"
+    volumes:
+      - ./data/assets:/app/assets
+    ports:
+      - "${GATEWAY_PORT:-5210}:5210"
+    depends_on:
+      - task-scheduler-service
+      - user-service
+
+  # ─── 核心：前端 ───────────────────────────────────────────
+  frontend-service:
+    <<: *common
+    build:
+      context: ../../services/frontend-service
+    image: agent/frontend-service:compose
+    volumes:
+      - ./data/backgrounds:/usr/share/nginx/html/backgrounds
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - gateway-backend-service
+
+  # ─── 核心：管理面板 ───────────────────────────────────────
+  dashboard-service:
+    <<: *common
+    build:
+      context: ../../services/dashboard-service
+    image: agent/dashboard-service:compose
+    environment:
+      CONFIG_ROOT: /app/config
+      SESSION_ROOT: /app/session-data/workspace/viking/my-agent/user
+      OPENVIKING_SERVER_URL: http://openviking:1933
+      USER_SERVICE_URL: http://user-service:5204
+      OPENVIKING_API_KEY: /app/config/openviking/api_key
+      CAPABILITY_PATH: /app/config/orchestrator/config/capability.json
+    volumes:
+      - ./data/config:/app/config
+      - ./data/session:/app/session-data
+    ports:
+      - "${DASHBOARD_PORT:-5700}:5700"
+    depends_on:
+      - user-service
+
+  # ─── 核心：图床（nginx 静态）──────────────────────────────
+  image-assets-service:
+    <<: *common
+    image: nginx:1.27-alpine
+    volumes:
+      - ./data/images:/usr/share/nginx/html/assets:ro
+    ports:
+      - "${IMAGE_ASSETS_PORT:-5102}:80"
+
+  # ─── 可选：工具运行时（tools.basic）────────────────────────
+  tool-runtime-service:
+    <<: *common
+    profiles: ["tools"]
+    build:
+      context: ../../services/tool-runtime-service
+    image: agent/tool-runtime-service:compose
+    environment:
+      TOOL_RUNTIME_GRPC_PORT: "5304"
+      WORKSPACE_DIR: /app/workspace
+      SKILL_ROOT_DIR: /app/workspace/skills
+      IMAGE_ASSET_DIR: /app/assets/images
+      SYSTEM_PROMPT_DIR: /app/system_prompt
+      MODEL_PROXY_TARGET: model-proxy-service:5302
+      CAPABILITY_PATH: /app/config/capability.json
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      BROWSER_MCP_URL: ${BROWSER_MCP_URL:-}
+      BROWSER_CDP_URL: ${BROWSER_CDP_URL:-}
+      ENABLE_CODEX: ${ENABLE_CODEX:-false}
+      ENABLE_CLAWHUB: ${ENABLE_CLAWHUB:-false}
+      ENABLE_OPENVIKING: ${ENABLE_OPENVIKING:-false}
+      CLAW_DOWNLOAD_MODE: ${CLAW_DOWNLOAD_MODE:-local}
+    volumes:
+      - ./data/workspace:/app/workspace
+      - ./data/images:/app/assets/images
+      - ./data/config/orchestrator/system_prompt:/app/system_prompt:ro
+      - ./data/config/orchestrator/config:/app/config
+
+  # ─── 可选：长期记忆（memory.openviking）────────────────────
+  openviking:
+    <<: *common
+    profiles: ["memory"]
+    image: ghcr.io/volcengine/openviking:v0.4.10
+    environment:
+      OPENVIKING_CONFIG_FILE: /etc/openviking/ov.conf
+    volumes:
+      - ./data/config/openviking/ov.conf:/etc/openviking/ov.conf:ro
+      - ./data/openviking:/data/openviking
+    ports:
+      - "${OPENVIKING_PORT:-1933}:1933"
+
+  embedding-service:
+    <<: *common
+    profiles: ["memory"]
+    build:
+      context: ../../services/embedding-service
+    image: agent/embedding-service:compose
+    environment:
+      EMBEDDING_GRPC_PORT: "5303"
+    volumes:
+      - ./data/models:/models:ro
+
+  openviking-context-service:
+    <<: *common
+    profiles: ["memory"]
+    build:
+      context: ../../services/openviking-context-service
+    image: agent/openviking-context-service:compose
+    environment:
+      OPENVIKING_CONTEXT_GRPC_PORT: "5301"
+      OPENVIKING_BACKEND: server
+      OPENVIKING_SERVER_URL: http://openviking:1933
+      OPENVIKING_API_KEY: /app/config/openviking/api_key
+      OPENVIKING_ROOT_API_KEY: /app/config/openviking/root_api_key
+      OPENVIKING_ACCOUNT: my-agent
+      OPENVIKING_ACCOUNT_MODE: fixed
+      OPENVIKING_FILE_FALLBACK: "false"
+      EMBEDDING_SERVICE_TARGET: embedding-service:5303
+      USER_SERVICE_URL: http://user-service:5204
+    volumes:
+      - ./data/config/openviking:/app/config/openviking:ro
+    depends_on:
+      - openviking
+      - embedding-service
+
+  # ─── 可选：联网搜索（search）──────────────────────────────
+  searxng:
+    <<: *common
+    profiles: ["search"]
+    image: searxng/searxng:latest
+    environment:
+      BASE_URL: http://searxng:8080/
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"
+
+  # ─── 可选：QQ（qq / satori）───────────────────────────────
+  qq-llbot-service:
+    <<: *common
+    profiles: ["qq"]
+    build:
+      context: ../../services/qq-llbot-service
+    image: agent/qq-llbot-service:compose
+    environment:
+      QQ_LLBOT_CONFIG_PATH: /service/config/qq_llbot_config.json
+      SCHEDULER_TARGET: task-scheduler-service:5100
+      SATORI_HOST: ${SATORI_HOST:-host.docker.internal}
+      SATORI_PORT: ${SATORI_PORT:-5600}
+      SATORI_TOKEN: ${SATORI_TOKEN:-}
+      SUBSCRIBER_ID: qq-llbot-1
+      SUBSCRIBER_PRIORITY: "100"
+      OFFLINE_SEND_FAILURES: "3"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/config/qq-llbot:/service/config
+      - ./data/workspace:/app/workspace
+    depends_on:
+      - task-scheduler-service
+
+  # ─── 可选：QQ 官方渠道 ────────────────────────────────────
+  qq-official-service:
+    <<: *common
+    profiles: ["qq-official"]
+    build:
+      context: ../../services/qq-official-service
+    image: agent/qq-official-service:compose
+    environment:
+      QQ_OFFICIAL_CONFIG_PATH: /service/config/qq_official_config.json
+      SCHEDULER_TARGET: task-scheduler-service:5100
+      USER_SERVICE_TARGET: user-service:5104
+      MODEL_PROXY_TARGET: model-proxy-service:5302
+      SUBSCRIBER_ID: qq-official-1
+      QQ_OFFICIAL_CHANNEL: qqofficial
+    volumes:
+      - ./data/config/qq-official:/service/config
+      - ./data/workspace:/app/workspace
+    depends_on:
+      - task-scheduler-service
+
+  # ─── 可选：定时任务 ──────────────────────────────────────
+  timer-task-service:
+    <<: *common
+    profiles: ["timer"]
+    build:
+      context: ../../services/timer-task-service
+    image: agent/timer-task-service:compose
+    environment:
+      TIMER_GRPC_PORT: "5103"
+      SCHEDULER_TARGET: task-scheduler-service:5100
+      TIMER_SCAN_INTERVAL_FAST: "5"
+      TIMER_SCAN_INTERVAL_SLOW: "60"
+      TIMER_TASK_DIR: /data/tasks
+    volumes:
+      - ./data/timer-tasks:/data/tasks
+
+  # ─── 可选：本地模型（model.local / Ollama）──────────────────
+  ollama:
+    <<: *common
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    volumes:
+      - ./data/ollama:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+
+  # ─── 可选：QQ（OneBot 11：NapCat / LLOneBot / go-cqhttp）────
+  qq-onebot-service:
+    <<: *common
+    profiles: ["qq-onebot"]
+    build:
+      context: ../../services/qq-onebot-service
+    image: agent/qq-onebot-service:compose
+    environment:
+      ONEBOT_MODE: ${ONEBOT_MODE:-forward}
+      ONEBOT_WS_URL: ${ONEBOT_WS_URL:-ws://host.docker.internal:3001/}
+      ONEBOT_WS_LISTEN: ${ONEBOT_WS_LISTEN:-0.0.0.0:6700}
+      ONEBOT_TOKEN: ${ONEBOT_TOKEN:-}
+      ONEBOT_SELF_ID: ${ONEBOT_SELF_ID:-}
+      ONEBOT_GROUP_REQUIRE_AT: ${ONEBOT_GROUP_REQUIRE_AT:-true}
+      SCHEDULER_TARGET: task-scheduler-service:5100
+      SUBSCRIBER_ID: qq-onebot-1
+      SUBSCRIBER_PRIORITY: "90"
+      WORKSPACE_DIR: /app/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${ONEBOT_REVERSE_PORT:-6700}:6700"
+    volumes:
+      - ./data/workspace:/app/workspace
+    depends_on:
+      - task-scheduler-service
+
+networks:
+  my-agent:
+    driver: bridge

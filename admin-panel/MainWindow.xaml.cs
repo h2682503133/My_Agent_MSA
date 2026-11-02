@@ -12,6 +12,7 @@ public partial class MainWindow : Window
     private readonly DockerService _docker = new();
     private readonly LlBotService _llbot = new();
     private readonly BrowserService _browser = new();
+    private readonly StandaloneService _standalone = new();
     private Button? _activeNav;
 
     // 页面缓存，复用实例
@@ -20,6 +21,7 @@ public partial class MainWindow : Window
     private LLBotPage? _llbotPage;
     private DashboardPage? _dashboardPage;
     private BrowserPage? _browserPage;
+    private StandalonePage? _standalonePage;
 
     public MainWindow()
     {
@@ -45,6 +47,7 @@ public partial class MainWindow : Window
         else if (btn == BtnLLBot) NavigateToLLBot();
         else if (btn == BtnDashboard) NavigateToDashboard();
         else if (btn == BtnBrowser) NavigateToBrowser();
+        else if (btn == BtnStandalone) NavigateToStandalone();
     }
 
     private void NavigateToPortForward()
@@ -69,6 +72,12 @@ public partial class MainWindow : Window
     {
         _browserPage ??= new BrowserPage(_browser);
         ContentFrame.Navigate(_browserPage);
+    }
+
+    private void NavigateToStandalone()
+    {
+        _standalonePage ??= new StandalonePage(_standalone);
+        ContentFrame.Navigate(_standalonePage);
     }
 
     private void NavigateToDashboard()

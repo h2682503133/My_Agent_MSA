@@ -15,6 +15,7 @@ from app.logger import timer_log
 from app.scheduler_client import SchedulerClient
 from app.time_parser import (
     catch_up_in_window,
+    interval_range_of,
     next_window_start,
     in_task_window,
     in_window,
@@ -347,7 +348,7 @@ def timer_scan_loop():
                                 and not in_task_window(task, nxt)
                             ):
                                 nxt = catch_up_in_window(
-                                    now, window, _interval_range_of(schedule)
+                                    now, window, interval_range_of(schedule)
                                 )
                                 timer_log(
                                     f"定时任务[{task.get('task_id')}]下一次触发不在执行时段内，"

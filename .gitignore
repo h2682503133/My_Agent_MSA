@@ -19,6 +19,20 @@ __pycache__/
 Thumbs.db
 
 # Logs
-process.md
 # Playwright MCP 的输出目录（页面快照/截图）
 .playwright-mcp/
+
+# 环境/机器相关的排查记录，随机器相关，不入库
+docs/bug-Windows沙箱ACL破坏桌面快捷方式图标.md
+
+# 生成的 gRPC stubs（由 deploy/gen_protos.py / launcher deps 生成，不入库）
+*_pb2.py
+*_pb2_grpc.py
+
+# 单体本地运行数据
+logs/
+services/*/config/local_context/
+
+# 虚拟机自测脚手架的大文件与产物（只提交脚本）
+deploy/vm/stage/
+deploy/vm/reports/
