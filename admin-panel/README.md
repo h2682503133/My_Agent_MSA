@@ -7,8 +7,10 @@ Windows 桌面管理控制面板，用于 My_Agent_MSA 微服务集群的日常�
 | 页面 | 功能 |
 |------|------|
 | 🔌 端口转发 | 一键启停 `dashboard`、`gateway`、`istio` 三个端口转发 |
-| 🚀 一键部署 | 从 `deploy-all.ps1` 自动解析服务列表，多选后构建镜像并部署到 K8s |
+| 🚀 一键部署 | 读 `deploy/features.json` 按**功能**勾选 → 预览计划 → 构建镜像并部署到 k8s |
+| 🧩 单体模式 | 无 Docker 路线：图形界面调 `deploy/launcher/`（初始化 / 装依赖 / 探测 / 启停），与命令行等价 |
 | 🤖 LLBot | 选择并启动本地 LLBot 启动器 exe，实时日志查看，二维码同步推送至 Dashboard（WebUI API 优先，文件兜底） |
+| 🌐 浏览器环境 | 托管/连接浏览器（MCP、CDP 中继），给工具链的浏览器能力用 |
 | 📊 Dashboard | WebView2 内嵌 `http://localhost:5700`，直接访问管理后台 |
 
 ## 环境要求
@@ -16,8 +18,8 @@ Windows 桌面管理控制面板，用于 My_Agent_MSA 微服务集群的日常�
 - Windows 10 / 11
 - [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)（仅运行）
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)（如需编译）
-- Docker Desktop（已启用 Kubernetes）
-- kubectl（通常随 Docker Desktop 安装）
+- **用「一键部署」（k8s 路线）时**：Docker Desktop（已启用 Kubernetes）+ `kubectl` 在 `PATH` 里
+- **用「单体模式」时**：只要 Python 3.11（不装 Docker 也行）
 
 ## 快速开始
 
@@ -37,10 +39,50 @@ build.bat
 
 ## 使用说明
 
+### 🚀 一键部署（k8s 路线）
+
+页面三块：左边功能清单、右边必填项 + 计划预览、底部部署日志。
+
+1. 「↻ 读取功能清单」：读仓库 `deploy/features.json`，按环境档位把不可用的实现方式标成"（本环境不支持）"；
+2. 左栏勾**功能**（`core` 必选）+ 选实现方式；右栏只出现**部署期必须定**的参数
+   （端口、数据目录、SearXNG/MCP 地址、SSH、宿主根目录…），能在 dashboard 改的不在这里问；
+3. 「🧾 预览计划」看会起哪些服务、要下载什么、缺哪些必填；
+4. 「🚀 构建并部署」：建 namespace/RBAC → 同步配置到 PVC + 写 `capability.json` → `docker build`
+   （tag 用当前时间 `MMddHHmm`，随后 `kubectl set image` 指过去）→ `kubectl apply`
+   → `tool-runtime-service` 走 WSL 脚本 `deploy/tool-runtime-apply.sh` → 勾了 openviking 则初始化账号。
+
+必填项留空会被拦下（日志区提示"不想填就取消勾选该功能"）；部署完要去 dashboard 填模型才算能聊天。
+细节见 [../部署指南.md](../部署指南.md) 的 §2.2。
+
+### 🧩 单体模式（无 Docker）
+
+本页是 `deploy/launcher/` 的图形前端，**不是第二套实现**：
+
+| 界面 | 背后命令 |
+|---|---|
+| 仓库根目录、数据目录 | `--data-dir`（仓库根用来找 `features.json` 和 `run.py`） |
+| 功能勾选、记忆模式、QQ 协议 | `--features`、`--modes` |
+| 初始化数据目录 | `deps.py --init` |
+| 安装依赖（共享 venv） | `deps.py --install` |
+| 探测环境 | `probe_env.py` → `capability.json` |
+| 启动 / 停止 | `run.py` / `run.py --stop` |
+
+顺序：初始化 → 装依赖 → 探测 → 启动。细节：
+
+- 面板不在仓库里也能用（默认从 exe 往上找仓库根，找不到就手填）；
+- 长操作在后台线程跑，界面不卡死，按钮期间变灰，完成后日志补 `✔ …完成（耗时）`；
+- 「启动」后 launcher 要十几秒才起完，面板自动盯 `pids.json` 刷新状态区（服务后带 ✔ = 端口已通）；
+- 「日志」区下拉选服务名（服务在跑也能读），`launcher` 是启动器日志；
+- openviking：地址留空=本地文件记忆；填 `http://ip:1933` 保存=用外部；勾「本机自建」则用独立 venv 起服务
+  （安装 → 启动 → 初始化建账号 + key）。
+
+细节见 [../部署指南.md](../部署指南.md) 的 §4.1.2。
+
+### 其它页面
+
 1. **端口转发**：先启动需要的端口转发，Dashboard 页面依赖此功能
 2. **LLBot**：点「浏览…」**直接选中 LLBot 启动器 exe**（不是文件夹），再点启动；二维码出现后可点"推送到 Dashboard"
-3. **部署**：服务列表自动从项目根 `deploy-all.ps1` 读取，镜像版本号在 `deploy/services/*.yaml` 的 `image` 字段
-4. **Dashboard**：WebView2 内嵌，右上角可刷新或用外部浏览器打开
+3. **Dashboard**：WebView2 内嵌，右上角可刷新或用外部浏览器打开
 
 ## LLBot 版本兼容（新旧版都支持）
 
