@@ -11,7 +11,7 @@ Windows 桌面管理控制面板，用于 My_Agent_MSA 微服务集群的日常�
 | 🧩 单体模式 | 无 Docker 路线：图形界面调 `deploy/launcher/`（初始化 / 装依赖 / 探测 / 启停），与命令行等价 |
 | 🤖 LLBot | 选择并启动本地 LLBot 启动器 exe，实时日志查看，二维码同步推送至 Dashboard（WebUI API 优先，文件兜底） |
 | 🌐 浏览器环境 | 托管/连接浏览器（MCP、CDP 中继），给工具链的浏览器能力用 |
-| 📊 Dashboard | WebView2 内嵌 `http://localhost:5700`，直接访问管理后台 |
+| 📊 Dashboard | WebView2 内嵌 `http://localhost:5700`，直接访问管理后台（首次登录密码 `123456`，登录后可改） |
 
 ## 环境要求
 

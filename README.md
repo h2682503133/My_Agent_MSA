@@ -55,7 +55,7 @@ QQ(Satori/OneBot) ─────┤
 ```powershell
 python -X utf8 deploy/launcher/deps.py --data-dir "$env:LOCALAPPDATA\MyAgent\data" --features core,memory --install
 python -X utf8 deploy/launcher/run.py   --data-dir "$env:LOCALAPPDATA\MyAgent\data" --features core,memory
-# 网页 http://127.0.0.1:8080/login.html   管理面 http://127.0.0.1:5700
+# 网页 http://127.0.0.1:8080/login.html   管理面 http://127.0.0.1:5700（首次密码 123456）
 ```
 
 启动后**一定要做**：dashboard →「配置管理」→ `model-proxy/config/model_list.json` 换成真实 `api_url/api_key/model`（改完不用重启）。
@@ -92,7 +92,7 @@ python -X utf8 deploy/launcher/run.py   --data-dir "$env:LOCALAPPDATA\MyAgent\da
 
 1. 装 Docker Desktop（启用 Kubernetes）+ kubectl；跨进程共享配置需 RWX 存储（NFS / NAS / 单节点 hostPath）
 2. 打开 `admin-panel/publish/MyAgentAdminPanel.exe` →「🚀 一键部署」→ 勾功能 → 预览计划 → 构建并部署
-3. dashboard（`http://<宿主IP>:5700`）登录 →「配置管理」填 `model_list.json` → 发消息验证
+3. dashboard（`http://<宿主IP>:5700`，首次登录密码 `123456`）登录 →「配置管理」填 `model_list.json` → 发消息验证
 
 局域网访问：`bash deploy/lan-expose.sh`（NodePort + socat，`--down` 拆除）。
 
