@@ -7,7 +7,7 @@
     "frontend-service": "v1.1",
     "gateway-backend-service": "v1.1",
     "model-proxy-service": "v1.1",
-    "openviking-context-service": "v1.3",
+    "openviking-context-service": "v1.4",
     "qq-llbot-service": "v1.1",
     "qq-official-service": "v1.1",
     "qq-onebot-service": "v1.1",

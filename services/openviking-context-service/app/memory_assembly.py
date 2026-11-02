@@ -258,6 +258,24 @@ def from_hits(hits: Iterable[Any], *, source: str = "") -> list[MemoryItem]:
 # ── 组装策略 ────────────────────────────────────────────────
 
 
+_MEMORY_FIELDS_RE = re.compile(r"<!--\s*MEMORY_FIELDS.*?-->\s*", re.DOTALL)
+
+
+def strip_memory_fields(text: str) -> str:
+    """剥掉 OpenViking 写在记忆文件末尾的 `<!-- MEMORY_FIELDS {...} -->` 元数据块。
+
+    为什么必须剥：这段是内部元数据（`version`、`source_extraction_id`、`memory_type`），
+    对模型没用、还占字数。长文件截头部时自然被截掉，但**短文件（如 245 字的 profile）
+    会把它整块注进 prompt**。注意它总在**文件末尾**，所以"截头部 + 剥元数据"是最优组合。
+    """
+    raw = str(text or "")
+    if "MEMORY_FIELDS" not in raw:
+        return raw.strip()
+    cleaned = _MEMORY_FIELDS_RE.sub("", raw)
+    # 去掉因剥离产生的多余空行
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
 def truncate_for_injection(text: str, limit: int) -> str:
     """按字符上限截断一条记忆（limit<=0 = 不截断）。
 
@@ -346,7 +364,7 @@ def assemble(
         if keep is not None and status not in keep:
             dropped.append((item, "status_filter"))
             continue
-        item.content = truncate_for_injection(item.content, max_item_chars)
+        item.content = truncate_for_injection(strip_memory_fields(item.content), max_item_chars)
         candidates.append(item)
 
     if dedupe:

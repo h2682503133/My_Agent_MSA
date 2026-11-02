@@ -126,6 +126,18 @@ check("截断后才计入字符预算", len(ma.assemble(
 check("兜底那条不受单条上限影响", ma.assemble(
     [], max_item_chars=50, fallback=ma.MemoryItem(content="x" * 200, score=-1.0)).selected[0].content == "x" * 200)
 
+print("MEMORY_FIELDS 元数据块（注入前必须剥掉）")
+with_meta = "# 用户\n- 身份：学生\n\n<!-- MEMORY_FIELDS\n{\"version\": 6, \"source_extraction_id\": \"abc\"}\n-->\n"
+check("剥掉元数据块", ma.strip_memory_fields(with_meta) == "# 用户\n- 身份：学生", repr(ma.strip_memory_fields(with_meta)))
+check("无块时原样", ma.strip_memory_fields("# x\n- y") == "# x\n- y")
+check("空串安全", ma.strip_memory_fields("") == "")
+check("元数据不进 payload", "MEMORY_FIELDS" not in (ma.assemble(
+    [ma.MemoryItem(content=with_meta, score=0.5, memory_type=ma.TYPE_PROFILE)], max_item_chars=1200
+).selected[0].content))
+check("剥完再截断（短文件不会被 JSON 占满）", ma.assemble(
+    [ma.MemoryItem(content=with_meta, score=0.5)], max_item_chars=50
+).selected[0].content.startswith("# 用户"))
+
 print("兜底与渲染")
 empty = ma.assemble([], fallback=ma.MemoryItem(content="最近一条用户消息", score=-1.0))
 check("全空时兜底注入", empty.selected and empty.selected[0].content == "最近一条用户消息")
