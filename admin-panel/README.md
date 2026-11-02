@@ -64,6 +64,8 @@ build.bat
 | 功能勾选、记忆模式、QQ 协议 | `--features`、`--modes` |
 | 初始化数据目录 | `deps.py --init` |
 | 安装依赖（共享 venv） | `deps.py --install` |
+| 只导出依赖清单 | `deps.py --export`（不安装，只写 `<数据目录>/deps/requirements.txt`，自己 pip/conda 装） |
+| 启动时不动依赖（勾选框） | 给 `run.py` 加 `--no-deps`（自己装了依赖就别让它在启动时体检/补装） |
 | 探测环境 | `probe_env.py` → `capability.json` |
 | 启动 / 停止 | `run.py` / `run.py --stop` |
 

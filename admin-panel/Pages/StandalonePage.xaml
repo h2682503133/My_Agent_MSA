@@ -119,11 +119,15 @@
                 <WrapPanel>
                     <Button x:Name="BtnInit" Content="初始化数据目录" Width="130" Height="32" Margin="0,0,8,0" Click="BtnInit_Click"/>
                     <Button x:Name="BtnInstallDeps" Content="安装依赖（共享 venv）" Width="170" Height="32" Margin="0,0,8,0" Click="BtnInstallDeps_Click"/>
+                    <Button x:Name="BtnExportDeps" Content="只导出依赖清单" Width="140" Height="32" Margin="0,0,8,0" Click="BtnExportDeps_Click"
+                            ToolTip="不自动安装：按勾选的功能算出合并后的 requirements，写到 &lt;数据目录&gt;\deps\requirements.txt，自己用 pip/conda 装"/>
                     <Button x:Name="BtnProbe" Content="探测环境" Width="100" Height="32" Margin="0,0,8,0" Click="BtnProbe_Click"/>
                     <Button x:Name="BtnStart" Content="启动" Width="90" Height="32" Margin="0,0,8,0" Click="BtnStart_Click"/>
                     <Button x:Name="BtnStop" Content="停止" Width="90" Height="32" Margin="0,0,8,0" Click="BtnStop_Click"/>
                     <Button x:Name="BtnRefresh" Content="刷新状态" Width="100" Height="32" Margin="0,0,8,0" Click="BtnRefresh_Click"/>
                     <Button x:Name="BtnOpenDashboard" Content="打开 Dashboard" Width="120" Height="32" Click="BtnOpenDashboard_Click"/>
+                    <CheckBox x:Name="ChkNoDeps" Content="启动时不动依赖（自己装时勾）" VerticalAlignment="Center" Margin="10,0,0,0"
+                              ToolTip="勾上后「启动」会给 run.py 传 --no-deps：不体检、不自动安装依赖，直接用你环境里现有的包"/>
                 </WrapPanel>
             </Border>
 

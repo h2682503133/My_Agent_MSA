@@ -250,6 +250,27 @@ public class StandaloneService
         }
     }
 
+    /// <summary>
+    /// 只导出依赖清单：按所选功能算出合并/覆盖后的 requirements，不建 venv、不装任何包。
+    /// 给"自己用 conda/pip 装"的人用（面板上就是「只导出依赖清单」按钮）。
+    /// </summary>
+    public (bool ok, string message) ExportDeps(IEnumerable<string> features)
+    {
+        var python = string.IsNullOrWhiteSpace(PythonPath) ? FindPython() : PythonPath;
+        if (string.IsNullOrWhiteSpace(python)) return (false, "找不到 python.exe");
+        if (!File.Exists(DepsScript)) return (false, $"找不到 {DepsScript}");
+        var outPath = Path.Combine(DataDir, "deps", "requirements.txt");
+        Say($"导出依赖清单（deps.py --export，不安装）：{outPath}");
+        var (ok, output) = RunStreaming(
+            python,
+            $"-X utf8 \"{DepsScript}\" --data-dir \"{DataDir}\" --features \"{string.Join(",", features)}\" --export \"{outPath}\"",
+            180,
+            RepoRoot);
+        if (!ok) return (false, $"导出依赖清单失败：{Tail(output)}");
+        var count = File.Exists(outPath) ? File.ReadAllLines(outPath).Count(ln => ln.Trim().Length > 0 && !ln.StartsWith("#")) : 0;
+        return (true, $"依赖清单已导出：{outPath}（{count} 个包，没有安装任何东西）");
+    }
+
     // ── 能力档案（探测）─────────────────────────────────────
 
     public (bool ok, string message) Probe()
@@ -297,7 +318,8 @@ public class StandaloneService
 
     // ── 启停 ────────────────────────────────────────────────
 
-    public (bool ok, string message) Start(IEnumerable<string> features, string modes, string openvikingUrl = "")
+    public (bool ok, string message) Start(IEnumerable<string> features, string modes, string openvikingUrl = "",
+                                           bool noDeps = false)
     {
         var (ready, reason) = CheckReady();
         if (!ready) return (false, reason);
@@ -307,6 +329,8 @@ public class StandaloneService
         var python = string.IsNullOrWhiteSpace(PythonPath) ? FindPython() : PythonPath;
         var args = $"-X utf8 \"{LauncherScript}\" --repo-root \"{RepoRoot}\" --data-dir \"{DataDir}\" " +
                    $"--features \"{string.Join(",", features)}\"";
+        // --no-deps：用户自己装了依赖就别在启动时又去对齐/安装
+        if (noDeps) args += " --no-deps";
         if (!string.IsNullOrWhiteSpace(modes))
             args += $" --modes \"{modes}\"";
         if (!string.IsNullOrWhiteSpace(openvikingUrl))

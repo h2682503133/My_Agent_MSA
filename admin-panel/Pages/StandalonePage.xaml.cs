@@ -278,7 +278,7 @@ public partial class StandalonePage : Page
 
     private void SetActionButtonsEnabled(bool enabled)
     {
-        foreach (var button in new[] { BtnInit, BtnInstallDeps, BtnProbe, BtnStart, BtnStop, BtnRefresh, BtnOvInstall, BtnOvInit })
+        foreach (var button in new[] { BtnInit, BtnInstallDeps, BtnExportDeps, BtnProbe, BtnStart, BtnStop, BtnRefresh, BtnOvInstall, BtnOvInit })
             button.IsEnabled = enabled;
     }
 
@@ -364,6 +364,25 @@ public partial class StandalonePage : Page
         });
     }
 
+    /// <summary>
+    /// 「只导出依赖清单」：选出功能但不自动装——生成合并后的 requirements.txt，
+    /// 让用户自己用 pip / conda 装（装完还要跑 deploy/gen_protos.py 生成 stubs）。
+    /// </summary>
+    private void BtnExportDeps_Click(object sender, RoutedEventArgs e)
+    {
+        ApplyPaths();
+        var features = SelectedFeatures();
+        if (features.Count == 0) { AppendLog("至少勾选一个功能"); return; }
+        RunBusy("导出依赖清单", () =>
+        {
+            var (ok, message) = _standalone.ExportDeps(features);
+            if (ok)
+                SayFromWorker("自己装：pip install -r \"<数据目录>\\deps\\requirements.txt\"；"
+                              + "装完再跑 python -X utf8 deploy/gen_protos.py 生成 gRPC stubs，否则服务起不来");
+            return (ok, message);
+        });
+    }
+
     private void BtnStart_Click(object sender, RoutedEventArgs e)
     {
         ApplyPaths();
@@ -379,7 +398,9 @@ public partial class StandalonePage : Page
         if (OvLocalSelected)
             AppendLog("提示：已勾选「本机自建 openviking」→ 由单体自己起服务，服务器地址不再使用。");
         var modes = BuildModes();
-        RunBusy("启动", () => _standalone.Start(features, modes, ovUrl), WatchStartup);
+        var noDeps = ChkNoDeps.IsChecked == true;
+        if (noDeps) AppendLog("已勾选「启动时不动依赖」→ 不体检、不自动安装（用你自己环境里的包）。");
+        RunBusy("启动", () => _standalone.Start(features, modes, ovUrl, noDeps), WatchStartup);
     }
 
     /// <summary>
