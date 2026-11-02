@@ -19,8 +19,8 @@ spec:
     spec:
       containers:
         - name: qq-onebot-service
-          image: agent/qq-onebot-service:v1.0
-          imagePullPolicy: Always
+          image: agent/qq-onebot-service:v1.1
+          imagePullPolicy: IfNotPresent
           env:
             - name: ONEBOT_MODE
               value: "forward"

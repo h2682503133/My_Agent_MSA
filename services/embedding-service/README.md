@@ -44,6 +44,6 @@ python tools/provider_test.py     # 分批 / 截断 / 空输入 / 错误传播
 ## 部署
 
 ```bash
-docker build -t agent/embedding-service:v1.0 services/embedding-service
+docker build -t agent/embedding-service:v1.1 services/embedding-service
 kubectl apply -f deploy/services/embedding-service.yaml
 ```

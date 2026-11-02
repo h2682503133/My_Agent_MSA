@@ -68,6 +68,15 @@
       </div>
     </div>
 <div style="margin-bottom:8px;">
+      <div style="margin-bottom:4px;">这段「权限说明」注入给哪些智能体</div>
+      <input id="tp-prompt-agents" type="text" style="width:100%;font-family:Consolas;"
+             placeholder="main,tool"/>
+      <div style="color:var(--dim);font-size:0.75rem;margin-top:2px;">
+        一行输入智能体 id，逗号分隔；<code>*</code> = 全部智能体（默认，老行为）；<b>留空 = 都不注入</b>。
+        只影响这段说明，不影响工具清单与调用拦截。
+      </div>
+    </div>
+    <div style="margin-bottom:8px;">
       <div style="margin-bottom:4px;">通用注入（所有用户都会收到，不分档位）</div>
       <textarea id="tp-note-all" rows="3" style="width:100%;font-family:Consolas;"
                 placeholder="例如：涉及删除、付款、发送消息给第三方前，先向用户确认。"></textarea>

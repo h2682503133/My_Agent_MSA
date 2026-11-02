@@ -6,7 +6,7 @@
 
 ```text
 namespace: agent
-image: agent/gateway-backend-service:v1.0
+image: agent/gateway-backend-service:v1.1
 service: gateway-backend-service
 port: 5210
 scheduler target: task-scheduler-service.agent.svc.cluster.local:5100
@@ -22,7 +22,7 @@ scheduler target: task-scheduler-service.agent.svc.cluster.local:5100
 ## 构建镜像
 
 ```bash
-docker build -t agent/gateway-backend-service:v1.0 .
+docker build -t agent/gateway-backend-service:v1.1 .
 ```
 
 ## 部署

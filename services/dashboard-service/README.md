@@ -6,7 +6,7 @@ My_Agent MSA 的管理控制面板：FastAPI 后端 + 静态 Web UI，负责配�
 
 ```text
 namespace: agent
-image: agent/dashboard-service:v1.0      （版本号以 deploy/services/dashboard-service.yaml 的 image 字段为准）
+image: agent/dashboard-service:v1.1      （版本号以 deploy/services/dashboard-service.yaml 的 image 字段为准）
 service: dashboard-service
 port: 5700 (HTTP)
 访问: kubectl -n agent port-forward svc/dashboard-service 5700:5700 → http://localhost:5700
@@ -83,7 +83,7 @@ static/
 版本号只维护在 `deploy/services/dashboard-service.yaml` 的 `image` 字段（`deploy-all.ps1` 会从那里解析 tag），改完记得同步这里：
 
 ```bash
-docker build -t agent/dashboard-service:v1.0 services/dashboard-service
+docker build -t agent/dashboard-service:v1.1 services/dashboard-service
 ```
 
 ## 部署

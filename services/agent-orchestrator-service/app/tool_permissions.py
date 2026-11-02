@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app import config
@@ -291,6 +292,32 @@ def available_levels(user_id: str) -> list[int]:
         if WILDCARD in allowed or (user_id and str(user_id).strip() in allowed):
             levels.append(level)
     return levels
+
+
+def prompt_agents() -> set[str] | None:
+    """哪些智能体要注入「权限说明」段（dashboard「工具权限」页那一行输入）。
+
+    取值：`*`（或没配这个键）= 全部智能体都注入（老行为）；
+    空字符串 = 都不注入；否则按逗号/顿号/空白拆成智能体 id 集合（大小写不敏感）。
+    """
+    raw = _settings().get("prompt_agents")
+    if raw is None:
+        return None  # 未配置 → 保持老行为（全部智能体）
+    text = str(raw).strip()
+    if text == WILDCARD:
+        return None
+    if not text:
+        return set()
+    parts = re.split(r"[,，、\s]+", text.lower())
+    return {item for item in parts if item}
+
+
+def wants_prompt_note(agent_id: str) -> bool:
+    """这个智能体要不要注入权限说明段。"""
+    allowed = prompt_agents()
+    if allowed is None:
+        return True
+    return str(agent_id or "").strip().lower() in allowed
 
 
 def describe_for_prompt(user_id: str) -> str:

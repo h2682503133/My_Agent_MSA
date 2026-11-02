@@ -965,12 +965,16 @@ class ContextBuilder:
                 parts.global_index = _add_segment(parts, content, when)
 
             # 紧跟全局设定：当前用户可用的工具清单（只讲能用的，不暴露分级标准）
+            # 注入给哪些智能体由 dashboard「工具权限」页那行 prompt_agents 决定（默认全部）。
             try:
                 from app import tool_permissions
 
-                permission_note = tool_permissions.describe_for_prompt(agent.user_id)
-                if permission_note:
-                    _add_segment(parts, permission_note, when)
+                if tool_permissions.wants_prompt_note(agent.id):
+                    permission_note = tool_permissions.describe_for_prompt(agent.user_id)
+                    if permission_note:
+                        _add_segment(parts, permission_note, when)
+                else:
+                    debug_log(f"[{agent.id}] 不在权限说明注入名单，跳过该段")
             except Exception as exc:  # noqa: BLE001
                 debug_log(f"[{agent.user_id}] 权限说明注入失败（已跳过）: {exc}")
 

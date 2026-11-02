@@ -34,7 +34,7 @@ spec:
             value: "3"
       containers:
         - name: qq-llbot-service
-          image: agent/qq-llbot-service:v1.0
+          image: agent/qq-llbot-service:v1.1
           imagePullPolicy: Always
           env:
             - name: QQ_LLBOT_CONFIG_PATH

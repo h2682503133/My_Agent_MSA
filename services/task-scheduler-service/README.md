@@ -96,10 +96,10 @@ python -m app.main
 ## Docker 构建
 
 ```bash
-docker build -t agent/task-scheduler-service:v1.0 .
+docker build -t agent/task-scheduler-service:v1.1 .
 docker run --rm -p 5100:5100 \
   -e ORCHESTRATOR_TARGET=agent-orchestrator-service:5300 \
-  agent/task-scheduler-service:v1.0
+  agent/task-scheduler-service:v1.1
 ```
 
 ## 关键数据流

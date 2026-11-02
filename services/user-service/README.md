@@ -6,7 +6,7 @@ My_Agent MSA 的用户信息服务：以 JSON 文件存储用户信息、多渠�
 
 ```text
 namespace: agent
-image: agent/user-service:v1.0
+image: agent/user-service:v1.1
 service: user-service
 gRPC: 5104
 HTTP: 5204
@@ -58,7 +58,7 @@ python -m app.main
 
 ```bash
 cd user-service
-docker build -t agent/user-service:v1.0 .
+docker build -t agent/user-service:v1.1 .
 ```
 
 ## 部署

@@ -133,6 +133,20 @@ def main():
     check("L3 通配放行任意用户", tp.check("anyone", "run-shell")[0] is True)
     check("L4 未通配仍拒绝", tp.check("anyone", "browser")[0] is False)
 
+    print("权限说明注入给哪些智能体（prompt_agents）")
+    write_settings({})
+    check("没配这项 → 老行为，全部注入", tp.wants_prompt_note("main") and tp.wants_prompt_note("talker"))
+    write_settings({"prompt_agents": "*"})
+    check("* → 全部注入", tp.wants_prompt_note("main") and tp.wants_prompt_note("anything"))
+    write_settings({"prompt_agents": ""})
+    check("空串 → 都不注入", not tp.wants_prompt_note("main") and not tp.wants_prompt_note("tool"))
+    write_settings({"prompt_agents": "main,tool"})
+    check("只注入名单里的", tp.wants_prompt_note("main") and tp.wants_prompt_note("tool"))
+    check("名单外不注入", not tp.wants_prompt_note("talker"))
+    write_settings({"prompt_agents": "Main，TOOL、reader"})
+    check("中文逗号/顿号 + 大小写都能解析",
+          tp.wants_prompt_note("main") and tp.wants_prompt_note("tool") and tp.wants_prompt_note("reader"))
+
     print("从杂项迁移（shell → L3、宿主机 → L4）")
     SETTINGS.write_text(json.dumps({
         "shell_restriction_enabled": False,

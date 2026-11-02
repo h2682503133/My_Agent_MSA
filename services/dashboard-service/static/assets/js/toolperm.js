@@ -97,6 +97,10 @@ async function tpRefresh() {
       const el = document.getElementById(`tp-note-${level.toLowerCase()}`);
       if (el) el.value = notes[level] || '';
     });
+    // 注入名单：* = 全部（默认），空 = 都不注入
+    const agents = document.getElementById('tp-prompt-agents');
+    if (agents) agents.value = data.prompt_agents === undefined || data.prompt_agents === null
+      ? '*' : data.prompt_agents;
   } catch (err) { errors.push(`说明 ${err}`); }
 
   // ⑤ 黑名单提示词
@@ -147,17 +151,26 @@ async function tpSaveNotes() {
     const text = (el ? el.value : '').trim();
     if (text) level_notes[level] = text;
   });
+  const agentsEl = document.getElementById('tp-prompt-agents');
+  const payload = { level_notes };
+  // 只有输入框存在时才带上这一项（避免旧页面把它清空）
+  if (agentsEl) payload.prompt_agents = (agentsEl.value || '').trim();
   try {
     const resp = await fetch('/api/tool_permissions', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ level_notes }),
+      body: JSON.stringify(payload),
     });
     const data = await resp.json();
     if (data.ok) {
       toast('权限说明已保存（下一轮对话生效）');
       const status = document.getElementById('tp-notes-status');
-      if (status) status.textContent = `已保存 ${Object.keys(level_notes).length} 段说明（含通用）`;
+      if (status) {
+        const who = data.prompt_agents === '*' || data.prompt_agents === ''
+          ? (data.prompt_agents === '*' ? '全部智能体' : '都不注入')
+          : data.prompt_agents;
+        status.textContent = `已保存 ${Object.keys(level_notes).length} 段说明（含通用）；注入给：${who}`;
+      }
     } else {
       toast(data.detail || '保存失败', false);
     }

@@ -1812,6 +1812,8 @@ class ToolPermissionUpdate(BaseModel):
     # 黑名单提示词（留空 = 用内置默认文案）
     blacklist_hint: str | None = None
     blacklist_blocked_hint: str | None = None
+    # 「权限说明」注入给哪些智能体：一行 id（逗号分隔）；* = 全部；空 = 都不注入
+    prompt_agents: str | None = None
 
 
 @app.get("/api/tool_permissions")
@@ -1832,6 +1834,8 @@ async def get_tool_permissions():
         if isinstance(section.get("level_notes"), dict) else {},
         "blacklist_hint": str(section.get("blacklist_hint") or ""),
         "blacklist_blocked_hint": str(section.get("blacklist_blocked_hint") or ""),
+        # 未配置（老数据目录）= "*"，与 orchestrator 的缺省行为一致
+        "prompt_agents": str(section.get("prompt_agents") if section.get("prompt_agents") is not None else "*"),
         "blacklist_hint_default": (
             "如需缩小自己的操作范围，可调用 `工具调用:tool-blacklist|用户id|` "
             "把该用户加入黑名单（只能加入，解除需要管理员操作）。"
@@ -1853,7 +1857,7 @@ async def update_tool_permissions(body: ToolPermissionUpdate):
         section = {}
     payload = body.model_dump(exclude_none=True)
     for key, values in payload.items():
-        if key in {"blacklist_hint", "blacklist_blocked_hint"}:
+        if key in {"blacklist_hint", "blacklist_blocked_hint", "prompt_agents"}:
             section[key] = str(values or "").strip()
             continue
         if key == "level_notes":

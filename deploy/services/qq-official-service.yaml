@@ -34,8 +34,8 @@ spec:
             value: "3"
       containers:
         - name: qq-official-service
-          image: agent/qq-official-service:v1.0
-          imagePullPolicy: Always
+          image: agent/qq-official-service:v1.1
+          imagePullPolicy: IfNotPresent
           env:
             - name: QQ_OFFICIAL_CONFIG_PATH
               value: "/service/config/qq_official_config.json"

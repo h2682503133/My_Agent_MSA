@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: model-proxy-service
@@ -34,8 +34,8 @@ spec:
             value: "3"
       containers:
         - name: model-proxy-service
-          image: agent/model-proxy-service:v1.0
-          imagePullPolicy: Always
+          image: agent/model-proxy-service:v1.1
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5302
               protocol: TCP
