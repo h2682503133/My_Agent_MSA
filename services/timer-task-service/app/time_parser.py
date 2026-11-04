@@ -514,6 +514,34 @@ def next_window_start(after_ts: float, window) -> float:
     return after_ts
 
 
+def next_occurrence(schedule: dict, window, now: float, *, realign: bool = True, min_step: int = 60) -> float:
+    """重复任务的**下一次**触发时刻，保证严格大于 now。
+
+    这是"循环任务会凭空消失"那类 bug 的收口点：调用方以前直接用
+    `catch_up_in_window(now, ...)`，而 when-now-在窗口内时该函数会原样返回 now，
+    于是 `nxt > now` 不成立 → 任务被当成一次性任务删掉。
+
+    规则：
+    - 正常：now + 区间随机（`next_trigger`）
+    - 候选落在时段外：挪到下一个时段起点（起点 + 一次区间偏移，若仍在时段内）
+    - 兜底：now + max(区间下限, min_step)，永远严格递增
+    """
+    lo, hi = _interval_range(schedule)
+    step = max(int(lo), int(min_step or 0), 1)
+    nxt = next_trigger(schedule, now)
+    if nxt is None:
+        return now + step
+    if window and realign and not in_window(window, nxt):
+        moved = catch_up_in_window(nxt, window, (lo, hi))
+        if moved and moved > now:
+            nxt = moved
+        else:
+            anchor = next_window_start(now, window)
+            nxt = anchor if anchor > now else now + step
+    if nxt <= now:
+        nxt = now + step
+    return nxt
+
 def catch_up_in_window(after_ts: float, window, interval_range) -> float:
     """把下一次触发挪进窗口：锚在窗口起点 + 一次重复偏移。
 

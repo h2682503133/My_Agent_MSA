@@ -36,3 +36,11 @@ services/*/config/local_context/
 # 虚拟机自测脚手架的大文件与产物（只提交脚本）
 deploy/vm/stage/
 deploy/vm/reports/
+# 本地密钥（不要提交）
+config/openviking/api_key
+config/openviking/root_api_key.local
+.env
+*.secret
+
+# 本会话临时脚本/产物（不要提交）
+Temp/

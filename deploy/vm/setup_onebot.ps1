@@ -2,11 +2,17 @@
 # 由宿主 serve.py 提供下载（/setup_onebot.ps1），避免在 VM 里手打长命令。
 param(
     [string]$WsUrl = "ws://10.244.37.37:3001",
-    [string]$Token = "4b74a4ba99a539ab4da0b3cb706588ac",
+    # 真实 token 不要写进仓库：用 -Token 传入，或先设置环境变量 NAPCAT_TOKEN
+    [string]$Token = $env:NAPCAT_TOKEN,
     [string]$SelfId = "2682503133",
     [string]$AssetsBase = "http://10.244.62.117:5102",
     [switch]$Start
 )
+
+if (-not $Token) {
+    Write-Host "缺少 Token：请用 -Token <NapCat OneBot WS Token> 或先设置环境变量 NAPCAT_TOKEN"
+    exit 2
+}
 
 $ErrorActionPreference = "Stop"
 $dataDir = Join-Path $env:LOCALAPPDATA "MyAgent\data"

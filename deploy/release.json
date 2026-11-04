@@ -12,7 +12,7 @@
     "qq-official-service": "v1.1",
     "qq-onebot-service": "v1.1",
     "task-scheduler-service": "v1.1",
-    "timer-task-service": "v1.1",
+    "timer-task-service": "v1.3",
     "tool-runtime-service": "v1.2",
     "user-service": "v1.1"
   },

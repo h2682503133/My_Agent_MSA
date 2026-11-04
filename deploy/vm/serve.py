@@ -275,13 +275,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, local.read_bytes(), "text/plain; charset=utf-8")
             return
-        if path == "/set_model_key.ps1":
-            local = VM_DIR / "set_model_key.ps1"
-            if not local.exists():
-                self._send(404, b"not found", "text/plain")
-                return
-            self._send(200, local.read_bytes(), "text/plain; charset=utf-8")
-            return
         if path == "/refresh_fresh.ps1":
             local = VM_DIR / "refresh_fresh.ps1"
             if not local.exists():
@@ -326,13 +319,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/reset_ov.ps1":
             local = VM_DIR / "reset_ov.ps1"
-            if not local.exists():
-                self._send(404, b"not found", "text/plain")
-                return
-            self._send(200, local.read_bytes(), "text/plain; charset=utf-8")
-            return
-        if path == "/set_ov_embedding.ps1":
-            local = VM_DIR / "set_ov_embedding.ps1"
             if not local.exists():
                 self._send(404, b"not found", "text/plain")
                 return

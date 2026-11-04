@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # My_Agent_MSA 一键部署脚本
 # 在项目根目录 PowerShell 中运行
 # ============================================================
@@ -356,6 +356,17 @@ if ($toDeploy -contains "openviking-server" -or $toDeploy -contains "openviking-
         Write-Warn "请手动填写后执行：bash deploy/sync-config.sh 同步到 NFS"
     } else {
         Write-OK "openviking 配置已就绪（config/openviking/），确认已同步到 NFS（bash deploy/sync-config.sh）"
+    }
+}
+
+# ─── 模型 key 检查（只提示，绝不代填）────────────────────────
+# 设计约定：真实 api_key 一律由用户在 dashboard 里自己填，
+# 部署脚本只做"检测到占位就提醒"，不在仓库/脚本里保存任何真实 key。
+if ($toDeploy -contains "model-proxy-service") {
+    $ml = "config/model-proxy/config/model_list.json"
+    if ((Test-Path $ml) -and ((Get-Content $ml -Raw -ErrorAction SilentlyContinue) -match "replace-with")) {
+        Write-Warn "$ml 里仍有 replace-with 占位（api_key 未填写）"
+        Write-Warn "请打开 dashboard →「配置管理」→ model-proxy/config/model_list.json 填真实 api_url/api_key/model（改完不用重启）"
     }
 }
 

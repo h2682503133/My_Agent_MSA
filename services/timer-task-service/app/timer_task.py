@@ -15,6 +15,7 @@ from app.logger import timer_log
 from app.scheduler_client import SchedulerClient
 from app.time_parser import (
     catch_up_in_window,
+    next_occurrence,
     interval_range_of,
     next_window_start,
     in_task_window,
@@ -337,33 +338,31 @@ def timer_scan_loop():
                             execute_timer_task(task)
                         schedule = task.get("schedule")
                         if schedule:
-                            nxt = next_trigger(schedule, now)
-                            # 执行时段策略：realign = 时段外就对齐到时段内；
-                            # skip = 错过就错过（固定间隔 + 时段可能永远不执行）
-                            window = task.get("window")
-                            if (
-                                nxt
-                                and window
-                                and getattr(config, "TIMER_MISSED_WINDOW_POLICY", "realign") == "realign"
-                                and not in_task_window(task, nxt)
-                            ):
-                                nxt = catch_up_in_window(
-                                    now, window, interval_range_of(schedule)
-                                )
+                            # 重复任务：只重排、**永不删除**。
+                            # 老代码用 catch_up_in_window(now, ...) 算下一次：now 本身在时段内时它会
+                            # 原样返回 now → `nxt > now` 不成立 → 任务被当成一次性任务删掉，
+                            # 表现为"循环任务过一阵就没了 / 时间在涨但从不投递"。
+                            realign = (
+                                getattr(config, "TIMER_MISSED_WINDOW_POLICY", "realign") == "realign"
+                            )
+                            prev = task.get("trigger_time", 0)
+                            nxt = next_occurrence(
+                                schedule, task.get("window"), now, realign=realign
+                            )
+                            task["trigger_time"] = nxt
+                            with open(path, "w", encoding="utf-8") as f:
+                                json.dump(task, f, ensure_ascii=False, indent=2)
+                            timer_log(
+                                f"定时任务已重排：{task.get('task_id')} 下次 "
+                                f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(nxt))}"
+                            )
+                            if nxt <= now:  # 理论上不会发生，兜底告警
                                 timer_log(
-                                    f"定时任务[{task.get('task_id')}]下一次触发不在执行时段内，"
-                                    f"改到 {time.strftime('%m-%d %H:%M', time.localtime(nxt))}"
+                                    f"[warn] 定时任务{task.get('task_id')}下次触发未严格递增 "
+                                    f"({nxt} <= {now})，prev={prev}"
                                 )
-                            if nxt and nxt > now:
-                                # 重复任务：重排下一次触发时间，继续保留
-                                task["trigger_time"] = nxt
-                                with open(path, "w", encoding="utf-8") as f:
-                                    json.dump(task, f, ensure_ascii=False, indent=2)
-                                timer_log(
-                                    f"定时任务已重排：{task.get('task_id')} "
-                                    f"下次 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(nxt))}"
-                                )
-                                continue
+                            continue
+                        # 走到这里只剩"一次性任务"：执行完就删
                         os.remove(path)
                 except Exception as e:
                     timer_log(f"定时任务扫描失败：{path} {e}")

@@ -19,6 +19,7 @@ from app.time_parser import (  # noqa: E402
     in_task_window,
     in_window,
     next_window_start,
+    next_occurrence,
     parse_window,
     window_to_str,
 )
@@ -102,6 +103,19 @@ def main():
 
     # 结果一定在窗口内
     check("追赶结果必在窗口内", in_window(w3, nxt) and in_window(w3, nxt2) and in_window(w3, nxt3))
+    # ── 回归：循环任务曾因"下一次 == now"被当成一次性任务删除 ──
+    sched = {"type": "interval", "interval_range": [1500, 3300]}      # 每 25-55 分钟
+    for probe in (ts(0, 5), ts(9, 30), ts(21, 59), ts(23, 59), ts(1, 55)):
+        n = next_occurrence(sched, w3, probe)
+        check(f"next_occurrence 严格递增 @{local(probe)}", n > probe, (n - probe))
+    n_none = next_occurrence(sched, None, ts(12))
+    check("无窗口：now+区间", 1500 <= n_none - ts(12) <= 3300, n_none - ts(12))
+    n_zero = next_occurrence({"type": "interval", "interval_range": [0, 0]}, w3, ts(23, 59))
+    check("区间为 0 仍 > now（不会自删）", n_zero > ts(23, 59), n_zero - ts(23, 59))
+    n_out = next_occurrence(sched, w3, ts(23, 30))
+    check("窗口外候选被挪进窗口", in_window(w3, n_out) and n_out > ts(23, 30), local(n_out))
+    n_skip = next_occurrence(sched, w3, ts(23, 30), realign=False)
+    check("realign=False 仍严格递增", n_skip > ts(23, 30), n_skip - ts(23, 30))
 
     print()
     if FAILS:
