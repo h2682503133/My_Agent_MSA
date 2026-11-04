@@ -22,6 +22,7 @@ from app.context_builder import (
 from app.context_client import AUTHOR_IN_CONTENT_KEY, ContextClient
 from app.events import TaskEventDTO, DeliveryTarget, new_event_id
 from app.image_store import image_marker, store_images
+from app import interrupt_summary
 from app.logger import chat_log, debug_log
 from app.model_proxy_client import ModelProxyClient
 from app.prompt_plan import PromptPlanError, parse_prompt_plan
@@ -937,6 +938,88 @@ class AgentRuntime:
             )
 
     @classmethod
+    def _finalize_step_limit(cls, task, *, steps: int, emit) -> str:
+        """步数上限中断收尾：reader 压缩两本账 → 最终输出 + 写入会话历史。
+
+        以前这里只有一句"任务执行步数过多，已中止。"，并且直接 return —— 于是一整轮的
+        执行现场（agent_context 栈 / main_log / tool_log）全部蒸发，短期记忆也没写，
+        用户下次只能从头再来。现在：
+          1. main_log（对话往返：请求+回复）+ tool_log（工具结果）交给 reader 压缩；
+          2. 摘要作为最终输出（用户马上知道"已经做到哪了"）；
+          3. 同一份摘要写进会话历史（下一轮新任务能读到，不用重跑）；
+          4. 顺带把工具经验持久化（复用 _persist_tool_summary）。
+        任何一步失败都不影响其余步骤，最差退化成"最后几条原始记录"。
+        """
+        main_log = list(getattr(task, "main_log", []) or [])
+        tool_log = list(getattr(task, "tool_log", []) or [])
+
+        summary = ""
+        if config.STEP_LIMIT_SUMMARY_ENABLED:
+            try:
+                messages = interrupt_summary.reader_messages(
+                    main_log,
+                    tool_log,
+                    per_entry_chars=config.STEP_LIMIT_SUMMARY_PER_ENTRY_CHARS,
+                    max_chars=config.STEP_LIMIT_SUMMARY_INPUT_CHARS,
+                )
+                if messages:
+                    reader = cls.get_agent("reader", task.user.session_id, task.user.id)
+                    reader_profile = (
+                        reader.config.get("model_profile")
+                        or reader.config.get("model")
+                        or "reader"
+                    )
+                    resp = cls.model_client.chat_completion(
+                        task_id=task.task_id,
+                        agent_id="reader",
+                        model_profile=reader_profile,
+                        messages=messages,
+                        params={"temperature": 0.2, "max_tokens": "700", "stream": "false"},
+                    )
+                    summary = str(resp.get("text") or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                debug_log(f"[{task.user.id}] 步数中断摘要失败（退回原始尾部）: {exc}")
+
+        if not summary:
+            summary = interrupt_summary.fallback_summary(main_log, tool_log)
+
+        final_reply = interrupt_summary.render_final_text(
+            summary, steps=steps, limit=config.MAX_AGENT_STEPS
+        )
+
+        # 写进会话历史：让下一轮（新任务）知道上一轮做到哪、别再重跑
+        try:
+            default_agent = getattr(task, "default_agent", None)
+            default_agent_id = getattr(default_agent, "id", "main")
+            default_agent_config = getattr(default_agent, "config", {}) or {}
+            cls._append_turn_for_recipients(
+                task,
+                recorded_message=final_reply,
+                speaker_id=task.agent_id or default_agent_id,
+                commit_limit=int(default_agent_config.get("commit_limit", 0) or 0),
+                max_messages=int(default_agent_config.get("max_messages", 6) or 6),
+            )
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"[{task.user.id}] 步数中断写入会话失败: {exc}")
+
+        # 工具经验：复用既有持久化，然后清账（与正常收尾一致）
+        try:
+            cls._persist_tool_summary(task)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"[{task.user.id}] 步数中断持久化工具摘要失败: {exc}")
+        else:
+            try:
+                task.tool_log.clear()
+            except Exception:  # noqa: BLE001
+                pass
+
+        debug_log(
+            f"[{task.user.id}] 步数上限中断：steps={steps}/{config.MAX_AGENT_STEPS} "
+            f"main_log={len(main_log)} tool_log={len(tool_log)} summary={len(summary)}字"
+        )
+        return final_reply
+
+    @classmethod
     def _continue_task(cls, task, emit: Callable[[TaskEventDTO], None]) -> str:
         """主循环 + 收尾：process_task 和 resume_task 都会走到这里。
 
@@ -956,8 +1039,10 @@ class AgentRuntime:
 
             steps += 1
             if steps > config.MAX_AGENT_STEPS:
+                # 中断**不等于丢现场**：先让 reader 把两本账压成收尾摘要，
+                # 再作为最终输出 + 写进会话历史（下一轮不必从头再跑）。
                 task.status = "failed"
-                final_reply = "任务执行步数过多，已中止。"
+                final_reply = cls._finalize_step_limit(task, steps=steps, emit=emit)
                 emit(cls.build_event(task, "task_failed", error=final_reply, text=final_reply))
                 return final_reply
 
@@ -978,6 +1063,24 @@ class AgentRuntime:
             # 已在 `定时任务结果:` 里、询问/插话帧是自己继续跑 —— 都不该再记成"返回"。
             if frame_kind == "unknown":
                 debug_log(f"[{task.user.id}] [frame] 未标注 kind 的帧（来自 {returning_agent_id}），按非对话帧处理")
+            # 主日志（main_log）：**一次对话往返记一条** —— 调用者的请求 + 对方的回复。
+            # 与最初实现（commit 360953c 的 Agent.send）一致：
+            #   f"{caller}的请求：\n{request},\n收到来自{callee}的回复：\n{reply}"
+            # 只对 dialog 帧记：tool 帧的结果在 tool_log、询问/插话帧是自己继续跑。
+            if frame_kind == "dialog":
+                try:
+                    caller_id = getattr(task.target, "id", "") or "user"
+                    request_text = (
+                        (context or {}).get("dispatch") or (context or {}).get("request") or stack_input
+                    )
+                    task.main_log.append(
+                        f"{caller_id}的请求：\n{request_text}\n"
+                        f"收到来自{returning_agent_id}的回复：\n{output}"
+                    )
+                    if len(task.main_log) > 200:
+                        del task.main_log[:-200]
+                except Exception as exc:  # noqa: BLE001
+                    debug_log(f"[{task.user.id}] main_log append failed: {exc}")
             if should_record_main_return(frame_kind, getattr(task.target, "id", None)):
                 task.main_memory.append(render_return_memory(returning_agent_id, str(output)))
 

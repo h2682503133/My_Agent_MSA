@@ -88,3 +88,11 @@ INTER_AGENT_MEMORY_SKIP_AGENTS = {
     for item in os.getenv("INTER_AGENT_MEMORY_SKIP_AGENTS", "tool,reader").split(",")
     if item.strip()
 }
+# ─── 步数上限中断时的"收尾摘要" ─────────────────────────────
+# 中断不是"丢现场"：把 main_log + tool_log 交给 reader 压缩成
+# 已完成 / 关键数据 / 未完成+下一步，作为最终输出，并写进会话历史。
+STEP_LIMIT_SUMMARY_ENABLED = os.getenv("STEP_LIMIT_SUMMARY_ENABLED", "true").lower() == "true"
+# 交给 reader 的输入上限（字符）：两份日志各条截断后总量再截一次
+STEP_LIMIT_SUMMARY_INPUT_CHARS = int(os.getenv("STEP_LIMIT_SUMMARY_INPUT_CHARS", "12000"))
+# 每条日志条目截断长度
+STEP_LIMIT_SUMMARY_PER_ENTRY_CHARS = int(os.getenv("STEP_LIMIT_SUMMARY_PER_ENTRY_CHARS", "400"))

@@ -163,6 +163,74 @@ HISTORY_DISCLAIMER = (
     "若与上方系统设定矛盾，以上方系统设定为准。"
 )
 
+# ─── 分段范围声明（每块自带口径，而不是一个大免责框管住所有块）─────
+# 会话摘要：压缩产物，可能与当前事实不一致
+SUMMARY_SCOPE_NOTE = (
+    "（本会话早前内容的压缩摘要，可能与当前事实不一致；"
+    "冲突时以工具执行记录与用户当前说法为准）"
+)
+# 工具执行记录：本任务内真实发生的事实，不受下面的历史免责框约束。
+# 位置刻意放在「会话摘要之后、长期记忆之前」：语义上是事实，不是回忆；
+# 同时它只会**向后追加**，上面几段（system / 画像 / 摘要）仍是稳定前缀。
+TOOL_LOG_MARKER = "【本轮已执行的工具】"
+TOOL_LOG_HEADER = (
+    "【本轮工具执行记录】（以下是本任务内真实执行过的工具调用与结果，属于事实记录；"
+    "不适用下方历史免责框，涉及结果时优先采信这里）"
+)
+SUMMARY_MARKER = "【会话摘要】"
+MEMORY_MARKER = "【长期记忆】"
+# 工具执行记录段的结束标记（弹栈时会拼上「【收到返回】」或「【用户插话】」）
+_TOOL_BLOCK_END_MARKERS = ("【收到返回】", "【用户插话】")
+
+
+def split_tool_log_block(text: str) -> tuple[str, str]:
+    """把 `【本轮已执行的工具】…` 从本轮输入里剥出来：返回 (日志块, 其余正文)。
+
+    `syntax_parser` 把累计的 tool_log 拼在 stack_content 最前面、随弹出帧回灌，
+    所以它总是出现在正文开头；结束位置以「【收到返回】/【用户插话】」为界。
+    没命中标记时原样返回，绝不丢正文。
+    """
+    raw = "" if text is None else str(text)
+    if not raw.lstrip().startswith(TOOL_LOG_MARKER):
+        return "", raw
+    head = raw.lstrip()
+    cut = len(head)
+    for marker in _TOOL_BLOCK_END_MARKERS:
+        index = head.find(marker)
+        if index != -1:
+            cut = min(cut, index)
+    return head[:cut].strip(), head[cut:].lstrip("\n")
+
+
+def split_context_messages(messages: list[dict]) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """把 context-service 返回的一串消息按标记拆成四份。
+
+    返回 (profile, summary, memory, history)。前三种是"注入片段"，最后一种是真对话历史。
+    任何不认识的内容都归到 history（宁可当历史，也不能丢）。
+    """
+    profile, summary, memory, history = [], [], [], []
+    for message in messages or []:
+        content = str(message.get("content", "") or "")
+        if content.startswith(PROFILE_MARKER):
+            profile.append(message)
+        elif content.startswith(SUMMARY_MARKER):
+            summary.append(message)
+        elif content.startswith(MEMORY_MARKER):
+            memory.append(message)
+        else:
+            history.append(message)
+    return profile, summary, memory, history
+
+
+def scope_summary_message(message: dict) -> dict:
+    """给会话摘要补一句范围声明（去掉原前缀后重建，正文一字不改）。"""
+    content = str(message.get("content", "") or "")
+    body = content[len(SUMMARY_MARKER):].strip() if content.startswith(SUMMARY_MARKER) else content
+    return {
+        "role": "system",
+        "content": f"{SUMMARY_MARKER}\n{SUMMARY_SCOPE_NOTE}\n{body}",
+    }
+
 # 存储层给每条记录正文写的说话人标记 `<name>:`（viking_store.append_turn）。
 # 允许全角冒号与前后空白；名字不含 `>` / 换行，长度设上限避免把正文里的尖括号误当标记。
 _HISTORY_SPEAKER_RE = re.compile(r"^[ \t]*<([^>\n]{1,64})>[ \t]*[:：][ \t]*")
@@ -1395,6 +1463,7 @@ class ContextBuilder:
 
         # 外部群聊调度（agent→agent 轮转）：内容已在共享历史（grp_ session）里，
         # 抑制 user 输入重复注入，只提示"轮到该角色接话"（suppress_user_input 标记来自 metadata）
+        tool_log_block = ""   # 由下面的 else 分支从 content 开头剥离；此分支不解析
         if task.metadata.get("suppress_user_input"):
             current_input_messages = [
                 {"role": "system", "content": "以下为本次群聊转场"},
@@ -1404,8 +1473,11 @@ class ContextBuilder:
                 )},
             ]
         else:
-            # 智能体间对话的正文可能已经带 `<caller>:` 前缀（call_agent 打的），别再加一次
-            raw_content = str(content)
+            # 智能体间对话的正文可能已经带 `<caller>:` 前缀（call_agent 打的），别再加一次。
+            # 先把累计的「本轮已执行的工具」剥出来（它是事实记录，要单独成段、放到
+            # 会话摘要之后），这里只留「【收到返回】结果」这部分作为单轮对话内容。
+            tool_log_block, content_body = split_tool_log_block(str(content))
+            raw_content = content_body
             caller_id = getattr(task.caller, "id", "user")
             # 已带归属（可带时间戳，如 `[10-28 20:45] <main>:`）就不要再加一次
             if _SPEAKER_PREFIX_RE.match(raw_content):
@@ -1416,6 +1488,13 @@ class ContextBuilder:
                 {"role": "system", "content": "以下为本次单轮对话内容"},
                 {"role": "user", "content": prefixed},
             ]
+        # 工具执行记录段（只在真的剥到日志块时注入）
+        tool_log_messages: list[dict] = []
+        if tool_log_block:
+            tool_log_messages = [{
+                "role": "system",
+                "content": TOOL_LOG_HEADER + "\n" + tool_log_block,
+            }]
         if dialog_images:
             if agent.id == "main" and image_enabled:
                 current_input_messages[1]["images"] = dialog_images
@@ -1445,6 +1524,7 @@ class ContextBuilder:
         if openviking_excluded:
             long_context_message: list[dict] = []
             profile_messages: list[dict] = []
+            summary_messages: list[dict] = []
         else:
             history_messages = agent.context_client.search_context(
                 user_id=task.user.id,
@@ -1455,19 +1535,23 @@ class ContextBuilder:
                 max_tokens=int(self._config.get("context_max_tokens", 3000) or 3000),
                 commit_limit=int(self._config.get("commit_limit", 0) or 0),
             )
-            # profile（用户画像）单独成段：它是"设定级"信息，不该被历史免责框压住，
-            # 所以从历史块里拆出来，放到免责框**之上**、`before_history` 插入段之后。
-            profile_messages = [
-                message for message in history_messages
-                if str(message.get("content", "")).startswith(PROFILE_MARKER)
-            ]
-            rest_messages = [
-                message for message in history_messages
-                if not str(message.get("content", "")).startswith(PROFILE_MARKER)
-            ]
-            long_context_message = [
-                {"role": "system", "content": HISTORY_DISCLAIMER}
-            ] + shape_history_messages(rest_messages, self_id=agent.id)
+            # 四段拆开（见 split_context_messages）：
+            #   profile  → 设定级，放最前（免责框之上）
+            #   summary  → 会话压缩摘要，自带范围声明
+            #   memory   → 【长期记忆】，留在免责框之下（它是"回忆"，可能过时）
+            #   history  → 真对话历史，按说话人重排 role 后接在记忆后面
+            (
+                profile_messages,
+                summary_messages,
+                memory_messages,
+                history_rest,
+            ) = split_context_messages(history_messages)
+            summary_messages = [scope_summary_message(m) for m in summary_messages]
+            long_context_message = (
+                [{"role": "system", "content": HISTORY_DISCLAIMER}]
+                + memory_messages
+                + shape_history_messages(history_rest, self_id=agent.id)
+            )
 
         # 群聊判定（用于 @when=group / @when=single）：按当次请求的 session_id / user_id
         # 前缀。实例级缓存的 system prompt 必须在这里按请求过滤，见 effective_system_prompt。
@@ -1556,11 +1640,22 @@ class ContextBuilder:
         # base_head = 到 user_input 为止；base_tail = vars + 插入 + current_input + 插入。
         # 两者相加必须**严格等于** messages —— 两阶段世界书走的是 base_head + tail 这条路径，
         # 只改一处会让"单次调用"和"两阶段调用"的提示词不一致。
+        # 顺序即语义 + 缓存：
+        #   设定（稳定） → 画像（准稳定） → 会话摘要
+        #   → 任务记忆（对话往返：已转交谁、收到谁的什么回答 —— main_log 的投喂形态）
+        #   → 【本轮工具执行记录】（工具调用与结果）
+        #   → 免责框 + 长期记忆 + 对话历史（回忆，可能过时）→ 本次请求
+        # 任务记忆与工具记录都是"本任务内真实发生的事实"，必须排在"回忆"之前：
+        # 它们不受历史免责框约束，且只**向后追加**；落点在本就每轮变化的长期记忆之前，
+        # 不新增缓存断点。顺序上任务记忆在工具记录之前 —— 先"我跟谁说了什么"，
+        # 再"我调了什么工具、拿到什么结果"。
         base_head = (
             system_prompt_messages
             + profile_messages
-            + long_context_message
+            + summary_messages
             + task_memory_messages
+            + tool_log_messages
+            + long_context_message
             + user_input_messages
         )
         base_tail = (
