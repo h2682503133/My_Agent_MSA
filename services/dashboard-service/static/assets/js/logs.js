@@ -50,9 +50,30 @@ async function streamLogs() {
   const out = document.getElementById('log-output');
   out.textContent = '';
 
+  let ended = false;
   logStream = new EventSource('/api/logs/stream?' + params);
-  logStream.onmessage = (e) => { out.textContent += e.data + '\n'; out.scrollTop = out.scrollHeight; };
-  logStream.onerror = () => { stopStream(); out.textContent += '\n--- 流已断开 ---'; };
+  logStream.onopen = () => { if (out.textContent) out.textContent += '\n--- 已重新连接 ---\n'; };
+  logStream.onmessage = (e) => {
+    if (e.data === '[end]') { ended = true; return; }
+    out.textContent += e.data + '\n';
+    out.scrollTop = out.scrollHeight;
+  };
+  // 正常结束（服务端显式发了 end 帧）
+  logStream.addEventListener('end', () => {
+    ended = true;
+    out.textContent += '\n--- 实时追踪结束 ---';
+    stopStream();
+  });
+  // 异常失联：EventSource 自己会重连，只有在彻底关闭时才提示并停掉
+  logStream.onerror = () => {
+    if (ended) return;
+    if (!logStream || logStream.readyState === EventSource.CLOSED) {
+      stopStream();
+      out.textContent += '\n--- 流已断开（服务端无响应；可点「加载」看当前日志） ---';
+    } else {
+      out.textContent += '\n--- 连接中断，正在重连… ---';
+    }
+  };
 }
 
 function stopStream() {

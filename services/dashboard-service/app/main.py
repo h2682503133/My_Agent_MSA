@@ -10,6 +10,7 @@ import re
 import subprocess
 import shutil
 import asyncio
+from contextlib import suppress
 import time
 import urllib.request
 import urllib.error
@@ -598,21 +599,65 @@ async def stream_logs(pod: str = Query(""), tail: int = Query(200), container: s
         args.extend(["-c", container])
 
     async def generate():
-        proc = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        """`kubectl logs -f` → SSE。
+
+        以前的问题：stderr 被接出来却从没读，`-f` 一失败（容器重启/未就绪/
+        RBAC 拒绝）客户端只看到流无声结束，前端只能显示"流已断开"，看不出原因。
+        现在：
+          · stderr 单独收集，流结束时以 `[kubectl] …` 帧透出；
+          · 每 15s 发一个 SSE 注释心跳（`: ping`），避免代理/浏览器按空闲掐断；
+          · 正常结束或失败都补一帧 `event: end`，前端能区分"结束"和"异常失联"。
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except Exception as exc:  # noqa: BLE001
+            yield f"data: [错误] 无法启动 kubectl：{exc}\n\n"
+            yield "event: end\ndata: [end]\n\n"
+            return
+
+        stderr_lines: list[str] = []
+
+        async def _collect_stderr() -> None:
+            assert proc.stderr is not None
+            while True:
+                chunk = await proc.stderr.readline()
+                if not chunk:
+                    return
+                stderr_lines.append(chunk.decode("utf-8", errors="replace").rstrip())
+
+        stderr_task = asyncio.create_task(_collect_stderr())
         try:
             while True:
-                line = await proc.stdout.readline()
+                assert proc.stdout is not None
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
                 if not line:
                     break
                 yield f"data: {line.decode('utf-8', errors='replace').rstrip()}\n\n"
         except asyncio.CancelledError:
-            pass
+            raise
         finally:
-            proc.kill()
-            await proc.wait()
-    return StreamingResponse(generate(), media_type="text/event-stream")
+            with suppress(Exception):
+                proc.kill()
+            with suppress(Exception):
+                await proc.wait()
+            with suppress(Exception):
+                await stderr_task
+
+        for line in stderr_lines[-6:]:
+            yield f"data: [kubectl] {line}\n\n"
+        yield "event: end\ndata: [end]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ─── 部署 ────────────────────────────────────────────────────

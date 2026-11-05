@@ -10,7 +10,7 @@ transcript，交给 reader 模型压缩，产出"已完成 / 关键数据 / 未�
 作为**最终输出**发给用户，并写进会话历史供下一轮接着用。
 
 本模块只做纯文本处理，不碰网络/存储：
-- build_transcript()   两本账（对话往返 + 工具执行）→ 受控长度 transcript
+- build_transcript()   两本账（对话指令/回复 + 工具执行）→ 受控长度 transcript
 - reader_messages()    给 reader 的固定提示词
 - render_final_text()  摘要 → 给用户的最终文本（带中断说明）
 - fallback_summary()   reader 不可用时的兜底摘要（最后几条原始记录）
@@ -23,7 +23,7 @@ DEFAULT_KEEP_TAIL_ENTRIES = 3
 
 READER_SYSTEM_PROMPT = (
     "你是一个任务收尾器。下面是一个**因执行步数达到上限而被强制中止**的任务记录，"
-    "包含两份日志：「主日志」记录对话往返：谁请求了什么、对方回了什么，「工具执行日志」记录工具调用与结果。\n\n"
+    "包含两份日志：「主日志」记两类：`对话: 目标|内容`（派发指令）与 `收到回复: 目标|内容`（对方回复），「工具执行日志」记录工具调用与结果。\n\n"
     "请只输出以下三部分（不要复述过程、不要写客套话）：\n"
     "1) 已完成：已经做成的结论/产出/落盘文件路径（有就写具体路径）\n"
     "2) 关键数据：过程中拿到且值得保留的事实（ID、URL、数值、配置项、结论）\n"
@@ -49,7 +49,7 @@ def build_transcript(
     - 任何一条为空/None 都跳过，不产生 "None" 文本。
     """
     blocks: list[str] = []
-    for title, entries in (("主日志（对话往返）", main_log or []), ("工具执行日志", tool_log or [])):
+    for title, entries in (("主日志（对话指令与回复）", main_log or []), ("工具执行日志", tool_log or [])):
         lines = []
         for raw in entries:
             text = _clean(raw)

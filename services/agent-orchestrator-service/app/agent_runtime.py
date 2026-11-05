@@ -944,7 +944,7 @@ class AgentRuntime:
         以前这里只有一句"任务执行步数过多，已中止。"，并且直接 return —— 于是一整轮的
         执行现场（agent_context 栈 / main_log / tool_log）全部蒸发，短期记忆也没写，
         用户下次只能从头再来。现在：
-          1. main_log（对话往返：请求+回复）+ tool_log（工具结果）交给 reader 压缩；
+          1. main_log（对话指令 + 对方回复，各一条）+ tool_log（工具结果）交给 reader 压缩；
           2. 摘要作为最终输出（用户马上知道"已经做到哪了"）；
           3. 同一份摘要写进会话历史（下一轮新任务能读到，不用重跑）；
           4. 顺带把工具经验持久化（复用 _persist_tool_summary）。
@@ -1063,20 +1063,11 @@ class AgentRuntime:
             # 已在 `定时任务结果:` 里、询问/插话帧是自己继续跑 —— 都不该再记成"返回"。
             if frame_kind == "unknown":
                 debug_log(f"[{task.user.id}] [frame] 未标注 kind 的帧（来自 {returning_agent_id}），按非对话帧处理")
-            # 主日志（main_log）：**一次对话往返记一条** —— 调用者的请求 + 对方的回复。
-            # 与最初实现（commit 360953c 的 Agent.send）一致：
-            #   f"{caller}的请求：\n{request},\n收到来自{callee}的回复：\n{reply}"
+            # 主日志（main_log）：分两次写 —— 派发时写「对话: 指令」，这里只写「收到的回复」。
             # 只对 dialog 帧记：tool 帧的结果在 tool_log、询问/插话帧是自己继续跑。
             if frame_kind == "dialog":
                 try:
-                    caller_id = getattr(task.target, "id", "") or "user"
-                    request_text = (
-                        (context or {}).get("dispatch") or (context or {}).get("request") or stack_input
-                    )
-                    task.main_log.append(
-                        f"{caller_id}的请求：\n{request_text}\n"
-                        f"收到来自{returning_agent_id}的回复：\n{output}"
-                    )
+                    task.main_log.append(f"收到回复:{returning_agent_id}|\n{output}")
                     if len(task.main_log) > 200:
                         del task.main_log[:-200]
                 except Exception as exc:  # noqa: BLE001
@@ -1693,6 +1684,14 @@ class AgentRuntime:
             dispatch_text = f"[{stamp}] <{self.id}>:" + raw_content
 
         record_dispatch(task, target_agent_id, dispatch_text, self.id)
+        # 主日志（main_log）第 1 次写：**对话指令**这一轮就落一条 `对话:<目标>|<内容>`；
+        # 等对方回复弹栈时再单独补一条 `收到回复:<目标>|<内容>`（见 _continue_task）。
+        try:
+            task.main_log.append(f"对话:{target_agent_id}|{dispatch_text}")
+            if len(task.main_log) > 200:
+                del task.main_log[:-200]
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"[{task.user.id}] main_log append failed: {exc}")
         task.push_context(
             self,
             "【已发送给" + target_agent_id + "】\n" + dispatch_text,

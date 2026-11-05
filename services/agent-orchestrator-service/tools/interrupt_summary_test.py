@@ -71,7 +71,8 @@ cont_calls = {
     if isinstance(c, ast.Call)
 }
 check("_continue_task 步数超限走 _finalize_step_limit", "_finalize_step_limit" in cont_calls, cont_calls)
-check("main_log 记对话往返（请求+回复）", "收到来自{returning_agent_id}的回复" in src)
+check("main_log 派发时写对话指令", 'main_log.append(f"对话:{target_agent_id}|' in src)
+check("main_log 弹栈时只写回复", 'main_log.append(f"收到回复:{returning_agent_id}|' in src)
 
 print()
 if FAILS:
