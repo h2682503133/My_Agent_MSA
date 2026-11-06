@@ -3,9 +3,9 @@
 命令的**解析**在 task-scheduler-service（`app/state_commands.py`，和 `/stop` 同层），
 这里只负责校验与写内存状态：
 
-    /agent            查看当前智能体与可用列表
+    /agent            无参数 → 只回「未知」（信息隐藏，不列可用项）
     /agent talker     切换智能体（模式同时重置为 default）
-    /mode             查看当前模式与可用列表
+    /mode             无参数 → 只回「未知」（信息隐藏，不列可用项）
     /mode eco         切换模式（不动 agent_id → 会话上下文共用）
     /mode default     回到默认模式
 """

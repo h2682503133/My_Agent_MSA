@@ -35,8 +35,9 @@ from pathlib import Path
 
 DEFAULT_MODE = "default"
 
-# 这些名字不是普通提示词文件，存在性校验时跳过（由各自机制负责）
-_SPECIAL_FILE_NAMES = {"process.md", "world_info.md", "tool.md", "tool.json"}
+# 模式层**不**维护功能性文件名白名单（PROCESS / world_info / TOOL 变体）。
+# 声明式提示词文件是否存在，由注入层 context_builder.build_system_prompt 统一判定；
+# 这样加一个新的功能性文件/变体只需要改注入层一处，不会出现两个事实源。
 
 
 def normalize_mode(name) -> str:
@@ -108,8 +109,8 @@ def effective_config(agent_config: dict, mode: str) -> dict:
 def validate_mode(agent_config: dict, prompt_dir: Path, mode: str) -> str:
     """校验模式是否可用；可用返回空串，否则返回给用户看的错误文本。
 
-    - 未定义的模式名 → 列出可用模式
-    - 模式声明了 files 但文件缺失 → 列出缺失路径（宁可变吵，不要静默少注入）
+    - 未定义的模式名 → 只报「未知模式」（不列出可用模式：信息隐藏）
+    - 不校验 files 是否存在：那由注入层（prompt 构建）负责，避免两处事实源
     """
     name = canonical_mode(agent_config, mode)
     if name == DEFAULT_MODE:
@@ -117,26 +118,13 @@ def validate_mode(agent_config: dict, prompt_dir: Path, mode: str) -> str:
 
     modes = (agent_config or {}).get("modes")
     if not isinstance(modes, dict) or name not in modes:
-        names = ", ".join(available_modes(agent_config))
-        return f"未知模式 {name!r}，可用模式：{names}"
+        # 信息隐藏：不列出 available_modes（具体有哪些模式只留在代码/配置里）
+        return f"未知模式 {name!r}"
 
     block = modes.get(name)
     if not isinstance(block, dict):
         return f"模式 {name!r} 的定义不是对象，无法使用"
 
-    files = block.get("files")
-    if isinstance(files, list) and files:
-        missing = []
-        for filename in files:
-            raw = str(filename or "").strip()
-            if not raw or raw.lower() in _SPECIAL_FILE_NAMES:
-                continue
-            if not (Path(prompt_dir) / raw).exists():
-                missing.append(raw)
-        if missing:
-            return (
-                f"模式 {name!r} 声明的提示词文件不存在："
-                + "、".join(missing)
-                + f"（目录 {prompt_dir}）"
-            )
+    # 只校验"模式是否定义、形态是否合法"。
+    # files 里声明的提示词是否存在，由注入层统一判定（唯一事实源，见模块头注释）。
     return ""

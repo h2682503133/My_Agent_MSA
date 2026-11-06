@@ -42,6 +42,9 @@ from app.timer_task_client import TimerTaskClient
 # 打断是暂停而不是销毁，用户看到这句才敢直接接着说下一句。
 INTERJECT_PAUSE_TEXT = "⏹ 已停止。当前进度已保留，直接发消息即可接着继续。"
 
+# /agent、/mode 的信息隐藏回执：不暴露可用项、不暴露命令是否正确使用
+HIDDEN_UNKNOWN = "未知"
+
 # 正文首部是否已有"权威归属"：可带时间戳，形如 `[10-28 20:45] <main>:`
 # 与 context_builder._SPEAKER_PREFIX_RE / text_utils.AUTHOR_PREFIX_RE 的口径保持一致。
 _HAS_SPEAKER_PREFIX_RE = re.compile(r"^\s*(\[[^\]\n]{1,32}\]\s*)?<[^>\n]{1,64}>\s*[:：]")
@@ -319,12 +322,17 @@ class AgentRuntime:
 
         if agent_id:
             if not user_commands.agent_exists(config.AGENT_CONFIG_PATH, uid, agent_id):
-                return False, "", f"未知智能体 {agent_id!r}，可用：{', '.join(names) or '（无）'}"
+                # 信息隐藏：不回复"未知智能体 xxx，可用：…"，只回「未知」。
+                # 真实原因只进 debug 日志（运维可查，用户看不到）。
+                debug_log(
+                    f"[{uid}] /agent 未知智能体 {agent_id!r}（可用：{', '.join(names) or '（无）'}）"
+                )
+                return True, HIDDEN_UNKNOWN, ""
             cls.default_agent[sid] = agent_id
             # 换 agent 即换人：模式回到 default
             cls.default_mode[sid] = mode_switch.DEFAULT_MODE
             debug_log(f"[{uid}] 斜杠命令切换智能体 -> {agent_id}（模式重置 default）")
-            return True, f"已切换智能体：{agent_id}（模式重置为 default）", ""
+            return True, f"已切换智能体：{agent_id}", ""
 
         if mode:
             agent_config = _agent_config(current_agent)
@@ -334,7 +342,9 @@ class AgentRuntime:
                 mode,
             )
             if error:
-                return False, "", error
+                # 信息隐藏：校验失败（不存在/文件缺失）一律只回「未知」，原因写日志。
+                debug_log(f"[{uid}] /mode {mode!r} 校验失败：{error}")
+                return True, HIDDEN_UNKNOWN, ""
             canonical = mode_switch.canonical_mode(agent_config, mode)
             cls.default_mode[sid] = canonical
             effective = mode_switch.effective_config(agent_config, canonical)
@@ -342,20 +352,15 @@ class AgentRuntime:
                 f"[{uid}] 斜杠命令切换模式 -> {canonical}"
                 f"（模型 {effective.get('model_profile')}）"
             )
-            return True, (
-                f"已切换模式：{canonical}（智能体 {current_agent}，"
-                f"模型 {effective.get('model_profile', '')}）"
-            ), ""
+            # 回执不报模型档案名（信息隐藏），只确认模式本身
+            return True, f"已切换模式：{canonical}", ""
 
-        # 无参数 = 查看当前状态
-        agent_config = _agent_config(current_agent)
-        modes = mode_switch.available_modes(agent_config)
-        return True, (
-            f"当前智能体：{current_agent}｜当前模式：{current_mode}\n"
-            f"可用智能体：{', '.join(names) or '（无）'}\n"
-            f"可用模式（{current_agent}）：{', '.join(modes)}\n"
-            "切换：/agent <名称>、/mode <名称>（/mode default 回默认）"
-        ), ""
+        # 无参数 = 查看当前状态 → 信息隐藏：不吐状态、不列可用项，只回「未知」
+        debug_log(
+            f"[{uid}] /agent|/mode 无参数（当前 agent={current_agent} mode={current_mode}），"
+            f"按要求只回「未知」"
+        )
+        return True, HIDDEN_UNKNOWN, ""
 
     @classmethod
     def _emit_user_message(

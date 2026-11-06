@@ -1,7 +1,7 @@
 {
   "_comment": "镜像版本的唯一事实源。改版本请用 `python -X utf8 deploy/release.py bump <svc>`，它会把 tag 写回 deploy/services/*.yaml、compose、tool-runtime-apply.sh、gen_protos.py、services/*/README.md；`check` 会在部署前校验漂移。pip 依赖的唯一事实源是 services/<svc>/requirements.txt。",
   "services": {
-    "agent-orchestrator-service": "v1.9",
+    "agent-orchestrator-service": "v1.12",
     "dashboard-service": "v1.2",
     "embedding-service": "v1.1",
     "frontend-service": "v1.1",

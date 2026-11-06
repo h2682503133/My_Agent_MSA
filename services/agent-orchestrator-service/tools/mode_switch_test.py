@@ -90,9 +90,10 @@ def test_validate() -> None:
         check("default 永远合法", mode.validate_mode(AGENT_CONFIG, tmp, "default") == "")
         check("已定义且文件齐 → 合法", mode.validate_mode(AGENT_CONFIG, tmp, "special") == "")
         err = mode.validate_mode(AGENT_CONFIG, tmp, "nope")
-        check("未知模式 → 报错并列出可用", "未知模式" in err and "special" in err, err)
+        check("未知模式 → 只报未知（不列可用）", "未知模式" in err and "special" not in err and "可用" not in err, err)
+        # 模式层不再校验文件是否存在（交给注入层，单一事实源）
         err2 = mode.validate_mode(AGENT_CONFIG, tmp, "broken")
-        check("文件缺失 → 显式报错", "NOT_EXIST.md" in err2, err2)
+        check("文件缺失不在模式层报错", err2 == "", err2)
     finally:
         for f in tmp.glob("*"):
             f.unlink()

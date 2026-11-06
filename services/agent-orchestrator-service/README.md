@@ -98,7 +98,7 @@ TOOL_RUNTIME_TARGET=tool-runtime-service:5303
 版本号只维护在 `deploy/services/agent-orchestrator-service.yaml` 的 `image` 字段（`deploy-all.ps1` 会从那里解析 tag 并据此构建）：
 
 ```bash
-docker build -t agent/agent-orchestrator-service:v1.9 services/agent-orchestrator-service
+docker build -t agent/agent-orchestrator-service:v1.12 services/agent-orchestrator-service
 kubectl apply -f deploy/services/agent-orchestrator-service.yaml     # 或 kubectl -n agent rollout restart deployment/agent-orchestrator-service
 ```
 
@@ -450,6 +450,8 @@ tool-runtime-service:5303
 ### 生效与失败处理
 
 - 指令解析后立即重建 system prompt（`refresh_system_prompt` 会比较模式名，不一致就重建）；
-- 模式名未定义 → 回复`【模式切换失败】未知模式 'x'，可用模式：default, special`；
-- 模式声明的提示词文件缺失 → 回复里列出缺失文件名（不静默少注入）；
+- 模式名未定义 → 回复`【模式切换失败】未知模式 'x'`（**不列出可用模式**：信息隐藏）；
+- `/agent`、`/mode` 无参数或参数非法 → 一律只回`未知`（不输出当前状态、不列可用项；真实原因只进 debug 日志）；
+- 模式层**不**校验 `files` 是否存在：声明式提示词由注入层（`build_system_prompt`）
+  按大小写不敏感解析，缺失只记 debug 日志（单一事实源，加新的功能性文件不用改两处）；
 - 空 `模式:` 永远合法（等价于 `default`）。

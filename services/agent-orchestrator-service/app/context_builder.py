@@ -1099,8 +1099,15 @@ class ContextBuilder:
                     parts.messages.append({"role": "system", "content": tool_content})
                 continue
 
-            file_path = prompt_dir / filename
-            if not file_path.exists():
+            # 声明式提示词文件：用与 TOOL/PROCESS 相同的解析器（大小写不敏感），
+            # 缺失时记一条 debug —— 这是"文件在不在"的**唯一事实源**，
+            # 模式校验层不再重复判断，避免加新文件时要改两处。
+            file_path = _resolve_prompt_file(prompt_dir, filename)
+            if file_path is None:
+                debug_log(
+                    f"[{agent.id}] 声明的提示词文件不存在，已跳过：{filename}"
+                    f"（目录 {prompt_dir}）"
+                )
                 continue
             raw_content, when = _read_prompt_segment(
                 file_path, agent_id=agent.id, filename=filename
